@@ -1,0 +1,56 @@
+// =======================================================
+// 示例合同数据文件 (Sample Contract Data)
+// =======================================================
+// 
+// 使用方法：将此文件重命名为适当的合同名称（如 GCC.txt 或 SCC.txt），
+// 然后通过页面右上角的 📥 按钮 → "导入合同条款" 导入。
+//
+// 文件名会被自动解析为合同键（如 GCC.txt → 键名 "GCC"）。
+// 您也可以在文件头部添加 CONTRACT_META 块来明确指定合同信息。
+//
+// =======================================================
+
+// --- CONTRACT_META 块（可选，用于明确指定合同信息）---
+// CONTRACT_META_START
+// name: 示例合同通用条款
+// shortName: SAMPLE
+// CONTRACT_META_END
+
+// --- 合同数据格式 ---
+// 数据应该是一个 JavaScript 对象字面量，键为条款编号，值为条款对象。
+// 每个条款对象包含：
+//   title: 条款标题（必须）
+//   content: 条款内容，HTML格式（必须）
+//   translation: 简体中文翻译（可选）
+//   translation_tc: 繁体中文翻译（可选）
+//   refs: 引用的其他条款ID数组（可选）
+
+const contracts_data = {
+    "1": {
+        "title": "Clause 1 - Definitions",
+        "content": "In this Contract, the following terms shall have the meanings assigned to them:<br><br><strong>(a)</strong> \"Contract\" means the agreement between the Employer and the Contractor for the execution of the Works.<br><br><strong>(b)</strong> \"Employer\" means the person named in the Contract as the employer.<br><br><strong>(c)</strong> \"Contractor\" means the person named in the Contract as the contractor.<br><br><strong>(d)</strong> \"Engineer\" means the person appointed by the Employer to administer the Contract.<br><br><strong>(e)</strong> \"Works\" means the permanent works and temporary works required by the Contract.",
+        "translation": "在本合同中，以下术语具有如下含义：<br><br><strong>(a)</strong> \"合同\" 指雇主与承包商之间关于工程执行的协议。<br><br><strong>(b)</strong> \"雇主\" 指合同中指定的雇主。<br><br><strong>(c)</strong> \"承包商\" 指合同中指定的承包商。<br><br><strong>(d)</strong> \"工程师\" 指雇主指定的管理合同的人员。<br><br><strong>(e)</strong> \"工程\" 指合同要求的永久工程和临时工程。"
+    },
+    "2": {
+        "title": "Clause 2 - Engineer's Duties",
+        "content": "The Engineer shall carry out the duties specified in or necessarily implied by the Contract. The Engineer shall have no authority to amend the Contract. Where the Engineer exercises a specified discretion, such discretion shall be exercised fairly and reasonably. See also Clause 1 for definitions.",
+        "translation": "工程师应履行合同中规定的或必然隐含的职责。工程师无权修改合同。当工程师行使特定的自由裁量权时，该自由裁量权应公平合理地行使。另见条款1的定义。",
+        "refs": ["1"]
+    },
+    "3": {
+        "title": "Clause 3 - Assignment and Subcontracting",
+        "content": "The Contractor shall not assign the Contract or any part thereof without the prior written consent of the Employer. The Contractor may subcontract parts of the Works with the Engineer's approval. See Clause 2 for the Engineer's authority.",
+        "translation": "未经雇主事先书面同意，承包商不得转让合同或其任何部分。承包商可在工程师批准下将工程的部分工作分包。关于工程师的权限，请参见条款2。",
+        "refs": ["2"]
+    },
+    "4": {
+        "title": "Clause 4 - Contract Documents",
+        "content": "The documents forming the Contract are to be taken as mutually explanatory of one another. If there is any ambiguity or discrepancy, the Engineer shall issue any necessary clarification or instruction.",
+        "translation": "构成合同的文件应视为相互解释。如有任何歧义或差异，工程师应发出必要的澄清或指示。"
+    },
+    "5": {
+        "title": "Clause 5 - General Obligations",
+        "content": "The Contractor shall execute and complete the Works in accordance with the Contract and with the Engineer's instructions, and shall remedy any defects therein. The Contractor shall provide all labour, materials, equipment, and other things required for the execution and completion of the Works.",
+        "translation": "承包商应按照合同和工程师的指示执行和完成工程，并修复其中的任何缺陷。承包商应提供执行和完成工程所需的所有劳动力、材料、设备和其他物品。"
+    }
+};
