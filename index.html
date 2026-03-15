@@ -343,6 +343,9 @@
 
                 <!-- 标签页导航 -->
                 <div class="settings-tabs" style="display:flex; border-bottom:1px solid #ddd;">
+                    <button class="settings-tab" id="tabGeneralSettings" onclick="switchSettingsTab('General')"
+                        style="flex:1; padding:12px; background:none; border:none; border-bottom:3px solid transparent; cursor:pointer; font-weight:normal; color:#666; font-size:14px;">⚙️
+                        通用设置</button>
                     <button class="settings-tab active" id="tabAISettings" onclick="switchSettingsTab('AI')"
                         style="flex:1; padding:12px; background:none; border:none; border-bottom:3px solid #3498db; cursor:pointer; font-weight:bold; color:#3498db; font-size:14px;">AI
                         助手设置</button>
@@ -355,6 +358,50 @@
                 </div>
 
                 <div class="modal-body" id="settingsModalBody" style="padding:20px; overflow-y:auto; flex:1;">
+
+                    <!-- 通用设置内容 -->
+                    <div id="generalSettingsContent" style="display:none;">
+                        <div style="margin-bottom:15px;">
+                            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:14px; color:#333;">
+                                <input type="checkbox" id="settingMinimizeToTray" style="width:16px; height:16px; cursor:pointer;">
+                                关闭时最小化到系统托盘
+                            </label>
+                        </div>
+                        
+                        <div style="margin-bottom:15px;">
+                            <label style="display:block; margin-bottom:6px; font-weight:bold; color:#333; font-size:13px;">
+                                <input type="checkbox" id="settingGlobalShortcutEnabled" style="margin-right:5px; vertical-align:middle;">
+                                启用全局快捷键唤醒/隐藏
+                            </label>
+                            <input type="text" id="settingGlobalShortcutKeys" placeholder="例如：CommandOrControl+Shift+Space"
+                                style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; font-size:14px; box-sizing:border-box;">
+                            <div style="font-size:12px; color:#888; margin-top:4px;">修饰键使用 CommandOrControl、Alt、Shift。需保存后生效。</div>
+                        </div>
+
+                        <div style="margin-bottom:15px;">
+                            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:14px; color:#333;">
+                                <input type="checkbox" id="settingAlwaysOnTop" style="width:16px; height:16px; cursor:pointer;">
+                                窗口置顶模式
+                            </label>
+                        </div>
+
+                        <div style="margin-bottom:15px;">
+                            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:14px; color:#333; margin-bottom:6px;">
+                                <input type="checkbox" id="settingAutoCheckUpdates" style="width:16px; height:16px; cursor:pointer;">
+                                启动时自动检查更新
+                            </label>
+                            <button id="btnCheckUpdateNow" onclick="checkUpdateNow()" style="padding:6px 12px; background:#f0f0f0; border:1px solid #ddd; border-radius:4px; cursor:pointer; font-size:12px; color:#444;">立即检查更新</button>
+                            <span id="updateCheckStatus" style="font-size:12px; color:#3498db; margin-left:10px;"></span>
+                        </div>
+
+                        <div style="margin-bottom:15px;">
+                            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:14px; color:#333;">
+                                <input type="checkbox" id="settingHardwareAcceleration" style="width:16px; height:16px; cursor:pointer;">
+                                启用性能与硬件加速
+                            </label>
+                            <div style="font-size:12px; color:#e74c3c; margin-top:4px; margin-left:24px;">更改此项需重启应用生效。如果在应用中遇到花屏或黑屏，请尝试关闭此选项。</div>
+                        </div>
+                    </div> <!-- 结束 generalSettingsContent -->
 
                     <!-- AI 助手设置内容 -->
                     <div id="aiSettingsContent" style="display:block;">

@@ -13,43 +13,72 @@
 // =======================================================
 
 function switchSettingsTab(tabName) {
+    const tabGeneral = document.getElementById('tabGeneralSettings');
     const tabAI = document.getElementById('tabAISettings');
     const tabFirebase = document.getElementById('tabFirebaseSettings');
     const tabContract = document.getElementById('tabContractSettings');
+    const contentGeneral = document.getElementById('generalSettingsContent');
     const contentAI = document.getElementById('aiSettingsContent');
     const contentFirebase = document.getElementById('firebaseSettingsContent');
     const contentContract = document.getElementById('contractSettingsContent');
 
     // Reset all tabs
-    [tabAI, tabFirebase, tabContract].forEach(t => {
+    [tabGeneral, tabAI, tabFirebase, tabContract].forEach(t => {
         if (!t) return;
         t.classList.remove('active');
         t.style.borderBottom = '3px solid transparent';
         t.style.color = '#666';
         t.style.fontWeight = 'normal';
     });
-    [contentAI, contentFirebase, contentContract].forEach(c => { if (c) c.style.display = 'none'; });
+    [contentGeneral, contentAI, contentFirebase, contentContract].forEach(c => { if (c) c.style.display = 'none'; });
 
-    if (tabName === 'AI') {
-        tabAI.classList.add('active');
-        tabAI.style.borderBottom = '3px solid #3498db';
-        tabAI.style.color = '#3498db';
-        tabAI.style.fontWeight = 'bold';
-        contentAI.style.display = 'block';
+    if (tabName === 'General') {
+        if (tabGeneral) {
+            tabGeneral.classList.add('active');
+            tabGeneral.style.borderBottom = '3px solid #3498db';
+            tabGeneral.style.color = '#3498db';
+            tabGeneral.style.fontWeight = 'bold';
+        }
+        if (contentGeneral) contentGeneral.style.display = 'block';
+    } else if (tabName === 'AI') {
+        if (tabAI) {
+            tabAI.classList.add('active');
+            tabAI.style.borderBottom = '3px solid #3498db';
+            tabAI.style.color = '#3498db';
+            tabAI.style.fontWeight = 'bold';
+        }
+        if (contentAI) contentAI.style.display = 'block';
     } else if (tabName === 'Firebase') {
-        tabFirebase.classList.add('active');
-        tabFirebase.style.borderBottom = '3px solid #3498db';
-        tabFirebase.style.color = '#3498db';
-        tabFirebase.style.fontWeight = 'bold';
-        contentFirebase.style.display = 'block';
+        if (tabFirebase) {
+            tabFirebase.classList.add('active');
+            tabFirebase.style.borderBottom = '3px solid #3498db';
+            tabFirebase.style.color = '#3498db';
+            tabFirebase.style.fontWeight = 'bold';
+        }
+        if (contentFirebase) contentFirebase.style.display = 'block';
     } else if (tabName === 'Contract') {
-        tabContract.classList.add('active');
-        tabContract.style.borderBottom = '3px solid #3498db';
-        tabContract.style.color = '#3498db';
-        tabContract.style.fontWeight = 'bold';
-        contentContract.style.display = 'block';
-        renderContractManagementTab();
+        if (tabContract) {
+            tabContract.classList.add('active');
+            tabContract.style.borderBottom = '3px solid #3498db';
+            tabContract.style.color = '#3498db';
+            tabContract.style.fontWeight = 'bold';
+        }
+        if (contentContract) {
+            contentContract.style.display = 'block';
+            renderContractManagementTab();
+        }
     }
+}
+
+function loadGeneralSettings() {
+    return {
+        minimizeToTray: localStorage.getItem('HK_General_minimizeToTray') === 'true',
+        globalShortcutEnabled: localStorage.getItem('HK_General_globalShortcutEnabled') === 'true',
+        globalShortcutKeys: localStorage.getItem('HK_General_globalShortcutKeys') || '',
+        alwaysOnTop: localStorage.getItem('HK_General_alwaysOnTop') === 'true',
+        autoCheckUpdates: localStorage.getItem('HK_General_autoCheckUpdates') === 'true',
+        hardwareAcceleration: localStorage.getItem('HK_General_hardwareAcceleration') !== 'false' // default true
+    };
 }
 
 function openSettings() {
@@ -57,6 +86,15 @@ function openSettings() {
     modal.style.display = 'flex';
     loadChatModels();
     renderModelCards();
+
+    // Load General Settings
+    const genSettings = loadGeneralSettings();
+    document.getElementById('settingMinimizeToTray').checked = genSettings.minimizeToTray;
+    document.getElementById('settingGlobalShortcutEnabled').checked = genSettings.globalShortcutEnabled;
+    document.getElementById('settingGlobalShortcutKeys').value = genSettings.globalShortcutKeys;
+    document.getElementById('settingAlwaysOnTop').checked = genSettings.alwaysOnTop;
+    document.getElementById('settingAutoCheckUpdates').checked = genSettings.autoCheckUpdates;
+    document.getElementById('settingHardwareAcceleration').checked = genSettings.hardwareAcceleration;
     document.getElementById('settingEmbeddingEndpoint').value = AI_CONFIG.embeddingEndpoint || '';
     document.getElementById('settingEmbeddingApiKey').value = AI_CONFIG.embeddingApiKey || '';
     document.getElementById('settingEmbeddingModel').value = AI_CONFIG.embeddingModel || '';
@@ -117,6 +155,33 @@ function resetSystemPrompt() {
 }
 
 async function saveAISettings() {
+    // 1. Save General Settings
+    const genSettings = {
+        minimizeToTray: document.getElementById('settingMinimizeToTray').checked,
+        globalShortcutEnabled: document.getElementById('settingGlobalShortcutEnabled').checked,
+        globalShortcutKeys: document.getElementById('settingGlobalShortcutKeys').value.trim(),
+        alwaysOnTop: document.getElementById('settingAlwaysOnTop').checked,
+        autoCheckUpdates: document.getElementById('settingAutoCheckUpdates').checked,
+        hardwareAcceleration: document.getElementById('settingHardwareAcceleration').checked
+    };
+
+    localStorage.setItem('HK_General_minimizeToTray', genSettings.minimizeToTray);
+    localStorage.setItem('HK_General_globalShortcutEnabled', genSettings.globalShortcutEnabled);
+    localStorage.setItem('HK_General_globalShortcutKeys', genSettings.globalShortcutKeys);
+    localStorage.setItem('HK_General_alwaysOnTop', genSettings.alwaysOnTop);
+    localStorage.setItem('HK_General_autoCheckUpdates', genSettings.autoCheckUpdates);
+    localStorage.setItem('HK_General_hardwareAcceleration', genSettings.hardwareAcceleration);
+
+    // Send to main process if available
+    if (window.electronAPI) {
+        try {
+            await window.electronAPI.updateGeneralSettings(genSettings);
+        } catch (e) {
+            console.error('Failed to update general settings in main process:', e);
+        }
+    }
+
+    // 2. Save AI Settings
     const fields = {
         embeddingEndpoint: 'settingEmbeddingEndpoint',
         embeddingApiKey: 'settingEmbeddingApiKey',
@@ -138,7 +203,7 @@ async function saveAISettings() {
     AI_CONFIG.systemPrompt = document.getElementById('settingSystemPrompt').value.trim() || getDefaultSystemPrompt();
     localStorage.setItem(AI_SETTINGS_KEYS.systemPrompt, AI_CONFIG.systemPrompt);
 
-    // Save Firebase Settings
+    // 3. Save Firebase Settings
     const firebaseConfig = {
         apiKey: document.getElementById('settingFirebaseAuthKey').value.trim(),
         authDomain: document.getElementById('settingFirebaseAuthDomain').value.trim(),
@@ -166,6 +231,35 @@ async function saveAISettings() {
         showSettingsStatus('✅ 设置已保存', 'success');
         setTimeout(() => closeSettings(), 1500);
     }
+}
+
+async function checkUpdateNow() {
+    const statusEl = document.getElementById('updateCheckStatus');
+    if (!window.electronAPI) {
+        statusEl.textContent = '当前环境不支持检查更新（非 Electron 或缺少 preload）。';
+        statusEl.style.color = '#e74c3c';
+        return;
+    }
+    statusEl.textContent = '请求检查中...';
+    statusEl.style.color = '#3498db';
+
+    try {
+        await window.electronAPI.checkForUpdates();
+    } catch (e) {
+        statusEl.textContent = '请求失败: ' + e.message;
+        statusEl.style.color = '#e74c3c';
+    }
+}
+
+// Listen for update messages from main process
+if (window.electronAPI) {
+    window.electronAPI.onUpdateMessage((event, info) => {
+        const statusEl = document.getElementById('updateCheckStatus');
+        if (statusEl) {
+            statusEl.textContent = info.text;
+            statusEl.style.color = info.status === 'error' ? '#e74c3c' : (info.status === 'available' || info.status === 'downloaded' ? '#27ae60' : '#3498db');
+        }
+    });
 }
 
 function loadAISettings() {
