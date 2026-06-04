@@ -159,18 +159,20 @@ async function addNewBookmark() {
     const id = getCurrentVisibleClauseId();
     if (!id) return;
     const clauseTitle = fullClauseDatabase[id].title;
-    await saveBookmarkAction(id, clauseTitle);
+    const panelMain = document.getElementById('panelMain');
+    const scrollTop = panelMain ? panelMain.scrollTop : 0;
+    await saveBookmarkAction(id, clauseTitle, scrollTop);
 }
 
 /**
  * 保存书签动作
  */
-async function saveBookmarkAction(clauseId, clauseTitle) {
+async function saveBookmarkAction(clauseId, clauseTitle, scrollTop) {
     let name = await CustomDialog.prompt("添加书签:", clauseTitle);
     if (name === null) return;
     if (name.trim() === "") name = clauseTitle;
 
-    const bm = { id: clauseId, label: name.trim(), uid: Date.now() + Math.random().toString(36).substr(2, 9), level: 0, collapsed: false };
+    const bm = { id: clauseId, label: name.trim(), uid: Date.now() + Math.random().toString(36).substr(2, 9), level: 0, collapsed: false, scrollTop: (typeof scrollTop === 'number') ? scrollTop : null };
     let idx = -1;
     savedBookmarks.forEach((b, i) => { if (b.id === clauseId) idx = i });
     if (idx !== -1) savedBookmarks.splice(idx + 1, 0, bm);
@@ -192,29 +194,9 @@ function getCurrentVisibleClauseId() {
 }
 
 /**
- * 滚动到指定条款
+ * 滚动到指定条款（精确位置版）
+ * 注意：完整实现位于 app.js 的 scrollToClause(id, el)，此处不重复定义以避免覆盖问题。
  */
-function scrollToClause(id, el) {
-    if (isDeleteMode) return;
-    const clauseEl = document.getElementById('clause-' + id);
-    if (clauseEl) {
-        clauseEl.scrollIntoView({ behavior: 'auto', block: 'start' });
-    } else {
-        console.warn('未找到对应的条款元素: clause-' + id);
-    }
-    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-    if (el) {
-        // 兼容传入的 el 是 div.nav-item 或是内部元素的情况
-        let navItem = el.classList && el.classList.contains('nav-item') ? el : el.closest('.nav-item');
-        if (navItem) {
-            navItem.classList.add('active');
-            let idx = parseInt(navItem.dataset.index);
-            if (!isNaN(idx) && savedBookmarks && savedBookmarks[idx]) {
-                activeBookmarkUid = savedBookmarks[idx].uid;
-            }
-        }
-    }
-}
 
 /**
  * 切换删除模式

@@ -17,6 +17,7 @@ let activeContractKey = null;          // 当前激活合同键（null = 无合�
 let searchStatePerContract = {};       // 每合同独立搜索状态
 let refViewStatePerContract = {};      // 每合同独立右侧面板折叠状态
 let navViewStatePerContract = {};      // 每合同独立左侧面板折叠状态
+let navScrollPerContract = {};         // 每合同独立左侧书签栏滚动位置
 
 let isDeleteMode = false;
 let dragSrcEl = null;
@@ -109,6 +110,7 @@ function registerContract(key, title, data) {
     searchStatePerContract[key] = '';
     refViewStatePerContract[key] = false;
     navViewStatePerContract[key] = false;
+    navScrollPerContract[key] = 0;
     if (typeof syncStatePerContract !== 'undefined') {
         syncStatePerContract[key] = false;
     }
@@ -179,6 +181,7 @@ function removeContract(key) {
     delete searchStatePerContract[key];
     delete refViewStatePerContract[key];
     delete navViewStatePerContract[key];
+    delete navScrollPerContract[key];
     if (typeof syncStatePerContract !== 'undefined') delete syncStatePerContract[key];
 
     if (activeContractKey === key) {
@@ -236,6 +239,7 @@ async function loadContractsFromStorage() {
                     searchStatePerContract[key] = '';
                     refViewStatePerContract[key] = false;
                     navViewStatePerContract[key] = false;
+                    navScrollPerContract[key] = 0;
                     if (typeof syncStatePerContract !== 'undefined') syncStatePerContract[key] = false;
                 });
                 renderTabs();
@@ -426,6 +430,8 @@ function handleAutoRenameContract(oldKey, type, inputElement) {
         delete searchStatePerContract[oldKey];
         delete refViewStatePerContract[oldKey];
         delete navViewStatePerContract[oldKey];
+        navScrollPerContract[newValue] = navScrollPerContract[oldKey] || 0;
+        delete navScrollPerContract[oldKey];
         searchStatePerContract[newValue] = '';
         refViewStatePerContract[newValue] = false;
         navViewStatePerContract[newValue] = false;
@@ -538,6 +544,12 @@ function switchContract(key) {
         captureCurrentContent();
         contracts[activeContractKey].bookmarks = savedBookmarks;
 
+        // 保存当前标签页的书签栏滚动位置
+        const navListEl = document.getElementById('navList');
+        if (navListEl) {
+            navScrollPerContract[activeContractKey] = navListEl.scrollTop;
+        }
+
         const panelRef = document.getElementById('panelRef');
         if (panelRef) {
             refViewStatePerContract[activeContractKey] = panelRef.classList.contains('collapsed');
@@ -561,6 +573,12 @@ function switchContract(key) {
 
     renderMainDocument();
     if (typeof initBookmarks === 'function') initBookmarks();
+
+    // 恢复新标签页的书签栏滚动位置
+    const navListRestore = document.getElementById('navList');
+    if (navListRestore) {
+        navListRestore.scrollTop = navScrollPerContract[key] || 0;
+    }
     buildReverseIndex();
 
     // 恢复同步滚动状态
@@ -685,6 +703,21 @@ function autoLinkClauses() {
                 });
             }
         });
+        // 专用：匹配 "General Conditions of Contract Clause N" 并链接到 GCC 合同对应条款
+        // 动态查找 GCC 合同键（键名为 "GCC"，或标题包含 "General Conditions"）
+        const gccKey = Object.keys(contracts).find(k =>
+            k === 'GCC' ||
+            (contracts[k].title && contracts[k].title.toLowerCase().includes('general conditions'))
+        );
+        if (gccKey && gccKey !== activeContractKey) {
+            const gccRegex = /General\s+Conditions\s+of\s+Contract\s+Clause\s+(\d+)/gi;
+            html = html.replace(gccRegex, (match, num) => {
+                if (contracts[gccKey].data[num]) {
+                    return "<span class=\"clause-ref\" contenteditable=\"false\" onclick=\"showCrossContractRef('" + gccKey + "', '" + num + "')\">" + match + "</span>";
+                }
+                return match;
+            });
+        }
         // 通用 Clause X 链接（当前合同）
         html = html.replace(/Clause\s+(\d+[A-Za-z]?)/gi, (match, num) => {
             if (html.includes('onclick=\"showCrossContractRef')) return match;
@@ -873,9 +906,36 @@ function toggleChineseVariant() {
     } else if (currentRefId && currentRefMode === 'trans') { renderRefContent(currentRefId, 'trans'); }
 }
 
-function scrollToClause(id) {
-    const el = document.getElementById('clause-' + id);
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+function scrollToClause(id, el) {
+    if (typeof isDeleteMode !== 'undefined' && isDeleteMode) return;
+    const clauseEl = document.getElementById('clause-' + id);
+    const panelMain = document.getElementById('panelMain');
+
+    // 找到对应书签对象，判断是否有精确滚动位置
+    let navItem = el && el.classList && el.classList.contains('nav-item') ? el : (el && el.closest ? el.closest('.nav-item') : null);
+    let bmIndex = navItem ? parseInt(navItem.dataset.index) : -1;
+    let bm = (!isNaN(bmIndex) && bmIndex >= 0 && typeof savedBookmarks !== 'undefined' && savedBookmarks && savedBookmarks[bmIndex]) ? savedBookmarks[bmIndex] : null;
+
+    if (clauseEl && panelMain) {
+        if (bm && typeof bm.scrollTop === 'number') {
+            // 精确跳转到书签记录的滚动位置
+            panelMain.scrollTop = bm.scrollTop;
+        } else {
+            // 回退：跳转到条款起始位置（兼容旧书签及默认条款书签）
+            panelMain.scrollTop = clauseEl.offsetTop - panelMain.offsetTop;
+        }
+    } else if (clauseEl && !panelMain) {
+        clauseEl.scrollIntoView();
+    }
+
+    // 更新书签高亮状态
+    if (navItem) {
+        document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+        navItem.classList.add('active');
+        if (!isNaN(bmIndex) && typeof savedBookmarks !== 'undefined' && savedBookmarks && savedBookmarks[bmIndex]) {
+            if (typeof activeBookmarkUid !== 'undefined') activeBookmarkUid = savedBookmarks[bmIndex].uid;
+        }
+    }
 }
 
 // =======================================================

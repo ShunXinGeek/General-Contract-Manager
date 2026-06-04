@@ -210,12 +210,28 @@ function createMessageElement(role, content, index, hasThinking) {
     div.dataset.rawContent = content;
     const renderedContent = role === 'assistant' ? renderMarkdown(content) : escapeHtml(content);
     const thinkingHtml = hasThinking ? '<div class="thinking-block" id="streamingThinkingBlock"><div class="thinking-header" onclick="toggleThinkingBlock(this)"><div class="thinking-header-left">🧠 思考中...</div><span class="thinking-arrow">▼</span></div><div class="thinking-body"><div class="thinking-body-inner"></div></div></div>' : '';
-    div.innerHTML = thinkingHtml + '<div class="message-content">' + renderedContent + '</div><div class="msg-actions"><button onclick="copyMessage(this)" title="复制">📋</button><button onclick="deleteMessage(this)" title="删除">🗑️</button></div>';
+    const actionsHtml = role === 'assistant'
+        ? '<div class="msg-actions"><button onclick="copyMessage(this)" title="复制">📋</button><button onclick="regenerateMessage(this)" title="重新生成">🔄</button><button onclick="deleteMessage(this)" title="删除">🗑️</button></div>'
+        : '<div class="msg-actions"><button onclick="copyMessage(this)" title="复制">📋</button><button onclick="deleteMessage(this)" title="删除">🗑️</button></div>';
+    div.innerHTML = thinkingHtml + '<div class="message-content">' + renderedContent + '</div>' + actionsHtml;
     return div;
 }
 
 function copyMessage(btn) { const msgDiv = btn.closest('.chat-message'); const content = msgDiv.dataset.rawContent || msgDiv.querySelector('.message-content').innerText; navigator.clipboard.writeText(content).then(() => { const orig = btn.innerText; btn.innerText = '✅'; setTimeout(() => btn.innerText = orig, 1500); }); }
 function deleteMessage(btn) { const msgDiv = btn.closest('.chat-message'); const index = parseInt(msgDiv.dataset.msgIndex); if (!isNaN(index) && index >= 0 && index < chatMessages.length) { chatMessages.splice(index, 1); saveChatToStorage(); renderChatMessages(); } else { msgDiv.remove(); } }
+async function regenerateMessage(btn) {
+    if (isStreaming) return;
+    if (!isAIConfigured()) { alert('🤖 AI 助手尚未配置\n\n请点击 ⚙️ 设置按钮配置。'); openSettings(); return; }
+    const msgDiv = btn.closest('.chat-message');
+    const index = parseInt(msgDiv.dataset.msgIndex);
+    if (!isNaN(index) && index >= 0 && index < chatMessages.length) { chatMessages.splice(index, 1); saveChatToStorage(); renderChatMessages(); }
+    else { msgDiv.remove(); }
+    showTypingIndicator();
+    const messages = await buildMessagesForAPI();
+    try { isStreaming = true; updateSendButton(); await streamAPIResponse(messages); }
+    catch (error) { if (error.name !== 'AbortError') addMessage('assistant', '❌ 请求失败: ' + error.message); }
+    finally { isStreaming = false; hideTypingIndicator(); updateSendButton(); saveChatToStorage(); }
+}
 function showTypingIndicator() { const ind = document.createElement('div'); ind.className = 'chat-message assistant'; ind.id = 'typingIndicator'; ind.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>'; document.getElementById('chatMessages').appendChild(ind); scrollToBottom(); }
 function hideTypingIndicator() { const ind = document.getElementById('typingIndicator'); if (ind) ind.remove(); }
 function updateSendButton() { const btn = document.getElementById('sendBtn'); const icon = document.getElementById('sendBtnIcon'); if (isStreaming) { btn.classList.add('stop'); icon.innerText = '⏹'; btn.onclick = stopGeneration; } else { btn.classList.remove('stop'); icon.innerText = '➤'; btn.onclick = sendMessage; } }
@@ -282,13 +298,32 @@ function renderMarkdown(text) {
         marked.setOptions({ breaks: true, gfm: true, headerIds: false, mangle: false });
         let html = marked.parse(text);
         Object.keys(contracts).forEach(contractKey => {
+            // 第一轮：匹配 "ContractKey Clause X" 格式（如 GCC Clause 20）
             const regex = new RegExp(contractKey + '\\s+[Cc]lause\\s+([0-9a-zA-Z]+)(?:,\\s*([0-9a-zA-Z]+))*', 'gi');
             html = html.replace(regex, (match) => {
                 const prefix = match.match(new RegExp(contractKey + '\\s+[Cc]lause', 'i'))[0];
-                const parts = match.substring(prefix.length).split(',').map(s => s.trim()).filter(Boolean);
+                const parts = match.substring(prefix.length).replace(/<[^>]*>/g, '').split(',').map(s => s.trim()).filter(Boolean);
                 const links = parts.map(num => '<span class="chat-clause-link" onclick="jumpToContractClause(\'' + contractKey + '\', \'' + num + '\')">' + prefix + ' ' + num + '</span>');
                 return links.join(', ');
             });
+            // 第二轮：直接匹配含合同前缀的条款键名（如 "SCC 9C"、"SCC 124"）
+            // 适用于 AI 直接生成 "SCC 9C" 格式（不含 Clause 关键词）的情况
+            // 同时修复含字母后缀的条款号（如 9C）可能被截断的问题
+            const dataKeys = Object.keys(contracts[contractKey].data);
+            const prefixedKeys = dataKeys.filter(k =>
+                k.length > contractKey.length &&
+                k.toUpperCase().startsWith(contractKey.toUpperCase())
+            );
+            if (prefixedKeys.length > 0) {
+                // 按长度降序排列：确保 "SCC 9C" 优先于 "SCC 9" 被匹配，避免短键吞噬长键
+                const sortedKeys = [...prefixedKeys].sort((a, b) => b.length - a.length);
+                const escapedKeys = sortedKeys.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+                const directRegex = new RegExp('\\b(' + escapedKeys.join('|') + ')\\b', 'gi');
+                html = html.replace(directRegex, (match) => {
+                    const actualKey = dataKeys.find(k => k.toLowerCase() === match.toLowerCase()) || match;
+                    return '<span class="chat-clause-link" onclick="jumpToContractClause(\'' + contractKey + '\', \'' + actualKey + '\')">' + match + '</span>';
+                });
+            }
         });
         const existingPrefixes = Object.keys(contracts).join('|');
         const lookbehindRegex = existingPrefixes ? new RegExp('(?<!(?:' + existingPrefixes + ')\\s+)Clause\\s+(\\d+[A-Z]?)\\b', 'gi') : /Clause\s+(\d+[A-Z]?)\b/gi;
@@ -306,12 +341,23 @@ function renderMarkdown(text) {
 
 function jumpToContractClause(contractKey, clauseId) {
     if (!contracts[contractKey]) return;
-    if (isAssistantMode) { showAssistantClause(contractKey, clauseId); return; }
+    // 规范化条款号：依次尝试多种键名格式
+    // 支持纯数字键（如 GCC 的 "20"）和带合同前缀的键（如 SCC 的 "SCC 124" 或 "SCC124"）
+    const cleanId = (clauseId || '').trim();
+    const dataKeys = Object.keys(contracts[contractKey].data);
+    const candidates = [
+        cleanId,                          // 直接匹配，如 "20" 或 "124"
+        contractKey + ' ' + cleanId,      // 带合同前缀+空格，如 "SCC 124"
+        contractKey + cleanId,            // 带合同前缀无空格，如 "SCC124"
+    ];
+    const resolvedId = dataKeys.find(k =>
+        candidates.some(c => k === c || k.toLowerCase() === c.toLowerCase())
+    );
+    if (!resolvedId) { console.warn('[jumpToContractClause] 未找到条款:', contractKey, clauseId); return; }
+    if (isAssistantMode) { showAssistantClause(contractKey, resolvedId); return; }
     switchBackToContract();
-    if (contracts[contractKey].data[clauseId]) {
-        switchContract(contractKey);
-        setTimeout(() => { document.getElementById('clause-' + clauseId)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 100);
-    }
+    switchContract(contractKey);
+    setTimeout(() => { document.getElementById('clause-' + resolvedId)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 100);
 }
 
 function jumpToClause(clauseId) {
