@@ -1144,6 +1144,24 @@ header .icon-btn:hover {
 
 
 
+/* 书签名称搜索高亮样式 */
+
+.bookmark-highlight {
+
+    background: linear-gradient(135deg, #f1c40f 0%, #f39c12 100%);
+
+    color: #000;
+
+    padding: 1px 3px;
+
+    border-radius: 3px;
+
+    font-weight: bold;
+
+}
+
+
+
 .nav-item:hover {
 
     background-color: var(--bg-nav-item-hover);

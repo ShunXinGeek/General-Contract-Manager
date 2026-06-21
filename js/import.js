@@ -58,6 +58,21 @@ function handleContractImport(event) {
                 // 注册合同
                 registerContract(contractKey, meta.fullName, parsedData);
 
+                // 交叉引用一致性校验（非阻塞，仅日志警告）
+                if (typeof verifyCrossRefConsistency === 'function') {
+                    try {
+                        const warnings = verifyCrossRefConsistency();
+                        if (warnings && warnings.length > 0) {
+                            console.warn('[import] 交叉引用一致性校验发现问题:');
+                            warnings.forEach(w => console.warn('  - ' + w));
+                        } else {
+                            console.log('[import] 交叉引用一致性校验通过');
+                        }
+                    } catch (e) {
+                        console.warn('[import] 交叉引用一致性校验出错:', e.message);
+                    }
+                }
+
                 await CustomDialog.alert(`"${meta.fullName}" (${contractKey}) 数据导入成功！共 ${Object.keys(parsedData).length} 条条款。`, '导入成功');
 
                 if (typeof updateLocalModificationTime === 'function') {

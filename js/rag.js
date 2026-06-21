@@ -285,6 +285,101 @@ window.PREBUILT_VECTORS = PREBUILT_VECTORS;
     },
 
     /**
+     * 动态加载 vectors-data.js（仅在需要时加载，避免首屏解析 22MB JS）
+     * @returns {Promise<boolean>} 加载成功返回 true，失败返回 false
+     */
+    async ensurePrebuiltVectorsLoaded() {
+        if (window.PREBUILT_VECTORS && window.PREBUILT_VECTORS.vectors) {
+            return true;
+        }
+        console.log('[RAG] 预构建向量未加载，动态注入 script 标签...');
+        return new Promise((resolve) => {
+            const script = document.createElement('script');
+            script.src = 'js/vectors-data.js';
+            script.onload = () => {
+                if (window.PREBUILT_VECTORS && window.PREBUILT_VECTORS.vectors) {
+                    const count = Object.keys(window.PREBUILT_VECTORS.vectors).length;
+                    console.log(`[RAG] 预构建向量加载完成: ${count} 条`);
+                    resolve(true);
+                } else {
+                    console.warn('[RAG] vectors-data.js 已加载但 PREBUILT_VECTORS 缺失');
+                    resolve(false);
+                }
+            };
+            script.onerror = () => {
+                console.warn('[RAG] 加载 vectors-data.js 失败（文件可能不存在）');
+                resolve(false);
+            };
+            document.head.appendChild(script);
+        });
+    },
+
+    /**
+     * 将 window.PREBUILT_VECTORS 批量导入 IndexedDB
+     * 使用分批事务 + setTimeout 让出 UI 线程，避免页面卡死
+     * @param {Function} onProgress - 进度回调 (current, total)
+     * @returns {Promise<number>} 成功导入的向量数量
+     */
+    async importPrebuiltVectors(onProgress) {
+        if (!this.db) await this.init();
+
+        if (!window.PREBUILT_VECTORS || !window.PREBUILT_VECTORS.vectors) {
+            console.warn('[RAG] 没有可用的预构建向量');
+            return 0;
+        }
+
+        const vectors = window.PREBUILT_VECTORS.vectors;
+        const entries = Object.entries(vectors);
+        const total = entries.length;
+        console.log(`[RAG] 开始导入 ${total} 条预构建向量...`);
+
+        const BATCH_SIZE = 25;
+        let imported = 0;
+        let failed = 0;
+
+        for (let i = 0; i < total; i += BATCH_SIZE) {
+            const batch = entries.slice(i, i + BATCH_SIZE);
+
+            await new Promise((resolve) => {
+                const transaction = this.db.transaction([RAG_STORE_NAME], 'readwrite');
+                const store = transaction.objectStore(RAG_STORE_NAME);
+
+                batch.forEach(([id, item]) => {
+                    const req = store.put({
+                        id: id,
+                        type: item.type,
+                        clauseId: item.clauseId,
+                        title: item.title,
+                        vector: item.vector,
+                        timestamp: Date.now()
+                    });
+                    req.onsuccess = () => { imported++; };
+                    req.onerror = (e) => {
+                        failed++;
+                        console.error(`[RAG] 导入 ${id} 失败:`, e.target.error);
+                    };
+                });
+
+                transaction.oncomplete = () => resolve();
+                transaction.onerror = (e) => {
+                    console.error('[RAG] 事务错误:', e.target.error);
+                    resolve(); // 不中断，继续下一批
+                };
+            });
+
+            if (onProgress) {
+                onProgress(Math.min(i + BATCH_SIZE, total), total);
+            }
+
+            // 让出 UI 线程，保持页面响应
+            await new Promise(r => setTimeout(r, 0));
+        }
+
+        console.log(`[RAG] 预构建向量导入完成: ${imported} 成功, ${failed} 失败 (共 ${total})`);
+        return imported;
+    },
+
+    /**
      * 使用重排序模型对检索结果进行二次排序
      */
     async rerank(query, candidates, config, topN = 5) {

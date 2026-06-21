@@ -7,13 +7,15 @@
 // currentSearchTerm, searchHighlights
 
 /**
- * 过滤导航栏
+ * 过滤导航栏（两级优先搜索）
+ * 第一优先：搜索书签名称（label），匹配则高亮并只显示匹配的书签
+ * 第二优先：无书签名匹配时，搜索正文内容，显示匹配内容所属章节的书签
  */
 function filterNav(term) {
     term = term.trim().toLowerCase();
     currentSearchTerm = term;
 
-    // 清除之前的高亮
+    // 清除之前的高亮（含书签高亮）
     clearSearchHighlights();
 
     // 空搜索词：重置显示
@@ -23,31 +25,58 @@ function filterNav(term) {
         return;
     }
 
-    // 执行全文搜索
-    const searchResults = performFullTextSearch(term);
-
-    // 更新书签列表显示
-    const items = document.querySelectorAll('.nav-item');
-    items.forEach(item => {
-        const clauseId = item.querySelector('.label-text')?.getAttribute('onclick')?.match(/'([^']+)'/)?.[1];
-        if (clauseId && searchResults.has(clauseId)) {
-            item.classList.remove('hidden');
-            // 标记匹配位置（标题或正文）
-            const matchInfo = searchResults.get(clauseId);
-            if (matchInfo.inContent && !matchInfo.inTitle) {
-                item.classList.add('search-content-match');
-            } else {
-                item.classList.remove('search-content-match');
+    // === 第一优先：搜索书签名称（label） ===
+    const bookmarkNameMatches = new Set();
+    if (savedBookmarks && savedBookmarks.length > 0) {
+        savedBookmarks.forEach(bm => {
+            if (bm.label && bm.label.toLowerCase().includes(term)) {
+                bookmarkNameMatches.add(bm.id);
             }
-        } else {
-            item.classList.add('hidden');
-        }
-    });
+        });
+    }
 
-    // 更新搜索状态
-    updateSearchStatus(searchResults.size, Object.keys(fullClauseDatabase).length);
+    const items = document.querySelectorAll('.nav-item');
 
-    // 高亮显示匹配内容
+    if (bookmarkNameMatches.size > 0) {
+        // 有书签名匹配 → 按名称过滤，只显示匹配的书签
+        items.forEach(item => {
+            const idx = parseInt(item.dataset.index);
+            const bm = savedBookmarks[idx];
+            if (bm && bookmarkNameMatches.has(bm.id)) {
+                item.classList.remove('hidden');
+                item.classList.remove('search-content-match');
+            } else {
+                item.classList.add('hidden');
+            }
+        });
+
+        // 高亮书签名称中的匹配文本
+        highlightBookmarkLabels(term);
+        updateSearchStatus(bookmarkNameMatches.size, savedBookmarks.length);
+    } else {
+        // === 第二优先：搜索正文内容 ===
+        const searchResults = performFullTextSearch(term);
+
+        items.forEach(item => {
+            const idx = parseInt(item.dataset.index);
+            const bm = savedBookmarks[idx];
+            if (bm && searchResults.has(bm.id)) {
+                item.classList.remove('hidden');
+                const matchInfo = searchResults.get(bm.id);
+                if (matchInfo.inContent && !matchInfo.inTitle) {
+                    item.classList.add('search-content-match');
+                } else {
+                    item.classList.remove('search-content-match');
+                }
+            } else {
+                item.classList.add('hidden');
+            }
+        });
+
+        updateSearchStatus(searchResults.size, Object.keys(fullClauseDatabase).length);
+    }
+
+    // 无论哪种匹配，都在主面板高亮匹配内容
     highlightSearchResults(term);
 }
 
@@ -184,6 +213,38 @@ function clearSearchHighlights() {
     // 清除正文匹配标记
     document.querySelectorAll('.search-content-match').forEach(el => {
         el.classList.remove('search-content-match');
+    });
+
+    // 清除书签名称高亮
+    clearBookmarkHighlights();
+}
+
+/**
+ * 高亮书签名称中的搜索词
+ * @param {string} term - 搜索词
+ */
+function highlightBookmarkLabels(term) {
+    const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`(${escapedTerm})`, 'gi');
+
+    document.querySelectorAll('.nav-item:not(.hidden) .label-text').forEach(labelEl => {
+        const text = labelEl.textContent;
+        if (regex.test(text)) {
+            regex.lastIndex = 0;
+            labelEl.innerHTML = text.replace(regex, '<span class="bookmark-highlight">$1</span>');
+        }
+    });
+}
+
+/**
+ * 清除书签名称中的搜索高亮
+ */
+function clearBookmarkHighlights() {
+    document.querySelectorAll('.label-text .bookmark-highlight').forEach(span => {
+        if (span.parentNode) {
+            const text = document.createTextNode(span.textContent);
+            span.parentNode.replaceChild(text, span);
+        }
     });
 }
 

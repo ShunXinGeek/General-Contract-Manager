@@ -394,6 +394,44 @@ async function saveToCloud() {
         }
         console.log('  所有书签收集完成:', Object.keys(allBookmarks));
 
+        // 收集 Firebase 配置（从 AI 设置中的 "Firebase配置设置" 标签页）
+        let firebaseConfig = null;
+        try {
+            const storedFbConfig = localStorage.getItem('HK_Firebase_Config');
+            if (storedFbConfig) {
+                firebaseConfig = JSON.parse(storedFbConfig);
+            } else if (window.FIREBASE_CONFIG) {
+                firebaseConfig = window.FIREBASE_CONFIG;
+            }
+        } catch (e) {
+            console.warn('读取 Firebase 配置失败:', e);
+        }
+
+        // 收集完整合同数据（标题 + 所有条款内容，包括原始内容和翻译）
+        const allContractData = {};
+        if (typeof contracts !== 'undefined') {
+            Object.keys(contracts).forEach(contractKey => {
+                const c = contracts[contractKey];
+                allContractData[contractKey] = {
+                    title: c.title || '',
+                    data: {}
+                };
+                // 深拷贝每个条款的完整数据
+                if (c.data) {
+                    Object.keys(c.data).forEach(clauseId => {
+                        const clause = c.data[clauseId];
+                        allContractData[contractKey].data[clauseId] = {
+                            title: clause.title || '',
+                            content: clause.content || '',
+                            translation: clause.translation || '',
+                            translation_tc: clause.translation_tc || '',
+                            modifiedAt: clause.modifiedAt || null
+                        };
+                    });
+                }
+            });
+        }
+
         // 准备数据
         const data = {
             user_id: currentUser.uid,
@@ -401,13 +439,14 @@ async function saveToCloud() {
             modifications: allModifications,
             bookmarks: allBookmarks,
             theme: typeof currentThemeIndex !== 'undefined' ? currentThemeIndex : 0,
-            // [V5.1] 包含 AI 设置
-            ai_settings: typeof getAISettingsForCloud === 'function' ? getAISettingsForCloud() : null
+            ai_settings: typeof getAISettingsForCloud === 'function' ? getAISettingsForCloud() : null,
+            firebase_config: firebaseConfig,
+            contract_data: allContractData
         };
 
-        // 保存到 Firestore
-        const docRef = db.collection(window.FIREBASE_COLLECTIONS.CONTRACT_MODS).doc(currentUser.uid);
-        await docRef.set(data, { merge: true });
+        // 使用子集合写入（避免单文档超过 Firestore 1 MiB 限制）
+        const mainRef = db.collection(window.FIREBASE_COLLECTIONS.CONTRACT_MODS).doc(currentUser.uid);
+        await writeDataToSubcollections(mainRef, data);
 
         console.log('✓ 数据已保存到云端');
         Logger.info('cloud', `数据已保存到云端, 修改条款数: ${Object.keys(allModifications).reduce((sum, k) => sum + Object.keys(allModifications[k] || {}).length, 0)}`);
@@ -431,16 +470,16 @@ async function loadFromCloud() {
     }
 
     try {
-        const docRef = db.collection(window.FIREBASE_COLLECTIONS.CONTRACT_MODS).doc(currentUser.uid);
-        const doc = await docRef.get();
+        const mainRef = db.collection(window.FIREBASE_COLLECTIONS.CONTRACT_MODS).doc(currentUser.uid);
+        const result = await loadFromSubcollections(mainRef);
 
-        if (!doc.exists) {
+        if (!result) {
             console.log('  云端没有备份数据');
             return null;
         }
 
-        const data = doc.data();
-        console.log('✓ 从云端加载数据成功');
+        const data = result.data;
+        console.log('✓ 从云端加载数据成功 (格式: ' + result.format + ')');
         console.log('  更新时间:', data.updated_at);
 
         return data;
@@ -508,6 +547,73 @@ function applyCloudDataToLocal(cloudData) {
         // [V5.1] 应用 AI 设置
         if (cloudData.ai_settings && typeof applyCloudAISettings === 'function') {
             applyCloudAISettings(cloudData.ai_settings);
+        }
+
+        // [V5.2] 应用 Firebase 配置
+        if (cloudData.firebase_config) {
+            try {
+                const currentFbConfig = localStorage.getItem('HK_Firebase_Config');
+                const cloudFbStr = JSON.stringify(cloudData.firebase_config);
+                // 只在云端配置与本地不同时更新
+                if (currentFbConfig !== cloudFbStr) {
+                    localStorage.setItem('HK_Firebase_Config', cloudFbStr);
+                    console.log('✓ Firebase 配置已从云端恢复');
+                }
+            } catch (e) {
+                console.warn('应用 Firebase 配置失败:', e);
+            }
+        }
+
+        // [V5.2] 应用完整合同数据（标题 + 条款内容 + 翻译）
+        // 注意：只填充本地缺失的数据，不覆盖已有的修改（修改已在上面单独应用）
+        if (cloudData.contract_data && typeof contracts !== 'undefined') {
+            Object.keys(cloudData.contract_data).forEach(contractKey => {
+                const cloudContract = cloudData.contract_data[contractKey];
+                if (!contracts[contractKey]) {
+                    // 本地没有该合同，完整创建
+                    contracts[contractKey] = {
+                        title: cloudContract.title || contractKey,
+                        data: {},
+                        bookmarks: []
+                    };
+                } else {
+                    // 更新标题（只在本地为空时）
+                    if (cloudContract.title && !contracts[contractKey].title) {
+                        contracts[contractKey].title = cloudContract.title;
+                    }
+                }
+                // 合并条款数据（只填充缺失的字段，不覆盖已有数据）
+                if (cloudContract.data) {
+                    Object.keys(cloudContract.data).forEach(clauseId => {
+                        if (!contracts[contractKey].data[clauseId]) {
+                            contracts[contractKey].data[clauseId] = {};
+                        }
+                        const localClause = contracts[contractKey].data[clauseId];
+                        const cloudClause = cloudContract.data[clauseId];
+                        // 标题：只在本地为空时填充
+                        if (cloudClause.title && !localClause.title) {
+                            localClause.title = cloudClause.title;
+                        }
+                        // 原文内容：只在本地为空时填充（避免覆盖已修改的内容）
+                        if (cloudClause.content && !localClause.content) {
+                            localClause.content = cloudClause.content;
+                        }
+                        // 简体翻译：只在本地为空时填充
+                        if (cloudClause.translation && !localClause.translation) {
+                            localClause.translation = cloudClause.translation;
+                        }
+                        // 繁体翻译：只在本地为空时填充
+                        if (cloudClause.translation_tc && !localClause.translation_tc) {
+                            localClause.translation_tc = cloudClause.translation_tc;
+                        }
+                        // 修改时间：只在本地为空时填充（不覆盖本地修改时间）
+                        if (cloudClause.modifiedAt && !localClause.modifiedAt) {
+                            localClause.modifiedAt = cloudClause.modifiedAt;
+                        }
+                    });
+                }
+            });
+            console.log('✓ 完整合同数据已从云端恢复');
         }
 
         console.log('✓ 云端数据已应用到本地');
@@ -589,6 +695,43 @@ async function syncWithCloud() {
         );
 
         // 7. 上传合并后的完整数据到云端
+        // 收集 Firebase 配置
+        let firebaseConfigForSync = null;
+        try {
+            const storedFbConfig = localStorage.getItem('HK_Firebase_Config');
+            if (storedFbConfig) {
+                firebaseConfigForSync = JSON.parse(storedFbConfig);
+            } else if (window.FIREBASE_CONFIG) {
+                firebaseConfigForSync = window.FIREBASE_CONFIG;
+            }
+        } catch (e) {
+            console.warn('读取 Firebase 配置失败:', e);
+        }
+
+        // 收集完整合同数据
+        const allContractDataForSync = {};
+        if (typeof contracts !== 'undefined') {
+            Object.keys(contracts).forEach(ck => {
+                const c = contracts[ck];
+                allContractDataForSync[ck] = {
+                    title: c.title || '',
+                    data: {}
+                };
+                if (c.data) {
+                    Object.keys(c.data).forEach(cid => {
+                        const clause = c.data[cid];
+                        allContractDataForSync[ck].data[cid] = {
+                            title: clause.title || '',
+                            content: clause.content || '',
+                            translation: clause.translation || '',
+                            translation_tc: clause.translation_tc || '',
+                            modifiedAt: clause.modifiedAt || null
+                        };
+                    });
+                }
+            });
+        }
+
         const dataToUpload = {
             user_id: currentUser.uid,
             updated_at: new Date().toISOString(),
@@ -598,11 +741,14 @@ async function syncWithCloud() {
             ai_settings: mergeAISettings(
                 typeof getAISettingsForCloud === 'function' ? getAISettingsForCloud() : null,
                 cloudData?.ai_settings || null
-            )
+            ),
+            firebase_config: cloudData?.firebase_config || firebaseConfigForSync,
+            contract_data: cloudData?.contract_data || allContractDataForSync
         };
 
-        const docRef = db.collection(window.FIREBASE_COLLECTIONS.CONTRACT_MODS).doc(currentUser.uid);
-        await docRef.set(dataToUpload, { merge: true });
+        // 使用子集合写入（避免单文档超过 Firestore 1 MiB 限制）
+        const mainRef = db.collection(window.FIREBASE_COLLECTIONS.CONTRACT_MODS).doc(currentUser.uid);
+        await writeDataToSubcollections(mainRef, dataToUpload);
 
         // 8. 更新本地时间戳
         localStorage.setItem(LOCAL_TIMESTAMP_KEY, Date.now().toString());
@@ -1077,6 +1223,325 @@ async function handleForceDownload() {
     } catch (error) {
         await CustomDialog.alert('下载失败：' + error.message, '错误');
     }
+}
+
+// ==================== 文档大小限制解决方案 ====================
+
+/**
+ * 检测是否为旧格式（所有数据在单个文档中）
+ * @param {Object} data - 主文档数据
+ * @returns {boolean}
+ */
+function isOldFormat(data) {
+    if (!data) return false;
+    return (data.modifications !== undefined ||
+            data.bookmarks !== undefined ||
+            data.contract_data !== undefined);
+}
+
+/**
+ * 写入合约数据到子集合，必要时自动分批
+ * @param {firebase.firestore.DocumentReference} mainRef - 用户主文档引用
+ * @param {string} contractKey - 合约键名
+ * @param {Object} contractData - { title, data: { clauseId: {...} } }
+ * @param {string} timestamp - ISO 时间戳
+ * @param {firebase.firestore.WriteBatch} batch - 批量写入对象
+ */
+function writeContractDataWithBatching(mainRef, contractKey, contractData, timestamp, batch) {
+    const fullDoc = {
+        contract_key: contractKey,
+        title: contractData.title || '',
+        data: contractData.data || {},
+        updated_at: timestamp
+    };
+    const fullSize = new Blob([JSON.stringify(fullDoc)]).size;
+    const cdRef = mainRef.collection('contract_data').doc(contractKey);
+
+    if (fullSize < 900 * 1024) {
+        // 单个文档大小合适，直接写入
+        batch.set(cdRef, fullDoc, { merge: true });
+    } else {
+        // 需要分批（极罕见：单个合约数据超过 ~900 KB）
+        console.log(`  [分批] contract_data/${contractKey} 过大 (${(fullSize/1024).toFixed(1)} KB)，将拆分为多个批次`);
+        const clauseIds = Object.keys(contractData.data || {});
+        const batches = [];
+        let currentBatch = {};
+        let currentSize = 0;
+        const metadataSize = new Blob([JSON.stringify({
+            contract_key: contractKey,
+            title: contractData.title || '',
+            batch_count: 1,
+            updated_at: timestamp
+        })]).size;
+
+        for (const clauseId of clauseIds) {
+            const clauseEntry = contractData.data[clauseId];
+            const entrySize = new Blob([JSON.stringify({ [clauseId]: clauseEntry })]).size;
+
+            if (currentSize + entrySize > 900 * 1024 - metadataSize && Object.keys(currentBatch).length > 0) {
+                batches.push(currentBatch);
+                currentBatch = {};
+                currentSize = 0;
+            }
+            currentBatch[clauseId] = clauseEntry;
+            currentSize += entrySize;
+        }
+        if (Object.keys(currentBatch).length > 0) {
+            batches.push(currentBatch);
+        }
+
+        console.log(`  → 已拆分为 ${batches.length} 个批次`);
+
+        // 写入元数据文档（不含 data 字段，只记录 batch_count）
+        batch.set(cdRef, {
+            contract_key: contractKey,
+            title: contractData.title || '',
+            batch_count: batches.length,
+            updated_at: timestamp
+        }, { merge: true });
+
+        // 写入每个批次
+        batches.forEach((batchData, index) => {
+            const batchRef = cdRef.collection('batches').doc(String(index));
+            batch.set(batchRef, {
+                batch_index: index,
+                data: batchData,
+                updated_at: timestamp
+            }, { merge: true });
+        });
+    }
+}
+
+/**
+ * 读取分批存储的合约数据（合并所有批次）
+ * @param {firebase.firestore.DocumentReference} mainRef - 用户主文档引用
+ * @param {string} contractKey - 合约键名
+ * @param {Object} metadata - 合约元数据（包含 batch_count）
+ * @returns {Promise<Object>} { title, data }
+ */
+async function loadBatchedContractData(mainRef, contractKey, metadata) {
+    const cdRef = mainRef.collection('contract_data').doc(contractKey);
+    const batchSnap = await cdRef.collection('batches').orderBy('batch_index').get();
+
+    const mergedData = {};
+    batchSnap.forEach(doc => {
+        const d = doc.data();
+        if (d.data) {
+            Object.assign(mergedData, d.data);
+        }
+    });
+
+    console.log(`  [分批加载] contract_data/${contractKey}: 合并了 ${batchSnap.size} 个批次, ${Object.keys(mergedData).length} 条条款`);
+    return {
+        title: metadata.title || '',
+        data: mergedData
+    };
+}
+
+/**
+ * 将数据写入新格式（主文档元数据 + 子集合）
+ * 将单文档拆分为：主文档（元数据） + modifications/bookmarks/contract_data 子集合
+ * @param {firebase.firestore.DocumentReference} mainRef - 用户主文档引用
+ * @param {Object} data - 扁平格式数据
+ */
+async function writeDataToSubcollections(mainRef, data) {
+    const batch = db.batch();
+    const now = data.updated_at || new Date().toISOString();
+
+    // 1. 主文档只存元数据（体积很小）
+    batch.set(mainRef, {
+        user_id: data.user_id,
+        updated_at: now,
+        theme: data.theme != null ? data.theme : 0,
+        ai_settings: data.ai_settings || null,
+        firebase_config: data.firebase_config || null,
+        format_version: 2
+    }, { merge: true });
+
+    // 2. modifications → 子集合，每个合约一个文档
+    const mods = data.modifications || {};
+    Object.keys(mods).forEach(contractKey => {
+        const ref = mainRef.collection('modifications').doc(contractKey);
+        batch.set(ref, {
+            contract_key: contractKey,
+            modifications: mods[contractKey],
+            updated_at: now
+        }, { merge: true });
+    });
+
+    // 3. bookmarks → 子集合，每个合约一个文档
+    const bms = data.bookmarks || {};
+    Object.keys(bms).forEach(contractKey => {
+        const ref = mainRef.collection('bookmarks').doc(contractKey);
+        batch.set(ref, {
+            contract_key: contractKey,
+            bookmarks: bms[contractKey],
+            updated_at: now
+        }, { merge: true });
+    });
+
+    // 4. contract_data → 子集合，每个合约一个文档（自动检测并分批）
+    const cd = data.contract_data || {};
+    for (const contractKey of Object.keys(cd)) {
+        writeContractDataWithBatching(mainRef, contractKey, cd[contractKey], now, batch);
+    }
+
+    // 提交批量写入（原子性：全部成功或全部回滚）
+    await batch.commit();
+    console.log('✓ 数据已写入子集合格式 (format_version: 2)');
+
+    // 5. 清理旧格式键（从单文档迁移到子集合后）
+    await cleanupOldFormatKeys(mainRef);
+}
+
+/**
+ * 从子集合加载数据（自动兼容旧格式）
+ * @param {firebase.firestore.DocumentReference} mainRef - 用户主文档引用
+ * @returns {Promise<Object|null>} { data: {...}, format: 'old'|'new' } 或 null
+ */
+async function loadFromSubcollections(mainRef) {
+    const mainDoc = await mainRef.get();
+
+    if (!mainDoc.exists) {
+        return null;
+    }
+
+    const mainData = mainDoc.data();
+
+    // 兼容旧格式：数据直接嵌入在主文档中
+    if (isOldFormat(mainData)) {
+        console.log('  检测到旧格式数据（单文档存储），下次保存时将自动迁移');
+        return { data: mainData, format: 'old' };
+    }
+
+    // 新格式：从子集合读取
+    console.log('  检测到新格式数据（子集合存储）');
+
+    const [modSnap, bmSnap, cdSnap] = await Promise.all([
+        mainRef.collection('modifications').get(),
+        mainRef.collection('bookmarks').get(),
+        mainRef.collection('contract_data').get()
+    ]);
+
+    // 重建 modifications
+    const modifications = {};
+    modSnap.forEach(doc => {
+        const d = doc.data();
+        modifications[doc.id] = d.modifications || {};
+    });
+
+    // 重建 bookmarks
+    const bookmarks = {};
+    bmSnap.forEach(doc => {
+        const d = doc.data();
+        bookmarks[doc.id] = d.bookmarks || [];
+    });
+
+    // 重建 contract_data（处理可能的分批存储）
+    const contract_data = {};
+    const batchedPromises = [];
+
+    cdSnap.forEach(doc => {
+        const d = doc.data();
+        if (d.batch_count && d.batch_count >= 1) {
+            // 分批存储：从子批次读取并合并
+            batchedPromises.push(
+                loadBatchedContractData(mainRef, doc.id, d).then(result => {
+                    contract_data[doc.id] = result;
+                })
+            );
+        } else if (d.data) {
+            // 直接存储
+            contract_data[doc.id] = { title: d.title || '', data: d.data };
+        }
+    });
+
+    // 等待所有分批数据加载完成
+    if (batchedPromises.length > 0) {
+        await Promise.all(batchedPromises);
+    }
+
+    // 重建扁平格式（与旧格式完全兼容，applyCloudDataToLocal 无需改动）
+    return {
+        data: {
+            ...mainData,       // user_id, updated_at, theme, ai_settings, firebase_config, format_version
+            modifications,
+            bookmarks,
+            contract_data
+        },
+        format: 'new'
+    };
+}
+
+/**
+ * 清理主文档中的旧格式键（迁移完成后）
+ * 非致命操作 - 失败时仅记录警告，下次保存时会重试
+ * @param {firebase.firestore.DocumentReference} mainRef - 用户主文档引用
+ */
+async function cleanupOldFormatKeys(mainRef) {
+    try {
+        const mainDoc = await mainRef.get();
+        if (!mainDoc.exists) return;
+
+        const data = mainDoc.data();
+        const hasOldKeys = (data.modifications !== undefined ||
+                           data.bookmarks !== undefined ||
+                           data.contract_data !== undefined);
+
+        if (hasOldKeys) {
+            const cleanupBatch = db.batch();
+            cleanupBatch.update(mainRef, {
+                modifications: firebase.firestore.FieldValue.delete(),
+                bookmarks: firebase.firestore.FieldValue.delete(),
+                contract_data: firebase.firestore.FieldValue.delete()
+            });
+            await cleanupBatch.commit();
+            console.log('✓ 旧格式键已从主文档中清理（迁移完成）');
+        }
+    } catch (e) {
+        // 清理失败不影响主流程，下次保存时会重试
+        console.warn('清理旧格式键失败（非致命，下次保存时会重试）:', e.message);
+    }
+}
+
+/**
+ * 诊断 Firestore 文档大小（调试用）
+ * 在浏览器控制台调用: diagnoseDocumentSizes()
+ */
+async function diagnoseDocumentSizes() {
+    if (!db || !currentUser) {
+        console.log('未登录，无法诊断');
+        return;
+    }
+    const mainRef = db.collection(window.FIREBASE_COLLECTIONS.CONTRACT_MODS).doc(currentUser.uid);
+
+    console.log('=== Firestore 文档大小诊断 ===');
+    console.log('用户ID:', currentUser.uid);
+
+    // 主文档
+    const mainDoc = await mainRef.get();
+    if (mainDoc.exists) {
+        const mainSize = new Blob([JSON.stringify(mainDoc.data())]).size;
+        console.log(`主文档: ${(mainSize / 1024).toFixed(1)} KB`);
+    } else {
+        console.log('主文档: 不存在');
+    }
+
+    // 子集合
+    for (const coll of ['modifications', 'bookmarks', 'contract_data']) {
+        console.log(`--- ${coll} 子集合 ---`);
+        const snap = await mainRef.collection(coll).get();
+        if (snap.empty) {
+            console.log(`  (空)`);
+            continue;
+        }
+        snap.forEach(doc => {
+            const size = new Blob([JSON.stringify(doc.data())]).size;
+            const icon = size > 1000 * 1024 ? '⚠️' : '✓';
+            console.log(`  ${icon} ${coll}/${doc.id}: ${(size / 1024).toFixed(1)} KB`);
+        });
+    }
+    console.log('=== 诊断完成 ===');
 }
 
 // ==================== 页面加载时初始化 ====================

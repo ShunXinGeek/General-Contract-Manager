@@ -18,6 +18,10 @@ let searchStatePerContract = {};       // 每合同独立搜索状态
 let refViewStatePerContract = {};      // 每合同独立右侧面板折叠状态
 let navViewStatePerContract = {};      // 每合同独立左侧面板折叠状态
 let navScrollPerContract = {};         // 每合同独立左侧书签栏滚动位置
+let mainScrollPerContract = {};        // 每合同独立中间主面板滚动位置
+let activeBookmarkUidPerContract = {}; // 每合同独立的活动书签UID
+let navWidthPerContract = {};          // 每合同独立左侧书签栏宽度
+let refWidthPerContract = {};          // 每合同独立右侧参考栏宽度
 
 let isDeleteMode = false;
 let dragSrcEl = null;
@@ -111,6 +115,8 @@ function registerContract(key, title, data) {
     refViewStatePerContract[key] = false;
     navViewStatePerContract[key] = false;
     navScrollPerContract[key] = 0;
+    navWidthPerContract[key] = null;
+    refWidthPerContract[key] = null;
     if (typeof syncStatePerContract !== 'undefined') {
         syncStatePerContract[key] = false;
     }
@@ -182,6 +188,8 @@ function removeContract(key) {
     delete refViewStatePerContract[key];
     delete navViewStatePerContract[key];
     delete navScrollPerContract[key];
+    if (typeof navWidthPerContract !== 'undefined') delete navWidthPerContract[key];
+    if (typeof refWidthPerContract !== 'undefined') delete refWidthPerContract[key];
     if (typeof syncStatePerContract !== 'undefined') delete syncStatePerContract[key];
 
     if (activeContractKey === key) {
@@ -240,6 +248,8 @@ async function loadContractsFromStorage() {
                     refViewStatePerContract[key] = false;
                     navViewStatePerContract[key] = false;
                     navScrollPerContract[key] = 0;
+                    navWidthPerContract[key] = null;
+                    refWidthPerContract[key] = null;
                     if (typeof syncStatePerContract !== 'undefined') syncStatePerContract[key] = false;
                 });
                 renderTabs();
@@ -389,6 +399,8 @@ function showWelcomePage() {
 
     document.querySelector('.nav-title').innerText = '请在正文中选择合同';
     document.getElementById('navList').innerHTML = '';
+    const searchInput = document.querySelector('.search-input');
+    if (searchInput) { searchInput.value = ''; currentSearchTerm = ''; }
 
     // 默认折叠左右侧面板
     const panelNav = document.getElementById('panelNav');
@@ -432,6 +444,10 @@ function handleAutoRenameContract(oldKey, type, inputElement) {
         delete navViewStatePerContract[oldKey];
         navScrollPerContract[newValue] = navScrollPerContract[oldKey] || 0;
         delete navScrollPerContract[oldKey];
+        navWidthPerContract[newValue] = navWidthPerContract[oldKey] || null;
+        delete navWidthPerContract[oldKey];
+        refWidthPerContract[newValue] = refWidthPerContract[oldKey] || null;
+        delete refWidthPerContract[oldKey];
         searchStatePerContract[newValue] = '';
         refViewStatePerContract[newValue] = false;
         navViewStatePerContract[newValue] = false;
@@ -491,6 +507,16 @@ window.onload = async function () {
         Logger.error('rag', 'RAG 初始化失败', e);
     }
 
+    // 交叉引用索引
+    try {
+        if (typeof initCrossRefIndex === 'function') {
+            const ok = initCrossRefIndex();
+            Logger.info('cross-ref', ok ? '交叉引用索引初始化完成' : '交叉引用索引数据未加载');
+        }
+    } catch (e) {
+        Logger.error('cross-ref', '交叉引用索引初始化失败', e);
+    }
+
     initResizers();
     initAutoSave();
 
@@ -544,10 +570,21 @@ function switchContract(key) {
         captureCurrentContent();
         contracts[activeContractKey].bookmarks = savedBookmarks;
 
+        // 保存当前标签页的活动书签UID
+        if (typeof activeBookmarkUid !== 'undefined') {
+            activeBookmarkUidPerContract[activeContractKey] = activeBookmarkUid;
+        }
+
         // 保存当前标签页的书签栏滚动位置
         const navListEl = document.getElementById('navList');
         if (navListEl) {
             navScrollPerContract[activeContractKey] = navListEl.scrollTop;
+        }
+
+        // 保存当前标签页的中间主面板滚动位置
+        const panelMainEl = document.getElementById('panelMain');
+        if (panelMainEl) {
+            mainScrollPerContract[activeContractKey] = panelMainEl.scrollTop;
         }
 
         const panelRef = document.getElementById('panelRef');
@@ -558,6 +595,12 @@ function switchContract(key) {
         if (panelNav) {
             navViewStatePerContract[activeContractKey] = panelNav.classList.contains('collapsed');
         }
+
+        // 保存当前面板宽度
+        const pn = document.getElementById('panelNav');
+        const pr = document.getElementById('panelRef');
+        if (pn && pn.style.width) navWidthPerContract[activeContractKey] = pn.style.width;
+        if (pr && pr.style.width) refWidthPerContract[activeContractKey] = pr.style.width;
     }
 
     resetCrossRefState();
@@ -567,6 +610,11 @@ function switchContract(key) {
     savedBookmarks = null;
     if (contracts[key].bookmarks && contracts[key].bookmarks.length > 0) {
         savedBookmarks = contracts[key].bookmarks;
+    }
+
+    // 恢复新标签页的活动书签UID（在initBookmarks之前设置，以便自动应用.active类）
+    if (typeof activeBookmarkUid !== 'undefined') {
+        activeBookmarkUid = activeBookmarkUidPerContract[key] || null;
     }
 
     if (isEditMode) toggleEditMode();
@@ -579,7 +627,20 @@ function switchContract(key) {
     if (navListRestore) {
         navListRestore.scrollTop = navScrollPerContract[key] || 0;
     }
+
+    // 恢复新标签页的中间主面板滚动位置
+    const panelMainRestore = document.getElementById('panelMain');
+    if (panelMainRestore) {
+        panelMainRestore.scrollTop = mainScrollPerContract[key] || 0;
+    }
+
     buildReverseIndex();
+
+    // 恢复面板宽度（在折叠状态恢复之前设置，因为宽度在折叠时也需保存）
+    const pn2 = document.getElementById('panelNav');
+    if (pn2) pn2.style.width = navWidthPerContract[key] || '';
+    const pr2 = document.getElementById('panelRef');
+    if (pr2) pr2.style.width = refWidthPerContract[key] || '';
 
     // 恢复同步滚动状态
     if (typeof syncStatePerContract !== 'undefined' && syncStatePerContract[key]) {
@@ -995,14 +1056,23 @@ function initResizers() {
     const nav = document.getElementById('panelNav');
     const main = document.getElementById('panelMain');
     const ref = document.getElementById('panelRef');
-    if (r1 && nav && main) setupResizer(r1, nav, main, 'right');
-    if (r2 && main && ref) setupResizer(r2, ref, main, 'left');
+    if (r1 && nav && main) setupResizer(r1, nav, main, 'right', 'nav');
+    if (r2 && main && ref) setupResizer(r2, ref, main, 'left', 'ref');
 }
-function setupResizer(resizer, panel, neighbor, dir) {
+function setupResizer(resizer, panel, neighbor, dir, panelId) {
     let startX, startW;
     resizer.addEventListener('mousedown', e => {
         e.preventDefault(); startX = e.clientX; startW = panel.getBoundingClientRect().width;
-        const move = e2 => { const diff = dir === 'right' ? (e2.clientX - startX) : (startX - e2.clientX); panel.style.width = Math.max(150, startW + diff) + 'px'; };
+        const move = e2 => {
+            const diff = dir === 'right' ? (e2.clientX - startX) : (startX - e2.clientX);
+            const newWidth = Math.max(150, startW + diff);
+            panel.style.width = newWidth + 'px';
+            // 实时保存到每合同独立宽度状态
+            if (activeContractKey && !isAssistantMode) {
+                if (panelId === 'nav') navWidthPerContract[activeContractKey] = newWidth + 'px';
+                else if (panelId === 'ref') refWidthPerContract[activeContractKey] = newWidth + 'px';
+            }
+        };
         const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); document.body.style.cursor = ''; document.body.style.userSelect = ''; };
         document.addEventListener('mousemove', move); document.addEventListener('mouseup', up);
         document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';

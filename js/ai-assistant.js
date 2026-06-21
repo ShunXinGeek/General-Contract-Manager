@@ -78,8 +78,15 @@ async function buildMessagesForAPI() {
     return messages;
 }
 
-// 数据库模式提示词（通用版）
+// 数据库模式提示词（通用版 / 交叉引用增强版）
 function buildDatabaseModePrompt(relevantClauses) {
+    // 检测是否为交叉引用结果（包含 relation 或 modificationType 字段）
+    const hasCrossRefMeta = relevantClauses.length > 0 && relevantClauses.some(c => c.relation !== undefined);
+    if (hasCrossRefMeta && typeof buildCrossRefPrompt === 'function') {
+        return buildCrossRefPrompt(relevantClauses);
+    }
+
+    // 通用版：适用于纯 RAG 或无交叉引用元数据的结果
     if (relevantClauses.length === 0) {
         let allTitles = [];
         Object.keys(contracts).forEach(type => {
@@ -90,11 +97,17 @@ function buildDatabaseModePrompt(relevantClauses) {
         return '【系统角色】你是一个合同条款数据库查询助手。\n\n【当前状态】\n未找到精确匹配。以下是完整目录：\n\n' + allTitles.join('\n') + '\n\n【回复要求】\n1. 告知用户未找到精确匹配\n2. 推荐2-5个相关条款（格式：[合同简称] Clause X）\n3. 建议用户点击「引用条款」按钮查看具体内容';
     }
     let clauseContext = '';
-    relevantClauses.forEach(clause => { clauseContext += '<<<' + clause.type + ' Clause ' + clause.id + ': ' + clause.title + '>>>\n' + clause.content + '\n\n'; });
-    return '【系统角色】你是合同条款数据库查询终端。\n\n【核心原则】回答必须100%基于下方条款原文。\n\n【可用条款数据库】\n' + clauseContext + '【条款数据库结束】\n\n【回复步骤】\n1. 确认找到的条款编号\n2. 引用条款编号（格式：[合同简称] Clause X）\n3. 基于原文解答\n4. 校验引用存在性';
+    relevantClauses.forEach(clause => {
+        const modLabel = clause.modificationType && clause.modificationType !== '无 SCC 修改'
+            ? ' [SCC修改类型: ' + clause.modificationType + ']' : '';
+        const relationLabel = clause.relation === 'modifies'
+            ? ' [修改GCC ' + (clause.gccClause || '?') + ']' : '';
+        clauseContext += '<<<' + clause.type + ' Clause ' + clause.id + ': ' + clause.title + modLabel + relationLabel + '>>>\n' + clause.content + '\n\n';
+    });
+    return '【系统角色】你是合同条款数据库查询终端。\n\n【核心原则】回答必须100%基于下方条款原文。当 SCC 对 GCC 存在修改时，以 SCC 为准。\n\n【可用条款数据库】\n' + clauseContext + '【条款数据库结束】\n\n【回复步骤】\n1. 确认找到的条款编号\n2. 如涉及 SCC 修改，明确标注「以 SCC 为准」\n3. 引用条款格式：[合同简称] Clause X\n4. 基于原文解答\n5. 校验引用存在性';
 }
 
-async function streamAPIResponse(messages) {
+async function streamAPIResponse(messages, existingMessageDiv, existingIndex) {
     abortController = new AbortController();
     const requestBody = { model: AI_CONFIG.model, messages: messages, stream: true };
     if (isThinkingMode && AI_CONFIG.model && (AI_CONFIG.model.includes('qwen3') || AI_CONFIG.model.includes('qwq'))) {
@@ -106,7 +119,14 @@ async function streamAPIResponse(messages) {
     if (!response.ok) { const errText = await response.text(); throw new Error('API Error ' + response.status + ': ' + errText); }
     hideTypingIndicator();
     let assistantContent = '', reasoningContent = '', thinkingStartTime = null, thinkingEndTime = null;
-    let messageDiv = null;
+    let messageDiv = existingMessageDiv || null;
+    // If regenerating into an existing message, clear its previous content
+    if (existingMessageDiv) {
+        const prevThinking = existingMessageDiv.querySelector('.thinking-block');
+        if (prevThinking) prevThinking.remove();
+        const contentEl = existingMessageDiv.querySelector('.message-content');
+        if (contentEl) contentEl.innerHTML = '<span class="regenerating-indicator">🔄 重新生成中...</span>';
+    }
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -125,7 +145,7 @@ async function streamAPIResponse(messages) {
                 if (delta.reasoning_content) {
                     if (!thinkingStartTime) thinkingStartTime = Date.now();
                     reasoningContent += delta.reasoning_content;
-                    if (!messageDiv) { messageDiv = createMessageElement('assistant', '', undefined, true); document.getElementById('chatMessages').appendChild(messageDiv); }
+                    if (!messageDiv) { messageDiv = createMessageElement('assistant', '', chatMessages.length, true); document.getElementById('chatMessages').appendChild(messageDiv); }
                     const bodyInner = messageDiv.querySelector('.thinking-body-inner');
                     if (bodyInner) bodyInner.textContent = reasoningContent;
                     scrollToBottom(); continue;
@@ -133,7 +153,7 @@ async function streamAPIResponse(messages) {
                 if (delta.content) {
                     if (reasoningContent && !thinkingEndTime) thinkingEndTime = Date.now();
                     assistantContent += delta.content;
-                    if (!messageDiv) { messageDiv = createMessageElement('assistant', '', undefined, false); document.getElementById('chatMessages').appendChild(messageDiv); }
+                    if (!messageDiv) { messageDiv = createMessageElement('assistant', '', chatMessages.length, false); document.getElementById('chatMessages').appendChild(messageDiv); }
                     const contentEl = messageDiv.querySelector('.message-content');
                     contentEl.innerHTML = renderMarkdown(assistantContent);
                     messageDiv.dataset.rawContent = assistantContent;
@@ -160,7 +180,11 @@ async function streamAPIResponse(messages) {
     if (assistantContent) {
         const msgData = { role: 'assistant', content: assistantContent };
         if (reasoningContent) { msgData.reasoning = reasoningContent; msgData.thinkingDuration = thinkingStartTime && thinkingEndTime ? ((thinkingEndTime - thinkingStartTime) / 1000).toFixed(1) : null; }
-        chatMessages.push(msgData);
+        if (existingIndex !== undefined && existingIndex >= 0 && existingIndex < chatMessages.length) {
+            chatMessages[existingIndex] = msgData;
+        } else {
+            chatMessages.push(msgData);
+        }
     }
 }
 
@@ -172,9 +196,10 @@ function stopGeneration() { if (abortController) { abortController.abort(); abor
 function toggleThinkingMode() {
     isThinkingMode = !isThinkingMode;
     const btn = document.getElementById('btnThinkingMode');
+    const icon = document.getElementById('thinkingModeIcon');
     const text = document.getElementById('thinkingModeText');
-    if (isThinkingMode) { btn.classList.add('thinking-active'); text.innerText = '🧠 思考开'; }
-    else { btn.classList.remove('thinking-active'); text.innerText = '🧠 思考'; }
+    if (isThinkingMode) { btn.classList.add('thinking-active'); icon.innerText = '🧠🧠'; text.innerText = ' 思考'; }
+    else { btn.classList.remove('thinking-active'); icon.innerText = '🧠'; text.innerText = ' 思考'; }
 }
 
 function toggleThinkingBlock(headerEl) { const block = headerEl.closest('.thinking-block'); if (block) block.classList.toggle('expanded'); }
@@ -224,13 +249,18 @@ async function regenerateMessage(btn) {
     if (!isAIConfigured()) { alert('🤖 AI 助手尚未配置\n\n请点击 ⚙️ 设置按钮配置。'); openSettings(); return; }
     const msgDiv = btn.closest('.chat-message');
     const index = parseInt(msgDiv.dataset.msgIndex);
-    if (!isNaN(index) && index >= 0 && index < chatMessages.length) { chatMessages.splice(index, 1); saveChatToStorage(); renderChatMessages(); }
+    if (!isNaN(index) && index >= 0 && index < chatMessages.length) {
+        // Temporarily remove old assistant message so buildMessagesForAPI doesn't include it
+        const oldMsg = chatMessages.splice(index, 1)[0];
+        showTypingIndicator();
+        const messages = await buildMessagesForAPI();
+        // Restore the old message at the same position; it will be replaced when streaming completes
+        chatMessages.splice(index, 0, oldMsg);
+        try { isStreaming = true; updateSendButton(); await streamAPIResponse(messages, msgDiv, index); }
+        catch (error) { if (error.name !== 'AbortError') { chatMessages[index] = { role: 'assistant', content: '❌ 请求失败: ' + error.message }; renderChatMessages(); } }
+        finally { isStreaming = false; hideTypingIndicator(); updateSendButton(); saveChatToStorage(); }
+    }
     else { msgDiv.remove(); }
-    showTypingIndicator();
-    const messages = await buildMessagesForAPI();
-    try { isStreaming = true; updateSendButton(); await streamAPIResponse(messages); }
-    catch (error) { if (error.name !== 'AbortError') addMessage('assistant', '❌ 请求失败: ' + error.message); }
-    finally { isStreaming = false; hideTypingIndicator(); updateSendButton(); saveChatToStorage(); }
 }
 function showTypingIndicator() { const ind = document.createElement('div'); ind.className = 'chat-message assistant'; ind.id = 'typingIndicator'; ind.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>'; document.getElementById('chatMessages').appendChild(ind); scrollToBottom(); }
 function hideTypingIndicator() { const ind = document.getElementById('typingIndicator'); if (ind) ind.remove(); }
@@ -386,7 +416,7 @@ function openClauseSelector() {
             const clause = contracts[contractKey].data[id];
             list += '<div class="clause-option" data-title="' + escapeHtml(clause.title).toLowerCase() + '" onclick="insertClause(\'' + contractKey + '\', \'' + id + '\')" style="padding:8px; cursor:pointer; border-bottom:1px solid var(--border-color); transition:background 0.2s;" onmouseover="this.style.background=\'var(--bg-nav-item-hover)\'" onmouseout="this.style.background=\'\'">' + clause.title + '</div>';
         });
-        columnsHtml += '<div style="flex:1; display:flex; flex-direction:column; min-width:0;"><div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;"><h4 style="margin:0; color:var(--highlight-color); white-space:nowrap;">' + contractKey + ' 条款</h4><div class="clause-search-wrapper"><input type="text" class="clause-search-input" placeholder="搜索..." oninput="filterClauses(this, \'' + contractKey + '\')"><span class="clause-search-clear" onclick="clearClauseSearch(this, \'' + contractKey + '\')">✕</span></div></div><div id="clauseList-' + contractKey + '" style="flex:1; overflow-y:auto; max-height:400px; border:1px solid var(--border-color); border-radius:4px;">' + list + '</div></div>';
+        columnsHtml += '<div style="flex:1; display:flex; flex-direction:column; min-width:0;"><div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;"><h4 style="margin:0; color:var(--highlight-color); white-space:nowrap;">' + contractKey + ' 条款</h4><div class="clause-search-wrapper"><input type="text" class="clause-search-input" placeholder="搜索..." autocomplete="new-password" oninput="filterClauses(this, \'' + contractKey + '\')"><span class="clause-search-clear" onclick="clearClauseSearch(this, \'' + contractKey + '\')">✕</span></div></div><div id="clauseList-' + contractKey + '" style="flex:1; overflow-y:auto; max-height:400px; border:1px solid var(--border-color); border-radius:4px;">' + list + '</div></div>';
     });
     modal.innerHTML = '<div class="modal-content" style="max-width:' + Math.min(750, keys.length * 350) + 'px; height:auto; max-height:80%;"><div class="modal-header"><span style="font-size:16px; font-weight:bold;">📋 选择条款引用</span><span class="close-modal" onclick="closeClauseSelector()">✕</span></div><div class="modal-body" style="padding:15px; display:flex; gap:15px;">' + columnsHtml + '</div></div>';
     document.body.appendChild(modal);
@@ -477,7 +507,41 @@ function toggleKnowledgeBaseMode() {
     else { btn.classList.remove('db-active'); icon.innerText = '📂'; text.innerText = '打开知识库'; btnUpdate.style.display = 'none'; }
 }
 
-async function checkRAGIndexStatus() { try { const isEmpty = await RAG.isIndexEmpty(); if (isEmpty && isKnowledgeBaseMode) { const isBuild = await CustomDialog.confirm('知识库索引尚未构建，是否立即构建？', '构建提示'); if (isBuild) buildKnowledgeBaseIndex(); } } catch (e) { } }
+async function checkRAGIndexStatus() {
+    try {
+        const isEmpty = await RAG.isIndexEmpty();
+        if (!isEmpty || !isKnowledgeBaseMode) return;
+
+        // Step 1: 尝试加载预构建向量数据并导入 IndexedDB
+        showStatus('loading', '正在加载预构建向量数据...', '📦', 0);
+        const loaded = await RAG.ensurePrebuiltVectorsLoaded();
+
+        if (loaded) {
+            const count = await RAG.importPrebuiltVectors(
+                (current, total) => {
+                    showStatus('loading',
+                        `正在导入向量索引 ${current}/${total}...`, '📥', 0);
+                }
+            );
+            if (count > 0) {
+                showStatus('success',
+                    `已从预构建数据导入 ${count} 条向量，知识库已就绪`, '✅', 4000);
+                return; // 导入成功，无需弹窗
+            }
+        }
+
+        // Step 2: 预构建数据不可用，回退到在线构建流程
+        showStatus('warning',
+            '预构建向量数据不可用，需要在线构建索引', '⚠️', 4000);
+        const isBuild = await CustomDialog.confirm(
+            '知识库索引尚未构建，是否立即构建？（需要配置嵌入模型 API）',
+            '构建提示'
+        );
+        if (isBuild) buildKnowledgeBaseIndex();
+    } catch (e) {
+        console.error('[知识库] 索引状态检查出错:', e);
+    }
+}
 
 async function buildKnowledgeBaseIndex() {
     if (!isEmbeddingConfigured()) { await CustomDialog.alert('🔗 嵌入模型尚未配置\n请点击设置按钮配置。', '未配置'); openSettings(); return; }
@@ -509,13 +573,41 @@ function extractKeywords(query) {
     const stopWords = ['the', 'a', 'an', 'is', 'are', 'to', 'of', 'in', 'for', 'on', 'and', 'but', 'or', 'not', 'what', 'which', 'how', 'why', '的', '是', '在', '有', '和', '与', '或', '了', '什么', '怎么', '请', '我', '你'];
     const words = query.toLowerCase().replace(/[^\w\s\u4e00-\u9fff]/g, ' ').split(/\s+/).filter(w => w.length > 1 && !stopWords.includes(w));
     Object.keys(contracts).forEach(key => { const idx = words.indexOf(key.toLowerCase()); if (idx !== -1) words.splice(idx, 1); });
+
+    // \u4ece\u4ea4\u53c9\u5f15\u7528\u5173\u952e\u8bcd\u7d22\u5f15\u8865\u5145\u6761\u6b3e\u76f8\u5173\u5173\u952e\u8bcd\uff08\u7528\u4e8e cross-ref.js \u7684 findByCrossRef\uff09
+    if (typeof GCC_CLAUSE_KEYWORD_INDEX !== 'undefined') {
+        for (const word of words) {
+            if (GCC_CLAUSE_KEYWORD_INDEX[word.toLowerCase()]) {
+                translatedKeywords.push(word.toLowerCase());
+            }
+        }
+    }
+
     return { clauseNumbers: [...new Set(clauseNumbers)], keywords: [...new Set([...translatedKeywords, ...words])] };
 }
 
 async function findRelevantClauses(query) {
     if (isKnowledgeBaseMode) {
+        // ==========================================
+        // 第一优先级：交叉引用索引查找（确定性，准确）
+        // ==========================================
+        if (CROSS_REF_INITIALIZED && typeof findRelevantClausesCrossRef === 'function') {
+            try {
+                const crossRefResults = await findRelevantClausesCrossRef(query);
+                if (crossRefResults && crossRefResults.length > 0) {
+                    console.log('[知识库] 交叉引用索引命中 ' + crossRefResults.length + ' 条结果，跳过 RAG');
+                    return crossRefResults;
+                }
+            } catch (e) {
+                console.warn('[知识库] 交叉引用查找出错，回退到 RAG:', e.message);
+            }
+        }
+
+        // ==========================================
+        // 第二优先级：RAG 向量搜索（回退）
+        // ==========================================
         try {
-            const candidateCount = AI_CONFIG.rerankEnabled ? 15 : 5;
+            const candidateCount = AI_CONFIG.rerankEnabled ? 15 : 15;
             const ragResults = await RAG.findMostRelevant(query, AI_CONFIG, candidateCount);
             if (ragResults && ragResults.length > 0) {
                 let finalResults = ragResults;
@@ -530,11 +622,72 @@ async function findRelevantClauses(query) {
                         }
                     });
                 }
-                results = results.filter(r => { const t = r.content.trim().toLowerCase(); return t.length > 30 && !t.startsWith('not used'); });
+                // 交叉引用增强：为 RAG 结果补充 SCC 修改信息
+                if (CROSS_REF_INITIALIZED) {
+                    for (const result of results) {
+                        if (result.type === 'GCC') {
+                            const xref = lookupCrossRef(result.id);
+                            if (xref && xref.hasModification) {
+                                result.modificationType = xref.modificationType;
+                                result.relation = 'base';
+                                // 添加 SCC 修改条款
+                                const sccModifiers = xref.clauses.filter(c => c.relation === 'modifies');
+                                for (const mod of sccModifiers) {
+                                    if (!existingIds.has('SCC_' + mod.id)) {
+                                        results.push(mod);
+                                        existingIds.add('SCC_' + mod.id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // ---- 跨合同引用扩展：查找其他合同中引用了当前结果条款的条目 ----
+                const expandedIds = new Set(results.map(r => r.type + '_' + r.id));
+                for (const result of [...results]) {
+                    const refPatterns = [
+                        new RegExp(`Clause\\s+${result.id}\\b`, 'i'),
+                        new RegExp(`${result.type}\\s+Clause\\s+${result.id}\\b`, 'i'),
+                        new RegExp(`第\\s*${result.id}\\s*条`),
+                    ];
+                    if (result.type === 'GCC' || (contracts[result.type]?.title || '').toLowerCase().includes('general conditions')) {
+                        refPatterns.push(new RegExp(`General\\s+Conditions\\s+of\\s+Contract\\s+Clause\\s+${result.id}\\b`, 'i'));
+                    }
+                    for (const otherType of Object.keys(contracts)) {
+                        if (otherType === result.type) continue;
+                        for (const [clauseId, clause] of Object.entries(contracts[otherType].data)) {
+                            if (expandedIds.has(otherType + '_' + clauseId)) continue;
+                            const searchText = (clause.title + ' ' + clause.content).replace(/<[^>]*>/g, '');
+                            let matched = false;
+                            for (const pattern of refPatterns) {
+                                if (pattern.test(searchText)) { matched = true; break; }
+                            }
+                            if (matched) {
+                                results.push({
+                                    type: otherType, id: clauseId,
+                                    title: clause.title,
+                                    content: clause.content.replace(/<[^>]*>/g, ''),
+                                    score: 150
+                                });
+                                expandedIds.add(otherType + '_' + clauseId);
+                            }
+                        }
+                    }
+                }
+                results = results.filter(r => {
+                    const t = r.content.trim().toLowerCase();
+                    if (t.length <= 30 || t.startsWith('not used')) return false;
+                    // 交叉引用 Not Used SCC 过滤
+                    if (r.type === 'SCC' && window._NOT_USED_SCC_SET) {
+                        const sccId = String(r.id).replace(/^SCC\s*/i, '').trim();
+                        if (window._NOT_USED_SCC_SET.has('SCC' + sccId)) return false;
+                    }
+                    return true;
+                });
                 results.sort((a, b) => b.score - a.score);
                 return results;
             }
-        } catch (e) { console.error('[知识库] 搜索出错:', e); }
+        } catch (e) { console.error('[知识库] RAG 搜索出错:', e); }
     }
     const { clauseNumbers, keywords } = extractKeywords(query);
     const results = [];

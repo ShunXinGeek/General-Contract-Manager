@@ -107,7 +107,7 @@ const CustomDialog = {
         const overlay = document.createElement('div');
         overlay.className = 'modal-overlay';
         overlay.style.display = 'flex';
-        overlay.style.zIndex = '9999';
+        overlay.style.zIndex = '10001';
         return overlay;
     },
 
