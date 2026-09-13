@@ -510,6 +510,10 @@ service cloud.firestore {
   match /databases/{database}/documents {
     match /general_contract_mods/{userId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
+
+      match /{document=**} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
     }
   }
 }
@@ -532,12 +536,17 @@ const firebaseConfig = {
 };
 ```
 
-### 7.6 在程序中填入 Firebase 配置
-1. 打开您的程序网址（如 Netlify 部署的网址）
-2. 点击右上角 **⚙️ 设置** 按钮
-3. 切换到 **"Firebase配置设置"** 标签
-4. 将上一步复制的各项值分别填入对应字段
-5. 点击 **"保存"**，页面会自动刷新并连接到 Firebase
+### 7.6 为 Netlify 配置 Firebase
+在 Netlify 的 **Site configuration → Environment variables** 中添加以下变量，然后重新部署：
+
+- `FIREBASE_API_KEY`
+- `FIREBASE_AUTH_DOMAIN`
+- `FIREBASE_PROJECT_ID`
+- `FIREBASE_STORAGE_BUCKET`
+- `FIREBASE_MESSAGING_SENDER_ID`
+- `FIREBASE_APP_ID`
+
+Netlify 会在构建时生成浏览器可用的 Firebase 公共配置，因此新设备无需先在 localStorage 中手工配置。本地开发仍可通过 **设置 → Firebase配置设置** 保存配置作为回退。
 
 ### 7.7 登录并激活云端同步
 1. 设置页面刷新后，重新打开 **⚙️ 设置 → Firebase配置设置**
@@ -553,7 +562,7 @@ const firebaseConfig = {
 - 🎨 **主题**：当前选择的界面主题（亮/暗/护眼）
 - ☁️ **Firebase 配置本身**：多设备间无缝切换
 
-> **注意**：合同原始数据（JSON/TXT 文件等）不会同步到 Firebase，需要在新设备上重新导入。Firebase 只同步您的**个人配置和编辑内容**。
+> **注意**：Firebase 会同步完整合同数据、正文编辑、书签和相关设置。请确保 Firestore 规则允许当前用户访问自己的子集合数据。
 
 ---
 
@@ -579,11 +588,11 @@ const firebaseConfig = {
    - *提示：如果未显示该仓库，可能是未授予所有仓库的访问权限。点击列表底部的 "Configure the Netlify app on GitHub" 去修改权限，选择 "All repositories"（所有仓库）或者手动勾选你的目标仓库。*
 
 ### 8.4 配置部署设置 (Build Settings)
-进入 "Site settings" 页面后，对于普通的纯前端项目，通常**不需要修改任何设置**：
+仓库中的 `netlify.toml` 已定义构建和发布设置，通常无需手工覆盖：
 - **Branch to deploy**: 默认 `main` 或 `master`
 - **Base directory**: 留空即可
-- **Build command**: 留空（无需打包）
-- **Publish directory**: 留空 或填 `/`
+- **Build command**: `npm run build`
+- **Publish directory**: `.`
 
 ### 8.5 开始部署
 1. 点击页面底部的 **"Deploy site"** 按钮

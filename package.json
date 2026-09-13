@@ -4,7 +4,8 @@
   "description": "通用合同管理助手 Web 版",
   "main": "index.html",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "node scripts/generate-firebase-config.js",
+    "test": "node tests/cloud-sync.test.js"
   },
   "keywords": [],
   "author": "",

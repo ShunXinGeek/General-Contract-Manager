@@ -63,6 +63,10 @@ let autoSaveTimer = null;
 let hasUnsavedChanges = false;
 let lastSavedTime = 0;
 
+// 云同步需等待本地 IndexedDB 恢复完成，避免页面启动时与云端拉取互相覆盖。
+let resolveContractAppReady;
+window.contractAppReady = new Promise(resolve => { resolveContractAppReady = resolve; });
+
 // 撤销/重做
 const MAX_HISTORY_SIZE = 50;
 let editHistory = {};
@@ -224,11 +228,19 @@ function removeContract(key) {
  */
 async function saveContractsToStorage() {
     try {
-        await localforage.setItem(CONTRACTS_DB_KEY, JSON.stringify(contracts));
+        const snapshot = {
+            version: 2,
+            contracts,
+            activeContractKey,
+            savedAt: Date.now()
+        };
+        await localforage.setItem(CONTRACTS_DB_KEY, JSON.stringify(snapshot));
         Logger.info('storage', '成功保存所有合同数据到 IndexedDB');
+        return true;
     } catch (e) {
         Logger.error('storage', '无法保存合同数据到 IndexedDB', e);
         if (typeof showError === 'function') showError('数据持久化失败', e.message);
+        return false;
     }
 }
 
@@ -240,8 +252,37 @@ async function loadContractsFromStorage() {
         const saved = await localforage.getItem(CONTRACTS_DB_KEY);
         if (saved) {
             const parsed = JSON.parse(saved);
-            if (Object.keys(parsed).length > 0) {
-                contracts = parsed;
+            const storedContracts = parsed.version === 2 && parsed.contracts
+                ? parsed.contracts
+                : parsed;
+            const storedActiveContractKey = parsed.version === 2
+                ? parsed.activeContractKey
+                : null;
+
+            // 兼容旧版自动保存：把可能尚未写入主数据库的修改补回合同数据。
+            const legacyAutoSave = await localforage.getItem(AUTO_SAVE_KEY);
+            if (legacyAutoSave) {
+                const autoSnapshot = JSON.parse(legacyAutoSave);
+                if (!parsed.savedAt || autoSnapshot.timestamp > parsed.savedAt) {
+                    Object.keys(autoSnapshot.modifications || {}).forEach(contractKey => {
+                        if (!storedContracts[contractKey]?.data) return;
+                        Object.keys(autoSnapshot.modifications[contractKey]).forEach(clauseId => {
+                            if (!storedContracts[contractKey].data[clauseId]) return;
+                            const modification = autoSnapshot.modifications[contractKey][clauseId];
+                            storedContracts[contractKey].data[clauseId].content = modification.content;
+                            storedContracts[contractKey].data[clauseId].modifiedAt = modification.modifiedAt || autoSnapshot.timestamp || Date.now();
+                        });
+                    });
+                    Object.keys(autoSnapshot.bookmarks || {}).forEach(contractKey => {
+                        if (storedContracts[contractKey]) {
+                            storedContracts[contractKey].bookmarks = autoSnapshot.bookmarks[contractKey];
+                        }
+                    });
+                }
+            }
+
+            if (Object.keys(storedContracts).length > 0) {
+                contracts = storedContracts;
                 // 重建 ORIGINAL_CONTRACTS 副本
                 if (typeof ORIGINAL_CONTRACTS === 'undefined') window.ORIGINAL_CONTRACTS = {};
                 Object.keys(contracts).forEach(key => {
@@ -256,8 +297,10 @@ async function loadContractsFromStorage() {
                     if (typeof syncStatePerContract !== 'undefined') syncStatePerContract[key] = false;
                 });
                 renderTabs();
-                // 如果有数据，默认打开第一个
-                switchContract(Object.keys(contracts)[0]);
+                const restoredKey = contracts[storedActiveContractKey]
+                    ? storedActiveContractKey
+                    : Object.keys(contracts)[0];
+                switchContract(restoredKey);
                 Logger.info('storage', `从 IndexedDB 成功恢复 ${Object.keys(contracts).length} 个合同`);
                 return true;
             }
@@ -545,6 +588,7 @@ window.onload = async function () {
     await loadContractsFromStorage();
 
     Logger.info('app', '程序启动完成，后台状态初始化完毕');
+    resolveContractAppReady();
 };
 
 // =======================================================
@@ -1060,6 +1104,7 @@ function toggleDropdown(id, btn) {
 }
 function applyFormat(cmd, val = null) {
     document.execCommand(cmd, false, val);
+    if (typeof handleEditorMutation === 'function') handleEditorMutation();
     document.querySelectorAll('.color-dropdown').forEach(d => d.classList.remove('show'));
     document.querySelectorAll('.toolbar-btn').forEach(b => b.classList.remove('active'));
 }

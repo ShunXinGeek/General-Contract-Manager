@@ -15,6 +15,7 @@ async function addOrEditNote() {
     if (!sel.rangeCount) return;
     let node = sel.anchorNode;
     if (node.nodeType === 3) node = node.parentNode;
+    let mutationTarget = node;
     if (node.classList.contains('note-span')) {
         const oldText = node.getAttribute('data-note');
         const newText = await CustomDialog.prompt('编辑备注:', oldText);
@@ -32,9 +33,14 @@ async function addOrEditNote() {
             const span = document.createElement('span');
             span.className = 'note-span';
             span.setAttribute('data-note', newText);
-            try { range.surroundContents(span); sel.removeAllRanges(); } catch (e) { console.warn('备注添加失败:', e); }
+            try {
+                range.surroundContents(span);
+                mutationTarget = span;
+                sel.removeAllRanges();
+            } catch (e) { console.warn('备注添加失败:', e); }
         }
     }
+    handleEditorMutation(mutationTarget);
 }
 
 // 备注气泡 Tooltip
@@ -94,27 +100,53 @@ document.addEventListener('paste', function (e) {
 // =======================================================
 // 22. 导出/导入用户修改（通用版）
 // =======================================================
+function getPersistableClauseContent(element) {
+    const clone = element.cloneNode(true);
+    clone.querySelectorAll('.clause-ref').forEach(link => {
+        link.replaceWith(document.createTextNode(link.textContent));
+    });
+    return clone.innerHTML;
+}
+
 function captureCurrentContent() {
     const now = Date.now();
+    let changed = false;
     document.querySelectorAll('.clause-text').forEach(d => {
         const id = d.parentElement.id.replace('clause-', '');
         if (fullClauseDatabase[id]) {
-            const newContent = d.innerHTML;
+            const newContent = getPersistableClauseContent(d);
             if (fullClauseDatabase[id].content !== newContent) {
                 fullClauseDatabase[id].content = newContent;
                 fullClauseDatabase[id].modifiedAt = now;
+                changed = true;
             }
         }
     });
-    if (typeof updateLocalModificationTime === 'function') updateLocalModificationTime();
+    if (changed && typeof updateLocalModificationTime === 'function') updateLocalModificationTime();
+    return changed;
 }
 
-function hasUserModifications(content) {
+function hasUserModifications(content, clause = null, contractKey = null, clauseId = null) {
+    if (clause?.modifiedAt) return true;
     if (!content) return false;
+
+    const originalContract = contractKey && typeof ORIGINAL_CONTRACTS !== 'undefined'
+        ? ORIGINAL_CONTRACTS[contractKey]
+        : null;
+    const originalClause = originalContract?.data?.[clauseId] || originalContract?.[clauseId];
+    if (originalClause) {
+        const normalize = value => String(value || '')
+            .replace(/<span[^>]*\bclass=["']clause-ref["'][^>]*>(.*?)<\/span>/gi, '$1')
+            .replace(/\s+/g, ' ')
+            .trim();
+        return normalize(content) !== normalize(originalClause.content);
+    }
+
+    // 旧版快照没有 modifiedAt 或原始基线时，保留对历史格式修改的兼容识别。
     if (content.includes('class="note-span"') || content.includes("class='note-span'")) return true;
     if (content.includes('background-color:') || content.includes('background:')) return true;
     if (content.includes('color:') && !content.includes('color: var(')) return true;
-    if (content.includes('<b>') || content.includes('<b ')) return true;
+    if (/<\/?(b|strong|i|em|u|s|strike)(\s|>)/i.test(content)) return true;
     if (content.includes('<font')) return true;
     return false;
 }
@@ -125,8 +157,9 @@ function extractUserModifications(contractKey) {
     const contractData = contracts[contractKey].data;
     Object.keys(contractData).forEach(id => {
         const clause = contractData[id];
-        if (clause && clause.content && hasUserModifications(clause.content)) {
-            modifications[id] = { content: clause.content, modifiedAt: clause.modifiedAt || Date.now() };
+        if (clause && clause.content && hasUserModifications(clause.content, clause, contractKey, id)) {
+            if (!clause.modifiedAt) clause.modifiedAt = Date.now();
+            modifications[id] = { content: clause.content, modifiedAt: clause.modifiedAt };
         }
     });
     return modifications;
@@ -218,27 +251,57 @@ function initAutoSave() {
     }, AUTO_SAVE_INTERVAL);
 }
 
+let editPersistTimer = null;
+
 function markAsUnsaved() { hasUnsavedChanges = true; }
 
+function handleEditorMutation(target = null) {
+    if (!activeContractKey || !contracts[activeContractKey]) return;
+
+    let clauseText = target?.closest?.('.clause-text') || null;
+    if (!clauseText) {
+        const selectionNode = window.getSelection()?.anchorNode;
+        const selectionElement = selectionNode?.nodeType === 3 ? selectionNode.parentElement : selectionNode;
+        clauseText = selectionElement?.closest?.('.clause-text') || null;
+    }
+    if (!clauseText) return;
+
+    captureCurrentContent();
+    markAsUnsaved();
+    clearTimeout(editPersistTimer);
+    editPersistTimer = setTimeout(() => autoSave(), 500);
+}
+
+document.getElementById('panelMain')?.addEventListener('input', event => {
+    if (event.target.closest('.clause-text')) handleEditorMutation(event.target);
+});
+
 async function autoSave() {
-    if (!activeContractKey) return;
+    if (!activeContractKey) return false;
     captureCurrentContent();
     try {
+        if (contracts[activeContractKey]) contracts[activeContractKey].bookmarks = savedBookmarks;
+        const persisted = await saveContractsToStorage();
+        if (!persisted) throw new Error('主合同数据写入失败');
         const saveData = { contracts: {}, activeContractKey, theme: currentThemeIndex, timestamp: Date.now() };
         Object.keys(contracts).forEach(key => { saveData.contracts[key] = { title: contracts[key].title, bookmarks: contracts[key].bookmarks }; });
         saveData.modifications = extractAllUserModifications();
         await localforage.setItem(AUTO_SAVE_KEY, JSON.stringify(saveData));
         hasUnsavedChanges = false;
         lastSavedTime = Date.now();
-    } catch (e) { console.error('自动保存失败:', e); }
+        return true;
+    } catch (e) {
+        console.error('自动保存失败:', e);
+        return false;
+    }
 }
 
 // 键盘快捷键 Ctrl+S
-document.addEventListener('keydown', e => {
+document.addEventListener('keydown', async e => {
     if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault();
-        autoSave();
-        showSuccess('已保存', 1500);
+        const saved = await autoSave();
+        if (saved) showSuccess('已保存', 1500);
     }
 });
 
