@@ -1,5 +1,5 @@
 // Service Worker for General Contract Shell
-const CACHE_NAME = 'general-contract-shell-v1';
+const CACHE_NAME = 'general-contract-shell-v2';
 const urlsToCache = [
     './',
     './index.html',
@@ -34,9 +34,26 @@ self.addEventListener('activate', event => {
 });
 
 self.addEventListener('fetch', event => {
+    if (event.request.method !== 'GET') return;
+
+    const requestUrl = new URL(event.request.url);
+    if (requestUrl.origin !== self.location.origin) return;
+
     event.respondWith(
-        caches.match(event.request)
-            .then(response => response || fetch(event.request))
-            .catch(() => caches.match('./index.html'))
+        fetch(event.request)
+            .then(response => {
+                if (response.ok) {
+                    const responseToCache = response.clone();
+                    caches.open(CACHE_NAME).then(cache => cache.put(event.request, responseToCache));
+                }
+                return response;
+            })
+            .catch(async () => {
+                const cachedResponse = await caches.match(event.request);
+                if (cachedResponse) return cachedResponse;
+                return event.request.mode === 'navigate'
+                    ? caches.match('./index.html')
+                    : Response.error();
+            })
     );
 });
