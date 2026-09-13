@@ -115,6 +115,7 @@ function registerContract(key, title, data) {
     refViewStatePerContract[key] = false;
     navViewStatePerContract[key] = false;
     navScrollPerContract[key] = 0;
+    mainScrollPerContract[key] = 0;
     navWidthPerContract[key] = null;
     refWidthPerContract[key] = null;
     if (typeof syncStatePerContract !== 'undefined') {
@@ -188,6 +189,7 @@ function removeContract(key) {
     delete refViewStatePerContract[key];
     delete navViewStatePerContract[key];
     delete navScrollPerContract[key];
+    delete mainScrollPerContract[key];
     if (typeof navWidthPerContract !== 'undefined') delete navWidthPerContract[key];
     if (typeof refWidthPerContract !== 'undefined') delete refWidthPerContract[key];
     if (typeof syncStatePerContract !== 'undefined') delete syncStatePerContract[key];
@@ -248,6 +250,7 @@ async function loadContractsFromStorage() {
                     refViewStatePerContract[key] = false;
                     navViewStatePerContract[key] = false;
                     navScrollPerContract[key] = 0;
+                    mainScrollPerContract[key] = 0;
                     navWidthPerContract[key] = null;
                     refWidthPerContract[key] = null;
                     if (typeof syncStatePerContract !== 'undefined') syncStatePerContract[key] = false;
@@ -276,6 +279,8 @@ function showWelcomePage() {
     // 强制清理活动全局变量
     if (activeContractKey) {
         captureCurrentContent();
+        const panelMain = document.getElementById('panelMain');
+        if (panelMain) mainScrollPerContract[activeContractKey] = panelMain.scrollTop;
     }
     activeContractKey = null;
     fullClauseDatabase = {};
@@ -444,6 +449,8 @@ function handleAutoRenameContract(oldKey, type, inputElement) {
         delete navViewStatePerContract[oldKey];
         navScrollPerContract[newValue] = navScrollPerContract[oldKey] || 0;
         delete navScrollPerContract[oldKey];
+        mainScrollPerContract[newValue] = mainScrollPerContract[oldKey] || 0;
+        delete mainScrollPerContract[oldKey];
         navWidthPerContract[newValue] = navWidthPerContract[oldKey] || null;
         delete navWidthPerContract[oldKey];
         refWidthPerContract[newValue] = refWidthPerContract[oldKey] || null;
@@ -482,6 +489,19 @@ function hideWelcomePage() {
     // When a contract is switched, the main view replaces panelMain content.
 }
 
+function initMainScrollTracking() {
+    const panelMain = document.getElementById('panelMain');
+    if (!panelMain || panelMain.dataset.contractScrollTracking === 'true') return;
+
+    panelMain.dataset.contractScrollTracking = 'true';
+    panelMain.addEventListener('scroll', () => {
+        const isViewingContract = typeof isAssistantMode === 'undefined' || !isAssistantMode;
+        if (activeContractKey && isViewingContract) {
+            mainScrollPerContract[activeContractKey] = panelMain.scrollTop;
+        }
+    });
+}
+
 // =======================================================
 // 4. 程序初始化
 // =======================================================
@@ -518,6 +538,7 @@ window.onload = async function () {
     }
 
     initResizers();
+    initMainScrollTracking();
     initAutoSave();
 
     // 加载合同本地数据并恢复状态（替换直接 showWelcomePage 的逻辑）
@@ -606,6 +627,7 @@ function switchContract(key) {
     resetCrossRefState();
     activeContractKey = key;
     fullClauseDatabase = contracts[key].data;
+    const mainScrollTopToRestore = mainScrollPerContract[key] ?? 0;
 
     savedBookmarks = null;
     if (contracts[key].bookmarks && contracts[key].bookmarks.length > 0) {
@@ -631,7 +653,10 @@ function switchContract(key) {
     // 恢复新标签页的中间主面板滚动位置
     const panelMainRestore = document.getElementById('panelMain');
     if (panelMainRestore) {
-        panelMainRestore.scrollTop = mainScrollPerContract[key] || 0;
+        panelMainRestore.scrollTop = mainScrollTopToRestore;
+        requestAnimationFrame(() => {
+            if (activeContractKey === key) panelMainRestore.scrollTop = mainScrollTopToRestore;
+        });
     }
 
     buildReverseIndex();
