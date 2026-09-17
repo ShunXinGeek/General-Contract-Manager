@@ -6,7 +6,7 @@
 
 **核心技术栈：** 纯 HTML/CSS/JS（零框架依赖） + IndexedDB (LocalForage) + Firebase Firestore + Service Worker (PWA)
 
-**设计理念：** 本地优先 (Local-First)，数据完全存储在用户浏览器中，云端同步为可选增强功能。所有第三方 API Key 仅保存在用户本地存储，不经过任何中间服务器。
+**设计理念：** 本地优先 (Local-First)，合同首先保存在用户浏览器中，云端同步为可选增强功能。启用云同步后，AI、Embedding、Rerank API Key 会随个人配置保存到 Firebase，以便其他电脑登录同一账号后恢复；AI 请求仍由浏览器直接调用提供商，不经过自建代理服务器。
 
 ---
 
@@ -68,7 +68,7 @@
 - **编辑模式锁**：正常模式下条款为只读（防止误改），开启编辑模式后解锁 contenteditable
 
 ### 2.8 版本对比
-- **原始数据副本**：导入时自动创建 `ORIGINAL_CONTRACTS` 深拷贝快照
+- **原始正文基线**：导入时将 `originalContent` 随条款保存，刷新和云端恢复后重建 `ORIGINAL_CONTRACTS` 运行时视图。旧数据若从未保存过原文，只能以升级时的现存正文建立迁移基线，不能还原此前修改；保留原始 TXT 仍然重要
 - **修改检测**：自动对比当前内容与原始内容（经过 HTML 标签规范化和空白归一化），在条款标题旁显示"已修改"标记
 - **原文对比弹窗**：点击修改标记展示并排对比视图
 
@@ -85,7 +85,7 @@
   - 导出为带审阅批注的 Word (.docx) — 包含高亮、字体颜色、备注等修改痕迹
   - 导出为基础版 Word (.docx) — 纯净版本，无批注标记
   - 导出为 PDF — 基于 html2pdf.js
-- **自动保存**：每 30 秒自动保存当前编辑内容到 localStorage
+- **自动保存**：编辑后 500 毫秒防抖写入 IndexedDB，并保留 30 秒定时保存和 Ctrl+S
 
 ### 2.11 云备份与多端同步 (Firebase)
 - **Firebase Auth 认证**：支持邮箱/密码登录和注册
@@ -99,7 +99,7 @@
 
 ### 2.12 主题与用户体验
 - **三主题切换**：日间模式 ☀️ / 护眼模式 🌿 / 夜间模式 🌙
-- **PWA 离线支持**：Service Worker 注册，完全离线可用（AI 和云同步除外）
+- **PWA 离线支持**：首次联网加载并完成 Service Worker 安装后，可离线启动、阅读、编辑和导出。核心依赖由本项目 `vendor/` 提供并预缓存；AI、查询 Embedding 和云同步仍需联网，大型预构建向量仅在使用后缓存
 - **离线状态提示**：顶部黄色警告条提示当前离线状态
 - **运行日志系统**：双槽位轮转日志（512KB × 2），自动记录时间戳/级别/模块来源，拦截 `console.error`/`console.warn` 和全局未捕获错误，支持控制台查看和导出
 - **自定义异步对话框**：替代原生 alert/confirm/prompt，风格与应用统一
@@ -123,7 +123,7 @@
     ▼                      ▼                      ▼
 ┌──────────┐    ┌──────────────────┐    ┌──────────────────┐
 │  CSS 层   │    │    JS 业务逻辑层   │    │   外部服务层      │
-│ style.css │    │  (19 个模块文件)   │    │                  │
+│ style.css │    │  (18 个模块文件)   │    │                  │
 │  · 主题   │    │                  │    │ · Firebase Auth  │
 │  · 布局   │    │  详见 3.2 模块表   │    │ · Firestore DB   │
 │  · 动效   │    │                  │    │ · AI API (OpenAI │
@@ -142,7 +142,7 @@ General Contract Manager/
 │   └── style.css           # 全局样式：三栏布局、主题配色、交互动效、响应式
 ├── js/
 │   ├── utils.js            # [基础层] 通用工具：HTML 转义/净化、状态提示条、
-│   │                       #   API Key 混淆加密、自定义异步对话框 (alert/confirm/prompt)
+│   │                       #   API Key 混淆（非加密）、自定义异步对话框 (alert/confirm/prompt)
 │   ├── logger.js           # [基础层] 运行日志系统：双槽位轮转日志 (512KB×2)、
 │   │                       #   四级日志级别、console 拦截、全局错误捕获、导出/查看
 │   ├── config.js           # [基础层] 全局 AI 配置常量、默认 Embedding/Rerank 模型、
@@ -270,6 +270,8 @@ General Contract Manager/
 │   └── OVERVIEW.md         # 合同查询系统总体说明 (双层文件体系、查询逻辑)
 │
 ├── sw.js                   # Service Worker (PWA 离线支持)
+├── vendor/                 # 本地浏览器依赖，原有固定版本不变
+├── tests/                  # 云同步、状态恢复、离线外壳回归及浏览器冒烟验证
 └── README.md               # 本文件
 ```
 
@@ -456,8 +458,8 @@ General Contract Manager/
 
 ### 6.1 数据安全
 - **本地优先架构**：合同本体通过 IndexedDB (LocalForage) 完全存储在用户浏览器中，无后端服务器
-- **API Key 保护**：所有第三方大模型 API Key 仅静态保存在浏览器 localStorage 中，使用简单 Base64 混淆，不经过任何中间服务器
-- **Firebase 安全规则**：建议配置仅允许已登录用户读写自己的数据（见第 7 章）
+- **API Key 存储**：本地 localStorage 使用简单 Base64 混淆，不能视为加密。开启云同步时，AI、Embedding、Rerank Key 和完整模型列表会以应用可读取的形式存入 Firebase；有相应数据库读取权限的项目管理者也可读取。不要把私人 Key 放进源码或 Netlify 公开构建配置
+- **Firebase 安全规则**：必须配置仅允许已登录用户读写自己的主文档和子集合（见第 7 章）。仓库中的示例不是线上规则已生效的证明，部署后需在 Firebase 控制台验证
 
 ### 6.2 浏览器兼容性
 - 推荐使用最新版 Google Chrome 或 Microsoft Edge（基于 Chromium 内核）
@@ -466,10 +468,10 @@ General Contract Manager/
 
 ### 6.3 数据备份提醒
 - **重要**：在执行"清理浏览器缓存"操作前，务必使用导出 `.json` 功能备份未云化的批注数据
-- 开启 Firebase 云同步的用户：数据自动备份，但合同原始文件（.txt）需要在每台设备上重新导入
+- 开启 Firebase 云同步的用户：完整合同、正文基线和相关配置会同步，新设备通常不需要重新导入；仍应独立保留原始 TXT 和备份
 
 ### 6.4 性能考量
-- `vectors-data.js` 可能较大（约 22MB），采用动态懒加载机制，仅在首次开启知识库模式时加载
+- `vectors-data.js` 可能较大（当前约 7.5 MB），采用动态懒加载机制，仅在首次开启知识库模式且需要预构建索引时加载
 - 预构建向量导入使用分批策略（每批 25 条 + setTimeout），避免阻塞 UI 线程
 - 云同步采用子集合分片存储，突破 Firestore 单文档 1 MiB 限制
 
@@ -519,6 +521,7 @@ service cloud.firestore {
 }
 ```
 3. 点击 **"发布"**
+4. 在 Rules Playground 验证：未登录用户不能读写；账号 A 可以读写自己的主文档、子集合和 `batches`；账号 B 不能访问账号 A 的这些路径。官方说明：https://firebase.google.com/docs/rules/simulator
 
 ### 7.5 获取 Firebase 配置信息
 1. 在 Firebase 控制台，点击左上角的 **"⚙️ 项目设置"**（齿轮图标）
@@ -557,12 +560,21 @@ Netlify 会在构建时生成浏览器可用的 Firebase 公共配置，因此�
 **同步范围说明：**
 - 📑 **书签栏**：所有合同的书签（包含层级、折叠状态）
 - ✏️ **条款修改/高亮**：在条款中做的所有编辑内容
-- 🤖 **AI 模型配置**：API Endpoint、API Key、模型名称
+- 🤖 **AI 模型配置**：完整模型列表（名称、API Endpoint、API Key、模型名称）和当前选中模型
 - 🔧 **AI 其他配置**：Embedding、Rerank、系统提示词
 - 🎨 **主题**：当前选择的界面主题（亮/暗/护眼）
 - ☁️ **Firebase 配置本身**：多设备间无缝切换
 
 > **注意**：Firebase 会同步完整合同数据、正文编辑、书签和相关设置。请确保 Firestore 规则允许当前用户访问自己的子集合数据。
+
+AI 配置以完整快照及 `modifiedAt` 比较版本。新设备的默认/空配置不会覆盖云端有效配置；恢复后会写入本地存储，刷新后仍可选择和使用模型。旧云快照中的单个活动模型会自动转换为模型列表。时间比较依赖设备时钟，同一版本冲突保留本地；这不是多人协作的 CRDT。
+
+### 7.8 本地验证
+
+- `npm test`：云同步、导入、基线持久化、新设备 AI 恢复、模型选择/删除、离线资源清单及缓存回退。
+- `npm run check`：所有 JS 的语法检查及 package/lockfile 一致性检查。
+- 浏览器冒烟步骤和已知验证边界见 `tests/README.md`。
+- 构建仍为 `npm run build`，仅按 Netlify 环境变量生成 Firebase **公共**配置，不包含任何私人 AI Key。
 
 ---
 

@@ -20,7 +20,8 @@ function createBaseContext() {
         },
         localStorage: {
             getItem(key) { return storage.has(key) ? storage.get(key) : null; },
-            setItem(key, value) { storage.set(key, String(value)); }
+            setItem(key, value) { storage.set(key, String(value)); },
+            removeItem(key) { storage.delete(key); }
         },
         navigator: { onLine: true },
         setInterval,
@@ -52,6 +53,7 @@ function loadEditorContext() {
         const CustomDialog = { prompt: async () => null, alert: async () => {} };
         const localforage = { setItem: async () => {} };
     `, context);
+    vm.runInContext(fs.readFileSync(path.join(root, 'js', 'comparison.js'), 'utf8'), context);
     vm.runInContext(fs.readFileSync(path.join(root, 'js', 'editor.js'), 'utf8'), context);
     return context;
 }
@@ -82,6 +84,7 @@ function loadCloudContext() {
         function getAISettingsForCloud() { return null; }
         const CustomDialog = { confirm: async () => true, alert: async () => {} };
     `, context);
+    vm.runInContext(fs.readFileSync(path.join(root, 'js', 'comparison.js'), 'utf8'), context);
     vm.runInContext(fs.readFileSync(path.join(root, 'js', 'cloud-storage.js'), 'utf8'), context);
     return context;
 }

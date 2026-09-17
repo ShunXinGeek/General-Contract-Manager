@@ -8,3 +8,5 @@ build/
 # IDE config files
 .vscode/
 .idea/
+.playwright-cli/
+output/playwright/

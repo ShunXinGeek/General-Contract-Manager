@@ -5,6 +5,85 @@
 // 须在 app.js 之后加载
 // =======================================================
 
+// 云同步与本地保存共用同一个配置契约。Key 按用户确认的方案继续同步。
+const AI_SETTINGS_MODIFIED_KEY = 'ai_settings_modified_at';
+const AI_CONFIG_STORAGE_FIELDS = {
+    apiEndpoint: 'endpoint', apiKey: 'apiKey', model: 'model',
+    embeddingEndpoint: 'embeddingEndpoint', embeddingApiKey: 'embeddingApiKey', embeddingModel: 'embeddingModel',
+    rerankEndpoint: 'rerankEndpoint', rerankApiKey: 'rerankApiKey', rerankModel: 'rerankModel',
+    systemPrompt: 'systemPrompt'
+};
+
+function getAISettingsForCloud() {
+    const snapshot = {
+        version: 2,
+        modifiedAt: Number(localStorage.getItem(AI_SETTINGS_MODIFIED_KEY)) || 0,
+        models: AI_CHAT_MODELS.map(({ _isDecrypted, ...model }) => ({ ...model })),
+        selectedModelId: currentSelectedModelId,
+        rerankEnabled: AI_CONFIG.rerankEnabled === true
+    };
+    Object.keys(AI_CONFIG_STORAGE_FIELDS).forEach(key => { snapshot[key] = AI_CONFIG[key] || ''; });
+    return snapshot;
+}
+
+function persistAISettings() {
+    Object.entries(AI_CONFIG_STORAGE_FIELDS).forEach(([field, storageKey]) => {
+        const value = AI_CONFIG[field] || '';
+        localStorage.setItem(AI_SETTINGS_KEYS[storageKey], field.toLowerCase().includes('apikey') ? obfuscateKey(value) : value);
+    });
+    localStorage.setItem(AI_SETTINGS_KEYS.rerankEnabled, String(AI_CONFIG.rerankEnabled === true));
+    saveChatModels();
+    saveSelectedModelId();
+}
+
+function touchAISettings() {
+    localStorage.setItem(AI_SETTINGS_MODIFIED_KEY, String(Date.now()));
+    persistAISettings();
+}
+
+function hasUsableAISettings(settings) {
+    return !!settings && (
+        settings.models?.some(m => m.endpoint && m.apiKey && m.model) ||
+        (settings.apiEndpoint && settings.apiKey && settings.model) ||
+        (settings.embeddingEndpoint && settings.embeddingApiKey) ||
+        (settings.rerankEndpoint && settings.rerankApiKey)
+    );
+}
+
+function mergeAISettings(localSettings, cloudSettings) {
+    if (!cloudSettings) return localSettings;
+    if (!localSettings) return cloudSettings;
+    const localTime = Number(localSettings.modifiedAt) || 0;
+    const cloudTime = Number(cloudSettings.modifiedAt) || 0;
+    // 新设备只有默认值，不能作为实质性配置写回云端。
+    if (!hasUsableAISettings(localSettings) && !localTime) return cloudSettings;
+    if (!hasUsableAISettings(cloudSettings) && !cloudTime) return localSettings;
+    // 完整快照按版本时间合并，包括用户明确删除模型的情况；相同时间保留本地。
+    return cloudTime > localTime ? cloudSettings : localSettings;
+}
+
+function applyCloudAISettings(settings) {
+    if (!settings) return;
+    Object.keys(AI_CONFIG_STORAGE_FIELDS).forEach(key => {
+        if (typeof settings[key] === 'string') AI_CONFIG[key] = settings[key];
+    });
+    if (typeof settings.rerankEnabled === 'boolean') AI_CONFIG.rerankEnabled = settings.rerankEnabled;
+    if (Array.isArray(settings.models)) {
+        AI_CHAT_MODELS = settings.models.map(({ _isDecrypted, ...model }) => ({ ...model }));
+    } else if (settings.apiEndpoint && settings.apiKey && settings.model) {
+        // 旧云快照只有一个活动模型，把它转换为可在下拉框中选择的模型。
+        AI_CHAT_MODELS = [{ id: 'legacy_cloud_model', name: settings.model,
+            endpoint: settings.apiEndpoint, apiKey: settings.apiKey, model: settings.model }];
+    }
+    currentSelectedModelId = AI_CHAT_MODELS.some(m => m.id === settings.selectedModelId)
+        ? settings.selectedModelId : (AI_CHAT_MODELS[0]?.id || null);
+    if (currentSelectedModelId) applySelectedModel();
+    localStorage.setItem(AI_SETTINGS_MODIFIED_KEY, String(Number(settings.modifiedAt) || 0));
+    persistAISettings();
+    updateModelSelector();
+    renderModelCards();
+}
+
 // =======================================================
 // 设置弹窗
 // =======================================================
@@ -117,6 +196,7 @@ function resetSystemPrompt() {
 }
 
 async function saveAISettings() {
+    const previousAISettings = JSON.stringify(getAISettingsForCloud());
     const fields = {
         embeddingEndpoint: 'settingEmbeddingEndpoint',
         embeddingApiKey: 'settingEmbeddingApiKey',
@@ -159,6 +239,9 @@ async function saveAISettings() {
         }
     }
 
+    // Firebase-only saves must not turn fresh-device defaults into a newer AI snapshot.
+    if (JSON.stringify(getAISettingsForCloud()) !== previousAISettings) touchAISettings();
+
     if (firebaseChanged) {
         showSettingsStatus('✅ 设置已保存，Firebase 配置已更新，页面即将刷新以应用更改', 'success');
         setTimeout(() => window.location.reload(), 1500);
@@ -169,13 +252,9 @@ async function saveAISettings() {
 }
 
 function loadAISettings() {
-    ['apiEndpoint:endpoint', 'apiKey:apiKey', 'model:model',
-        'embeddingEndpoint:embeddingEndpoint', 'embeddingApiKey:embeddingApiKey', 'embeddingModel:embeddingModel',
-        'rerankEndpoint:rerankEndpoint', 'rerankApiKey:rerankApiKey', 'rerankModel:rerankModel'
-    ].forEach(pair => {
-        const [k, sk] = pair.split(':');
+    Object.entries(AI_CONFIG_STORAGE_FIELDS).forEach(([k, sk]) => {
         let v = localStorage.getItem(AI_SETTINGS_KEYS[sk]);
-        if (v) {
+        if (v !== null) {
             if (k.toLowerCase().includes('apikey')) v = deobfuscateKey(v);
             AI_CONFIG[k] = v;
         }
@@ -217,7 +296,7 @@ function loadChatModels() {
 }
 
 function saveChatModels() {
-    // 保存前加密 API Key
+    // 保存前混淆 API Key（不是加密）
     const modelsToSave = AI_CHAT_MODELS.map(m => {
         const copy = { ...m };
         if (copy.apiKey) copy.apiKey = obfuscateKey(copy.apiKey);
@@ -287,13 +366,20 @@ function saveModel() {
         if (AI_CHAT_MODELS.length === 1) { currentSelectedModelId = newId; saveSelectedModelId(); applySelectedModel(); }
     }
     saveChatModels(); renderModelCards(); updateModelSelector(); closeModelEditModal();
+    touchAISettings();
 }
 
 function deleteModel(modelId) {
     if (confirm('确定要删除该模型？')) {
         AI_CHAT_MODELS = AI_CHAT_MODELS.filter(m => m.id !== modelId);
         saveChatModels(); renderModelCards();
-        if (currentSelectedModelId === modelId) { currentSelectedModelId = null; saveSelectedModelId(); updateModelSelector(); }
+        if (currentSelectedModelId === modelId) {
+            currentSelectedModelId = AI_CHAT_MODELS[0]?.id || null;
+            if (currentSelectedModelId) applySelectedModel();
+            else { AI_CONFIG.apiEndpoint = ''; AI_CONFIG.apiKey = ''; AI_CONFIG.model = ''; }
+        }
+        touchAISettings();
+        updateModelSelector();
     }
 }
 
@@ -325,6 +411,7 @@ function selectModel(modelId) {
     if (!m) return;
     currentSelectedModelId = modelId;
     saveSelectedModelId(); applySelectedModel(); updateModelSelector(); closeModelDropdown();
+    touchAISettings();
 }
 
 function updateModelSelector() {
@@ -356,14 +443,9 @@ function saveSelectedModelId() {
 
 function loadSelectedModelId() {
     const s = localStorage.getItem('ai_selected_model_id');
-    if (s) {
-        const m = AI_CHAT_MODELS.find(x => x.id === s);
-        if (m) { currentSelectedModelId = s; applySelectedModel(); }
-        else localStorage.removeItem('ai_selected_model_id');
-    } else if (AI_CHAT_MODELS.length > 0) {
-        currentSelectedModelId = AI_CHAT_MODELS[0].id;
-        saveSelectedModelId(); applySelectedModel();
-    }
+    currentSelectedModelId = AI_CHAT_MODELS.some(m => m.id === s) ? s : (AI_CHAT_MODELS[0]?.id || null);
+    saveSelectedModelId();
+    if (currentSelectedModelId) applySelectedModel();
     updateModelSelector();
 }
 

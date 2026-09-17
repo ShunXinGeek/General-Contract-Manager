@@ -518,7 +518,7 @@ async function applyCloudDataToLocal(cloudData) {
             contracts = restoredContracts;
             if (typeof ORIGINAL_CONTRACTS === 'undefined') window.ORIGINAL_CONTRACTS = {};
             Object.keys(contracts).forEach(key => {
-                ORIGINAL_CONTRACTS[key] = { data: JSON.parse(JSON.stringify(contracts[key].data)) };
+                restoreContractOriginals(key);
             });
 
             const requestedKey = cloudData.active_contract_key;
@@ -572,22 +572,7 @@ async function applyCloudDataToLocal(cloudData) {
     }
 }
 
-/**
- * 合并 AI 设置：本地有实质性配置则用本地，否则保留云端
- */
-function mergeAISettings(localSettings, cloudSettings) {
-    // 如果本地没有任何设置，完全使用云端
-    if (!localSettings) return cloudSettings;
-
-    // 检查本地是否有实质性配置（至少有一个模型配置）
-    const hasLocalModels = localSettings.models && localSettings.models.length > 0;
-    if (!hasLocalModels && cloudSettings?.models?.length > 0) {
-        return cloudSettings;
-    }
-
-    // 本地有配置，使用本地
-    return localSettings;
-}
+// AI 配置的快照和合并契约集中在 ai-settings.js。
 
 function collectCloudModifications(cloudData) {
     const collected = JSON.parse(JSON.stringify(cloudData?.modifications || {}));
@@ -620,6 +605,7 @@ function hydrateMissingCloudContracts(cloudData) {
                 data: JSON.parse(JSON.stringify(cloudContract.data || {})),
                 bookmarks: JSON.parse(JSON.stringify(cloudData.bookmarks?.[contractKey] || []))
             };
+            restoreContractOriginals(contractKey);
             return;
         }
 
@@ -636,8 +622,15 @@ function hydrateMissingCloudContracts(cloudData) {
             ['title', 'translation', 'translation_tc'].forEach(field => {
                 if (!localClause[field] && cloudClause[field]) localClause[field] = cloudClause[field];
             });
+            if (typeof cloudClause.originalContent === 'string' &&
+                (typeof localClause.originalContent !== 'string' ||
+                 (localClause.originalBaselineMigrated && cloudClause.originalBaselineMigrated !== true))) {
+                localClause.originalContent = cloudClause.originalContent;
+                localClause.originalBaselineMigrated = cloudClause.originalBaselineMigrated === true;
+            }
             if (!localClause.content && cloudClause.content) localClause.content = cloudClause.content;
         });
+        restoreContractOriginals(contractKey);
     });
 }
 

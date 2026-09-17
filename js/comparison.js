@@ -3,7 +3,30 @@
 // HK Contract Manager V5.2
 // =======================================================
 
-// 使用 data.js 中预创建的 ORIGINAL_CONTRACTS（在任何修改应用之前的原始数据）
+// 原始正文随条款 originalContent 持久化；ORIGINAL_CONTRACTS 只是运行时视图。
+function restoreContractOriginals(contractKey) {
+    if (!contracts[contractKey]?.data) return;
+    if (typeof ORIGINAL_CONTRACTS === 'undefined') window.ORIGINAL_CONTRACTS = {};
+    const originalData = {};
+    let migrated = 0;
+    Object.entries(contracts[contractKey].data).forEach(([id, clause]) => {
+        // 旧快照未保存导入基线，无法还原升级前的原文，以现存正文为迁移基线。
+        if (typeof clause.originalContent !== 'string') {
+            clause.originalContent = clause.content || '';
+            clause.originalBaselineMigrated = true;
+            migrated++;
+        }
+        originalData[id] = { ...clause, content: clause.originalContent };
+    });
+    ORIGINAL_CONTRACTS[contractKey] = { data: originalData };
+    if (migrated) console.info(`[comparison] ${contractKey}: ${migrated} 条旧数据以当前正文建立基线`);
+}
+
+function getOriginalClause(contractKey, clauseId) {
+    if (typeof ORIGINAL_CONTRACTS === 'undefined') return null;
+    const original = ORIGINAL_CONTRACTS[contractKey];
+    return original?.data?.[clauseId] || original?.[clauseId] || null;
+}
 
 /**
  * 检查条款是否被修改过
@@ -15,7 +38,7 @@ function checkClauseModified(clauseId) {
         return false;
     }
 
-    const originalClause = ORIGINAL_CONTRACTS[activeContractKey][clauseId];
+    const originalClause = getOriginalClause(activeContractKey, clauseId);
     const currentClause = fullClauseDatabase[clauseId];
 
     if (!originalClause || !currentClause) return false;
@@ -43,7 +66,7 @@ function showOriginalCompare(clauseId) {
         return;
     }
 
-    const originalClause = ORIGINAL_CONTRACTS[activeContractKey][clauseId];
+    const originalClause = getOriginalClause(activeContractKey, clauseId);
     const currentClause = fullClauseDatabase[clauseId];
 
     if (!originalClause || !currentClause) {
@@ -63,21 +86,22 @@ function showOriginalCompare(clauseId) {
             <div class="compare-body">
                 <div class="compare-column">
                     <div class="compare-column-header">📄 原始版本</div>
-                    <div class="compare-column-content">${originalClause.content}</div>
+                    <div class="compare-column-content">${sanitizeHtml(originalClause.content)}</div>
                 </div>
                 <div class="compare-column">
                     <div class="compare-column-header">✏️ 当前版本</div>
-                    <div class="compare-column-content">${currentClause.content}</div>
+                    <div class="compare-column-content">${sanitizeHtml(currentClause.content)}</div>
                 </div>
             </div>
             <div class="compare-footer">
-                <button class="btn-revert" onclick="revertToOriginal('${clauseId}')">↩ 恢复原文</button>
+                <button class="btn-revert">↩ 恢复原文</button>
                 <button class="btn-close" onclick="this.closest('.compare-modal').remove()">关闭</button>
             </div>
         </div>
     `;
 
     document.body.appendChild(modal);
+    modal.querySelector('.btn-revert').onclick = () => revertToOriginal(clauseId);
 
     // 点击遮罩关闭
     modal.addEventListener('click', (e) => {
@@ -88,13 +112,13 @@ function showOriginalCompare(clauseId) {
 /**
  * 恢复条款到原始版本
  */
-function revertToOriginal(clauseId) {
+async function revertToOriginal(clauseId) {
     if (typeof ORIGINAL_CONTRACTS === 'undefined' || !ORIGINAL_CONTRACTS[activeContractKey]) {
         showError('无法找到原始数据');
         return;
     }
 
-    const originalClause = ORIGINAL_CONTRACTS[activeContractKey][clauseId];
+    const originalClause = getOriginalClause(activeContractKey, clauseId);
 
     if (!originalClause) {
         showError('无法找到原始数据');
@@ -107,11 +131,12 @@ function revertToOriginal(clauseId) {
 
     // 恢复内容
     fullClauseDatabase[clauseId].content = originalClause.content;
+    fullClauseDatabase[clauseId].modifiedAt = Date.now();
 
     // 更新 DOM
     const clauseEl = document.querySelector(`#clause-${clauseId} .clause-text`);
     if (clauseEl) {
-        clauseEl.innerHTML = originalClause.content;
+        clauseEl.innerHTML = sanitizeHtml(originalClause.content);
     }
 
     // 移除修改标记
@@ -121,8 +146,10 @@ function revertToOriginal(clauseId) {
     // 关闭弹窗
     document.querySelector('.compare-modal')?.remove();
 
-    showSuccess('已恢复原文', 2000);
     markAsUnsaved();
+    updateLocalModificationTime();
+    if (await autoSave()) showSuccess('已恢复原文', 2000);
+    else showError('原文已恢复，但保存失败，请重试保存');
 }
 
 /**
@@ -142,7 +169,7 @@ function updateModifiedBadge(clauseId) {
         // 需要添加徽章
         const badge = document.createElement('button');
         badge.className = 'btn-modified';
-        badge.setAttribute('onclick', `showOriginalCompare('${clauseId}')`);
+        badge.onclick = () => showOriginalCompare(clauseId);
         badge.setAttribute('title', '点击查看原文对比');
         badge.innerHTML = '⚡ 已修改';
 

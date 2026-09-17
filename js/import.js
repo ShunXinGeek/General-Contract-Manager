@@ -218,19 +218,27 @@ function extractProperty(block, propName) {
     let matchBacktick = regexBacktick.exec(block);
     if (matchBacktick) return matchBacktick[1];
 
-    let regexDoubleQuote = new RegExp('"' + propName + '"\\s*:\\s*"([\\s\\S]*?)"');
+    let regexDoubleQuote = new RegExp('"' + propName + '"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"');
     let matchDoubleQuote = regexDoubleQuote.exec(block);
-    if (matchDoubleQuote) return matchDoubleQuote[1].replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+    if (matchDoubleQuote) return decodeQuotedProperty(matchDoubleQuote[1]);
 
     let regexBacktickNoQuote = new RegExp(propName + '\\s*:\\s*`([\\s\\S]*?)`');
     let matchBacktickNoQuote = regexBacktickNoQuote.exec(block);
     if (matchBacktickNoQuote) return matchBacktickNoQuote[1];
 
-    let regexNoQuote = new RegExp(propName + '\\s*:\\s*"([\\s\\S]*?)"');
+    let regexNoQuote = new RegExp(propName + '\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"');
     let matchNoQuote = regexNoQuote.exec(block);
-    if (matchNoQuote) return matchNoQuote[1].replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+    if (matchNoQuote) return decodeQuotedProperty(matchNoQuote[1]);
 
     return "";
+}
+
+function decodeQuotedProperty(value) {
+    try { return JSON.parse('"' + value + '"'); }
+    catch {
+        // Preserve the existing permissive TXT format (e.g. literal newlines in quoted values).
+        return value.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+    }
 }
 
 // Ensure toggleDropdown exists globally

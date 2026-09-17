@@ -99,8 +99,11 @@ let currentSelectedModelId = null;
  * 注册新合同到系统
  */
 function registerContract(key, title, data) {
-    // 保存原始数据副本（用于版本对比）
-    const originalData = JSON.parse(JSON.stringify(data));
+    // 每次重新导入都以本次导入的正文建立新的持久化基线。
+    Object.values(data).forEach(clause => {
+        clause.originalContent = clause.content || '';
+        clause.originalBaselineMigrated = false;
+    });
 
     contracts[key] = {
         title: title,
@@ -108,11 +111,7 @@ function registerContract(key, title, data) {
         bookmarks: null
     };
 
-    // 初始化原始数据（用于对比）
-    if (typeof ORIGINAL_CONTRACTS === 'undefined') {
-        window.ORIGINAL_CONTRACTS = {};
-    }
-    ORIGINAL_CONTRACTS[key] = { data: originalData };
+    restoreContractOriginals(key);
 
     // 初始化每合同独立状态
     searchStatePerContract[key] = '';
@@ -283,10 +282,10 @@ async function loadContractsFromStorage() {
 
             if (Object.keys(storedContracts).length > 0) {
                 contracts = storedContracts;
-                // 重建 ORIGINAL_CONTRACTS 副本
+                // 从持久化基线重建运行时视图，不把已编辑正文当成原文。
                 if (typeof ORIGINAL_CONTRACTS === 'undefined') window.ORIGINAL_CONTRACTS = {};
                 Object.keys(contracts).forEach(key => {
-                    ORIGINAL_CONTRACTS[key] = { data: JSON.parse(JSON.stringify(contracts[key].data)) };
+                    restoreContractOriginals(key);
                     searchStatePerContract[key] = '';
                     refViewStatePerContract[key] = false;
                     navViewStatePerContract[key] = false;
@@ -783,6 +782,7 @@ function renderMainDocument() {
     contentDiv.innerHTML = html;
     contentDiv.querySelectorAll('.clause-ref').forEach(el => { el.outerHTML = el.textContent; });
     autoLinkClauses();
+    sortedKeys.forEach(id => updateModifiedBadge(id));
 }
 
 // =======================================================
@@ -1180,15 +1180,5 @@ function closeFlowchart() { const m = document.getElementById('flowchartModal');
 let currentSearchTerm = '';
 let searchHighlights = [];
 
-// 全局可访问函数引用（供 cloud-storage.js 和其他模块使用）
-function getAISettingsForCloud() {
-    return { apiEndpoint: AI_CONFIG.apiEndpoint || '', apiKey: AI_CONFIG.apiKey || '', model: AI_CONFIG.model || '', embeddingEndpoint: AI_CONFIG.embeddingEndpoint || '', embeddingApiKey: AI_CONFIG.embeddingApiKey || '', embeddingModel: AI_CONFIG.embeddingModel || '', rerankEnabled: AI_CONFIG.rerankEnabled || false, rerankEndpoint: AI_CONFIG.rerankEndpoint || '', rerankApiKey: AI_CONFIG.rerankApiKey || '', rerankModel: AI_CONFIG.rerankModel || '', systemPrompt: AI_CONFIG.systemPrompt || '' };
-}
-function applyCloudAISettings(cs) {
-    if (!cs) return;
-    ['apiEndpoint', 'apiKey', 'model', 'embeddingEndpoint', 'embeddingApiKey', 'embeddingModel', 'rerankEndpoint', 'rerankApiKey', 'rerankModel'].forEach(k => { if (cs[k] !== undefined) { AI_CONFIG[k] = cs[k]; } });
-    if (cs.rerankEnabled !== undefined) AI_CONFIG.rerankEnabled = cs.rerankEnabled;
-    if (cs.systemPrompt) AI_CONFIG.systemPrompt = cs.systemPrompt;
-}
 
 console.log('[General Contract Shell] app.js 加载完成');

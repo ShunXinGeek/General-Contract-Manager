@@ -1,0 +1,16 @@
+CONTRACT_META:
+name: Browser Recovery Test
+shortName: RECOVERY
+---
+{
+    "1": {
+        "title": "Clause 1 - Definitions",
+        "content": "Original browser test text. See Clause 2.",
+        "translation": "浏览器测试原始正文。见第2条。"
+    },
+    "2": {
+        "title": "Clause 2 - Payment",
+        "content": "Payment is due under this test contract.",
+        "translation": "本测试合同下应支付款项。"
+    }
+}

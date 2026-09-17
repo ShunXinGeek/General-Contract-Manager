@@ -5,7 +5,8 @@
   "main": "index.html",
   "scripts": {
     "build": "node scripts/generate-firebase-config.js",
-    "test": "node tests/cloud-sync.test.js"
+    "test": "node tests/run.js",
+    "check": "node scripts/check.js"
   },
   "keywords": [],
   "author": "",

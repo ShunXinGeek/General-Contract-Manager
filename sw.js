@@ -1,9 +1,19 @@
 // Service Worker for General Contract Shell
-const CACHE_NAME = 'general-contract-shell-v2';
+const CACHE_PREFIX = 'general-contract-shell-';
+const CACHE_NAME = CACHE_PREFIX + 'v3';
 const urlsToCache = [
     './',
     './index.html',
     './css/style.css',
+    './vendor/marked.min.js',
+    './vendor/purify.min.js',
+    './vendor/localforage.min.js',
+    './vendor/html2pdf.bundle.min.js',
+    './vendor/docx.js',
+    './vendor/firebase-app-compat.js',
+    './vendor/firebase-auth-compat.js',
+    './vendor/firebase-firestore-compat.js',
+    './js/utils.js',
     './js/app.js',
     './js/config.js',
     './js/import.js',
@@ -14,7 +24,13 @@ const urlsToCache = [
     './js/comparison.js',
     './js/logger.js',
     './js/cloud-storage.js',
-    './js/firebase-config.js'
+    './js/firebase-config.js',
+    './js/firebase-runtime-config.js',
+    './js/cross-ref-data.js',
+    './js/cross-ref.js',
+    './js/ai-settings.js',
+    './js/editor.js',
+    './js/ai-assistant.js'
 ];
 
 self.addEventListener('install', event => {
@@ -28,7 +44,7 @@ self.addEventListener('install', event => {
 self.addEventListener('activate', event => {
     event.waitUntil(
         caches.keys().then(names =>
-            Promise.all(names.filter(n => n !== CACHE_NAME).map(n => caches.delete(n)))
+            Promise.all(names.filter(n => n.startsWith(CACHE_PREFIX) && n !== CACHE_NAME).map(n => caches.delete(n)))
         ).then(() => self.clients.claim())
     );
 });
@@ -44,7 +60,7 @@ self.addEventListener('fetch', event => {
             .then(response => {
                 if (response.ok) {
                     const responseToCache = response.clone();
-                    caches.open(CACHE_NAME).then(cache => cache.put(event.request, responseToCache));
+                    event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.put(event.request, responseToCache)));
                 }
                 return response;
             })

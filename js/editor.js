@@ -118,6 +118,7 @@ function captureCurrentContent() {
             if (fullClauseDatabase[id].content !== newContent) {
                 fullClauseDatabase[id].content = newContent;
                 fullClauseDatabase[id].modifiedAt = now;
+                updateModifiedBadge(id);
                 changed = true;
             }
         }
@@ -130,10 +131,7 @@ function hasUserModifications(content, clause = null, contractKey = null, clause
     if (clause?.modifiedAt) return true;
     if (!content) return false;
 
-    const originalContract = contractKey && typeof ORIGINAL_CONTRACTS !== 'undefined'
-        ? ORIGINAL_CONTRACTS[contractKey]
-        : null;
-    const originalClause = originalContract?.data?.[clauseId] || originalContract?.[clauseId];
+    const originalClause = contractKey ? getOriginalClause(contractKey, clauseId) : null;
     if (originalClause) {
         const normalize = value => String(value || '')
             .replace(/<span[^>]*\bclass=["']clause-ref["'][^>]*>(.*?)<\/span>/gi, '$1')
