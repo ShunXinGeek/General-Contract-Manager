@@ -40,3 +40,28 @@
 - `node tests/run.js`：通过（云端同步、状态恢复、离线 Shell）。
 - `node scripts/check.js`：通过（35 个文件语法检查及清单/锁文件一致性）。
 - Playwright 浏览器冒烟测试：通过；无未捕获 JavaScript 错误。
+
+## v2026.09.18（2026-09-18）
+
+本次更新修复了管理助手在浏览器中直接请求 AI 服务时出现 `Failed to fetch` 的问题，并完成了多服务商请求适配。
+
+### AI 通信与部署
+
+- 新增 Netlify Edge Function `/api/ai`，由本站转发 AI 对话请求，避免浏览器直连不同服务商时出现跨域、连接关闭或浏览器拦截问题。
+- 支持 DeepSeek、通义千问、智谱 GLM、Kimi 以及其他 OpenAI 兼容接口；通过官方域名和聊天接口路径白名单限制转发目标，不提供任意 URL 代理。
+- 按模型能力适配思考参数：千问使用 `enable_thinking`，DeepSeek、智谱和可切换的 Kimi 模型使用 `thinking.type`；固定思考模型不会发送不支持的关闭参数。
+- 保留流式输出、思考内容、停止生成、重新生成和取消请求功能；Embedding 与 Rerank 的原有调用路径不变。
+- Edge Function 不记录或缓存 API Key、合同内容及模型响应，并增加请求大小、超时、响应大小和频率限制。
+
+### 问题定位与修复
+
+- 将服务商 HTTP 400 的模糊提示细分为模型不存在、上下文超限和思考/输出参数不兼容等可操作提示，同时避免回显服务商原始响应中的密钥或请求内容。
+- 确认 DeepSeek 当前 Model 字段必须填写官方模型 ID。`DeepSeek V4.1 Flash` 是展示名称，正确配置应使用 `deepseek-flash`；用户完成修改后测试连接和管理助手均运行正常。
+- `ERR_BLOCKED_BY_CLIENT` 的 Firestore `Listen/Write` 终止请求与 AI 请求无关，不作为本次 AI 修复目标。
+
+### 验证与发布
+
+- `node tests/run.js`：通过，包含多服务商请求体、思考模式、流式 SSE、取消、错误诊断和既有云同步/离线回归测试。
+- `node scripts/check.js`：通过，包含脚本语法及项目清单检查。
+- 独立 Playwright 浏览器验证：通过，覆盖多服务商连接测试、模型错误提示、思考输出、重新生成、停止生成和刷新后配置恢复。
+- 已提交并推送至 GitHub：`d18feaa`（统一 AI 转发与多服务商适配）、`95a9f91`（服务商模型/参数错误诊断）。GitHub 连接的 Netlify 将自动部署最新提交。
