@@ -10,12 +10,18 @@ async (page) => {
     await page.evaluate(async () => { await localforage.clear(); localStorage.clear(); });
     await page.reload();
     await page.evaluate(() => window.contractAppReady);
+    assert(await page.locator('#btnToggleNavigator').isDisabled(), 'Navigator toggle must be disabled on the welcome page');
+    assert(await page.locator('#btnToggleReferenceView').isDisabled(), 'Reference-view toggle must be disabled on the welcome page');
     await page.getByRole('button', { name: '📥', exact: true }).click();
     // Use the real file input directly so CLI does not return early on a native chooser event.
     await page.locator('#importContractFile').setInputFiles('tests/fixtures/recovery-contract.txt');
     await page.getByRole('button', { name: '确定', exact: true }).click();
     await page.getByRole('button', { name: '确定', exact: true }).click();
     await page.locator('#clause-1 h2').waitFor();
+    assert(!(await page.locator('#btnToggleNavigator').isDisabled()), 'Navigator toggle must be enabled on a contract page');
+    assert(!(await page.locator('#btnToggleReferenceView').isDisabled()), 'Reference-view toggle must be enabled on a contract page');
+    assert(await page.locator('#btnLangMode').isVisible(), 'Original/translation toggle must appear on every contract tab');
+    assert(await page.locator('#btnLangToggle').isVisible(), 'Simplified/traditional toggle must appear on every contract tab');
     assert(await page.locator('.btn-modified').count() === 0, 'Imported contract must start unmodified');
     await page.locator('#btnEditMode').click();
     await page.getByRole('button', { name: '确定', exact: true }).click();
@@ -40,6 +46,47 @@ async (page) => {
     await page.locator('.search-input').fill('');
     await page.locator('#clause-1 h2').click();
     assert((await page.locator('#refContent').innerText()).includes('浏览器测试原始正文'), 'Translation/reference view regressed');
+    await page.evaluate(() => renderRefContent('1', 'ref'));
+    // The language preference belongs to the reference panel, rather than a single referenced clause.
+    // Use a second contract so this follows the same cross-contract link path as SCC/GCC references.
+    await page.evaluate(() => {
+        contracts.GCC = {
+            title: 'GCC',
+            data: {
+                '1': { title: 'GCC Clause 1', content: 'GCC Clause 1 English', translation: 'GCC 条款一简体译文', translation_tc: 'GCC 條款一繁體譯文' },
+                '2': { title: 'GCC Clause 2', content: 'GCC Clause 2 English', translation: 'GCC 条款二简体译文', translation_tc: 'GCC 條款二繁體譯文' }
+            },
+            bookmarks: []
+        };
+        showCrossContractRef('GCC', '1');
+    });
+    assert((await page.locator('#refContent').innerText()).includes('GCC Clause 1 English'), 'Cross-contract reference must initially show the original');
+    await page.locator('#btnLangToggle').click();
+    assert(await page.evaluate(() => isTraditionalChinese === false), 'Chinese variant must not change while the original is displayed');
+    await page.locator('#btnLangMode').click();
+    assert((await page.locator('#refContent').innerText()).includes('GCC 条款一简体译文'), 'Translation toggle did not show the translated clause');
+    await page.locator('#btnLangToggle').click();
+    assert((await page.locator('#refContent').innerText()).includes('GCC 條款一繁體譯文'), 'Traditional Chinese toggle did not update the translated clause');
+    await page.evaluate(() => showCrossContractRef('GCC', '2'));
+    assert((await page.locator('#refContent').innerText()).includes('GCC 條款二繁體譯文'), 'Translated/traditional preference did not persist to the next linked clause');
+    await page.locator('#btnLangMode').click();
+    await page.evaluate(() => showCrossContractRef('GCC', '1'));
+    assert((await page.locator('#refContent').innerText()).includes('GCC Clause 1 English'), 'Original preference did not persist to the next linked clause');
+    await page.evaluate(() => switchContract('GCC'));
+    assert(await page.locator('#btnLangMode').isVisible(), 'Original/translation toggle missing after switching to an added contract tab');
+    assert(await page.locator('#btnLangToggle').isVisible(), 'Simplified/traditional toggle missing after switching to an added contract tab');
+    assert(await page.locator('#btnLangMode').textContent() === '译', 'New contract tab must default to original text');
+    assert(await page.locator('#btnLangToggle').textContent() === '简', 'New contract tab must default to simplified Chinese');
+    await page.evaluate(() => showRef('1'));
+    assert((await page.locator('#refContent').innerText()).includes('GCC Clause 1 English'), 'Added contract tab must initially show the original');
+    await page.locator('#btnLangMode').click();
+    await page.locator('#btnLangToggle').click();
+    await page.evaluate(() => showRef('2'));
+    assert((await page.locator('#refContent').innerText()).includes('GCC 條款二繁體譯文'), 'Added contract tab did not retain translated/traditional preferences');
+    await page.locator('#btnLangMode').click();
+    await page.evaluate(() => showRef('1'));
+    assert((await page.locator('#refContent').innerText()).includes('GCC Clause 1 English'), 'Added contract tab did not retain original preference');
+    await page.evaluate(() => switchContract('RECOVERY'));
 
     const snapshot = await page.evaluate(() => ({ contract_data: collectAllContractData(),
         active_contract_key: activeContractKey, bookmarks: collectAllBookmarks(), modifications: {} }));

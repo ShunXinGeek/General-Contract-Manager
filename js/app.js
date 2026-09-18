@@ -16,6 +16,8 @@ let savedBookmarks = null;
 let activeContractKey = null;          // 当前激活合同键（null = 无合同）
 let searchStatePerContract = {};       // 每合同独立搜索状态
 let refViewStatePerContract = {};      // 每合同独立右侧面板折叠状态
+let refLanguageModePerContract = {};   // 每合同独立原文/译文偏好
+let chineseVariantPerContract = {};    // 每合同独立简体/繁体偏好
 let navViewStatePerContract = {};      // 每合同独立左侧面板折叠状态
 let navScrollPerContract = {};         // 每合同独立左侧书签栏滚动位置
 let mainScrollPerContract = {};        // 每合同独立中间主面板滚动位置
@@ -116,6 +118,8 @@ function registerContract(key, title, data) {
     // 初始化每合同独立状态
     searchStatePerContract[key] = '';
     refViewStatePerContract[key] = false;
+    refLanguageModePerContract[key] = 'ref';
+    chineseVariantPerContract[key] = false;
     navViewStatePerContract[key] = false;
     navScrollPerContract[key] = 0;
     mainScrollPerContract[key] = 0;
@@ -190,6 +194,8 @@ function removeContract(key) {
     delete contracts[key];
     delete searchStatePerContract[key];
     delete refViewStatePerContract[key];
+    delete refLanguageModePerContract[key];
+    delete chineseVariantPerContract[key];
     delete navViewStatePerContract[key];
     delete navScrollPerContract[key];
     delete mainScrollPerContract[key];
@@ -288,6 +294,8 @@ async function loadContractsFromStorage() {
                     restoreContractOriginals(key);
                     searchStatePerContract[key] = '';
                     refViewStatePerContract[key] = false;
+                    refLanguageModePerContract[key] = 'ref';
+                    chineseVariantPerContract[key] = false;
                     navViewStatePerContract[key] = false;
                     navScrollPerContract[key] = 0;
                     mainScrollPerContract[key] = 0;
@@ -317,15 +325,22 @@ async function loadContractsFromStorage() {
 // =======================================================
 // 3. 欢迎页管理 (含合同控制台)
 // =======================================================
+function setDocumentPanelToggleAvailability(enabled) {
+    document.getElementById('btnToggleNavigator')?.toggleAttribute('disabled', !enabled);
+    document.getElementById('btnToggleReferenceView')?.toggleAttribute('disabled', !enabled);
+}
+
 function showWelcomePage() {
     // 强制清理活动全局变量
     if (activeContractKey) {
         captureCurrentContent();
+        saveReferenceLanguagePreference();
         const panelMain = document.getElementById('panelMain');
         if (panelMain) mainScrollPerContract[activeContractKey] = panelMain.scrollTop;
     }
     activeContractKey = null;
     fullClauseDatabase = {};
+    setDocumentPanelToggleAvailability(false);
     document.querySelectorAll('.header-tab').forEach(btn => btn.classList.remove('active'));
     const tabWelcome = document.getElementById('tab-Welcome');
     if (tabWelcome) tabWelcome.classList.add('active');
@@ -488,6 +503,10 @@ function handleAutoRenameContract(oldKey, type, inputElement) {
         delete contracts[oldKey];
         delete searchStatePerContract[oldKey];
         delete refViewStatePerContract[oldKey];
+        refLanguageModePerContract[newValue] = refLanguageModePerContract[oldKey] || 'ref';
+        delete refLanguageModePerContract[oldKey];
+        chineseVariantPerContract[newValue] = chineseVariantPerContract[oldKey] === true;
+        delete chineseVariantPerContract[oldKey];
         delete navViewStatePerContract[oldKey];
         navScrollPerContract[newValue] = navScrollPerContract[oldKey] || 0;
         delete navScrollPerContract[oldKey];
@@ -613,6 +632,7 @@ function applyTheme(idx) {
 // =======================================================
 function switchContract(key) {
     if (!contracts[key]) return;
+    setDocumentPanelToggleAvailability(true);
 
     // 更新标签高亮
     document.querySelectorAll('.header-tab').forEach(btn => btn.classList.remove('active'));
@@ -624,6 +644,7 @@ function switchContract(key) {
 
     // 保存当前合同状态
     if (activeContractKey && contracts[activeContractKey]) {
+        saveReferenceLanguagePreference();
         if (typeof syncStatePerContract !== 'undefined') {
             syncStatePerContract[activeContractKey] = isSyncMode;
         }
@@ -670,6 +691,13 @@ function switchContract(key) {
     resetCrossRefState();
     activeContractKey = key;
     fullClauseDatabase = contracts[key].data;
+    currentRefMode = refLanguageModePerContract[key] || 'ref';
+    isTraditionalChinese = chineseVariantPerContract[key] === true;
+    currentRefId = null;
+    refHistory = [];
+    refHistoryIndex = -1;
+    updateLangModeButton();
+    updateChineseVariantButton();
     const mainScrollTopToRestore = mainScrollPerContract[key] ?? 0;
 
     savedBookmarks = null;
@@ -861,9 +889,9 @@ function autoLinkClauses() {
 // =======================================================
 // 10. 引用导航
 // =======================================================
-function showRef(id) { resetCrossRefState(); openSidePanel(); navigateToRef(id, 'ref', true); highlightActiveLink(); }
+function showRef(id) { resetCrossRefState(); openSidePanel(); navigateToRef(id, currentRefMode, true); highlightActiveLink(); }
 function showTranslation(id) { resetCrossRefState(); openSidePanel(); navigateToRef(id, 'trans', true); }
-function navigateToRefInternal(id) { navigateToRef(id, 'ref', true); }
+function navigateToRefInternal(id) { navigateToRef(id, currentRefMode, true); }
 
 function navigateToRef(id, mode, isNew) {
     if (!fullClauseDatabase[id]) return;
@@ -875,8 +903,8 @@ function navigateToRef(id, mode, isNew) {
     updateNavButtons();
     renderRefContent(id, mode);
 }
-function goRefBack() { resetCrossRefState(); if (refHistoryIndex > 0) { refHistoryIndex--; const item = refHistory[refHistoryIndex]; navigateToRef(item.id, item.mode, false); } }
-function goRefForward() { resetCrossRefState(); if (refHistoryIndex < refHistory.length - 1) { refHistoryIndex++; const item = refHistory[refHistoryIndex]; navigateToRef(item.id, item.mode, false); } }
+function goRefBack() { resetCrossRefState(); if (refHistoryIndex > 0) { refHistoryIndex--; const item = refHistory[refHistoryIndex]; navigateToRef(item.id, currentRefMode, false); } }
+function goRefForward() { resetCrossRefState(); if (refHistoryIndex < refHistory.length - 1) { refHistoryIndex++; const item = refHistory[refHistoryIndex]; navigateToRef(item.id, currentRefMode, false); } }
 function goRefStep(offset) {
     resetCrossRefState();
     const keys = Object.keys(fullClauseDatabase).sort((a, b) => parseInt(a) - parseInt(b));
@@ -902,6 +930,8 @@ function processRefLinks(text) {
 }
 function renderRefContent(id, mode) {
     currentRefId = id; currentRefMode = mode; updateNavButtons();
+    saveReferenceLanguagePreference();
+    updateLangModeButton();
     const header = document.getElementById('refFixedHeader');
     const title = document.getElementById('refFixedTitle');
     const content = document.getElementById('refContent');
@@ -929,13 +959,14 @@ function showCrossContractRef(contractKey, clauseId) {
     isViewingCrossContractRef = true;
     crossRefContractKey = contractKey;
     openSidePanel();
-    renderCrossContractRefContent(contractKey, clauseId, 'ref');
+    renderCrossContractRefContent(contractKey, clauseId, currentRefMode);
     updateCrossRefButton();
     highlightActiveLink();
 }
 
 function renderCrossContractRefContent(contractKey, id, mode) {
     currentRefId = id; currentRefMode = mode; updateNavButtons();
+    saveReferenceLanguagePreference();
     const data = contracts[contractKey] ? contracts[contractKey].data : null;
     const dbEntry = data ? data[id] : null;
     if (!dbEntry) return;
@@ -960,11 +991,20 @@ function renderCrossContractRefContent(contractKey, id, mode) {
 
 function updateCrossRefButton() {
     const btn = document.getElementById('btnLangMode');
-    if (btn) btn.style.display = isViewingCrossContractRef ? 'flex' : 'none';
+    if (btn) btn.style.display = 'flex';
 }
 function updateLangModeButton() {
     const btn = document.getElementById('btnLangMode');
     if (btn) btn.innerText = (currentRefMode === 'ref') ? '译' : '原';
+}
+function updateChineseVariantButton() {
+    const btn = document.getElementById('btnLangToggle');
+    if (btn) btn.innerText = isTraditionalChinese ? '繁' : '简';
+}
+function saveReferenceLanguagePreference() {
+    if (!activeContractKey) return;
+    refLanguageModePerContract[activeContractKey] = currentRefMode;
+    chineseVariantPerContract[activeContractKey] = isTraditionalChinese;
 }
 function resetCrossRefState() {
     isViewingCrossContractRef = false;
@@ -972,8 +1012,16 @@ function resetCrossRefState() {
     updateCrossRefButton();
 }
 function toggleRefLangMode() {
-    if (!isViewingCrossContractRef || !crossRefContractKey) return;
-    renderCrossContractRefContent(crossRefContractKey, currentRefId, currentRefMode === 'ref' ? 'trans' : 'ref');
+    const nextMode = currentRefMode === 'ref' ? 'trans' : 'ref';
+    if (isViewingCrossContractRef && crossRefContractKey && currentRefId) {
+        renderCrossContractRefContent(crossRefContractKey, currentRefId, nextMode);
+    } else if (currentRefId) {
+        renderRefContent(currentRefId, nextMode);
+    } else {
+        currentRefMode = nextMode;
+        saveReferenceLanguagePreference();
+        updateLangModeButton();
+    }
 }
 
 // 面板控制
@@ -1027,9 +1075,10 @@ function toggleRef() {
 
 // 简繁切换
 function toggleChineseVariant() {
+    if (!isSyncMode && currentRefMode !== 'trans') return;
     isTraditionalChinese = !isTraditionalChinese;
-    const btn = document.getElementById('btnLangToggle');
-    btn.innerText = isTraditionalChinese ? '繁' : '简';
+    saveReferenceLanguagePreference();
+    updateChineseVariantButton();
     if (isSyncMode) { renderAllTranslations(); }
     else if (isViewingCrossContractRef && currentRefId && crossRefContractKey) {
         renderCrossContractRefContent(crossRefContractKey, currentRefId, currentRefMode);
