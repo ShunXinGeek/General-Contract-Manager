@@ -1047,10 +1047,11 @@ function showSyncDialog() {
         <div style="position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; z-index:10000;">
             <div style="background:white; padding:30px; border-radius:12px; width:350px; box-shadow:0 10px 40px rgba(0,0,0,0.3);">
                 <h3 style="margin:0 0 10px 0; text-align:center;">☁️ 云备份</h3>
-                <p style="text-align:center; color:#666; margin-bottom:20px;">已登录: ${user.email}</p>
+                <p style="text-align:center; color:#666; margin-bottom:12px;">已登录: ${user.email}</p>
+                <p style="margin:0 0 16px; padding:10px 12px; border-radius:8px; background:#edf7fd; color:#1f5e89; font-size:13px; line-height:1.5;">不确定时，请选择“智能合并同步”。</p>
                 
-                <button onclick="handleManualSync()" style="width:100%; padding:12px; background:#3498db; color:white; border:none; border-radius:8px; cursor:pointer; font-size:14px; margin-bottom:10px;">🔄 立即同步</button>
-                <button onclick="handleForceUpload()" style="width:100%; padding:12px; background:#27ae60; color:white; border:none; border-radius:8px; cursor:pointer; font-size:14px; margin-bottom:10px;">📤 上传本地数据</button>
+                <button onclick="handleManualSync()" title="比较本机与云端，保留每项较新的修改" aria-label="智能合并同步：比较本机与云端，保留每项较新的修改" style="width:100%; padding:12px; background:#3498db; color:white; border:none; border-radius:8px; cursor:pointer; font-size:14px; margin-bottom:10px; line-height:1.45;"><span style="display:block; font-weight:600;">🔄 智能合并同步（推荐）</span><span style="display:block; margin-top:3px; font-size:12px; opacity:0.92;">比较本机与云端，保留每项较新的修改</span></button>
+                <button onclick="handleForceUpload()" title="仅上传本机数据；云端独有的合同和修改将被删除" aria-label="用本机数据覆盖云端：仅上传本机数据，云端独有的合同和修改将被删除" style="width:100%; padding:12px; background:#c0392b; color:white; border:none; border-radius:8px; cursor:pointer; font-size:14px; margin-bottom:10px; line-height:1.45;"><span style="display:block; font-weight:600;">⚠️ 用本机数据覆盖云端</span><span style="display:block; margin-top:3px; font-size:12px; opacity:0.92;">仅上传本机数据；云端独有的合同和修改将被删除</span></button>
                 <button onclick="handleForceDownload()" style="width:100%; padding:12px; background:#9b59b6; color:white; border:none; border-radius:8px; cursor:pointer; font-size:14px; margin-bottom:10px;">📥 下载云端数据</button>
                 <button onclick="handleCloudLogout()" style="width:100%; padding:12px; background:#e74c3c; color:white; border:none; border-radius:8px; cursor:pointer; font-size:14px;">退出登录</button>
                 
@@ -1165,7 +1166,7 @@ async function handleManualSync() {
  * 处理强制上传
  */
 async function handleForceUpload() {
-    const isUpload = await CustomDialog.confirm('确定要将本地数据上传到云端吗？\n这将覆盖云端的数据。');
+    const isUpload = await CustomDialog.confirm('不会下载或合并云端内容。\n云端独有的合同和修改将被删除。\n\n仍要用本机数据覆盖云端吗？');
     if (!isUpload) return;
 
     try {
