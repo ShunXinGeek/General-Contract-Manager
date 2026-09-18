@@ -11,6 +11,8 @@
 // =======================================================
 // 15. AI 管理助手 - 面板切换
 // =======================================================
+let knowledgeBaseReady = Promise.resolve();
+let lastRetrievalEvidence = null;
 function switchToAssistant() {
     isAssistantMode = true;
     document.querySelectorAll('.header-tab').forEach(btn => btn.classList.remove('active'));
@@ -54,27 +56,34 @@ async function sendMessage() {
     const text = input.value.trim();
     if (!text || isStreaming) return;
     if (!isAIConfigured()) { alert('🤖 AI 助手尚未配置\n\n请点击 ⚙️ 设置按钮配置。'); openSettings(); return; }
+    abortController = new AbortController();
+    const requestSignal = abortController.signal;
     addMessage('user', text);
     input.value = ''; autoResizeInput();
     showTypingIndicator();
-    try { isStreaming = true; updateSendButton(); const messages = await buildMessagesForAPI(); await streamAPIResponse(messages); }
+    try { isStreaming = true; updateSendButton(); const messages = await buildMessagesForAPI(); if (requestSignal.aborted) throw new DOMException('已停止生成', 'AbortError'); await streamAPIResponse(messages); }
     catch (error) { if (error.name !== 'AbortError') addMessage('assistant', '❌ 请求失败: ' + error.message); }
     finally { isStreaming = false; hideTypingIndicator(); updateSendButton(); saveChatToStorage(); }
 }
 
-async function buildMessagesForAPI() {
+async function buildMessagesForAPI(historyOverride) {
+    lastRetrievalEvidence = null;
+    const sourceHistory = historyOverride || chatMessages;
+    const startIndex = historyOverride ? sourceHistory.reduce((index, msg, i) => msg.type === 'break' ? i + 1 : index, 0) : (hasContextBreak ? contextBreakIndex : 0);
+    const effectiveHistory = sourceHistory.slice(startIndex);
     let systemPrompt = typeof generateDynamicSystemPrompt === 'function' ? generateDynamicSystemPrompt() : AI_CONFIG.systemPrompt;
     if (isKnowledgeBaseMode) {
-        const lastUserMessage = chatMessages.filter(m => m.role === 'user').pop();
+        await knowledgeBaseReady;
+        const lastUserMessage = effectiveHistory.filter(m => m.role === 'user').pop();
         if (lastUserMessage) {
-            const relevantClauses = await findRelevantClauses(lastUserMessage.content);
+            const relevantClauses = await findRelevantClauses(lastUserMessage.content, effectiveHistory);
             systemPrompt = buildDatabaseModePrompt(relevantClauses);
         }
     }
     const messages = [{ role: 'system', content: systemPrompt }];
+    if (lastRetrievalEvidence) messages.retrievalEvidence = lastRetrievalEvidence;
     const keepReasoning = AIClient.needsReasoningHistory(AI_CONFIG.apiEndpoint, AI_CONFIG.model);
-    const startIndex = hasContextBreak ? contextBreakIndex : 0;
-    chatMessages.slice(startIndex).forEach(msg => {
+    effectiveHistory.forEach(msg => {
         if (msg.type !== 'break') messages.push({ role: msg.role, content: msg.content,
             ...(keepReasoning && msg.role === 'assistant' ? { reasoning_content: msg.reasoning || '' } : {}) });
     });
@@ -83,36 +92,16 @@ async function buildMessagesForAPI() {
 
 // 数据库模式提示词（通用版 / 交叉引用增强版）
 function buildDatabaseModePrompt(relevantClauses) {
-    // 检测是否为交叉引用结果（包含 relation 或 modificationType 字段）
-    const hasCrossRefMeta = relevantClauses.length > 0 && relevantClauses.some(c => c.relation !== undefined);
-    if (hasCrossRefMeta && typeof buildCrossRefPrompt === 'function') {
-        return buildCrossRefPrompt(relevantClauses);
-    }
-
-    // 通用版：适用于纯 RAG 或无交叉引用元数据的结果
-    if (relevantClauses.length === 0) {
-        let allTitles = [];
-        Object.keys(contracts).forEach(type => {
-            Object.entries(contracts[type].data).sort((a, b) => parseInt(a[0]) - parseInt(b[0])).forEach(([id, c]) => {
-                allTitles.push(type + ' Clause ' + id + ': ' + c.title);
-            });
-        });
-        return '【系统角色】你是一个合同条款数据库查询助手。\n\n【当前状态】\n未找到精确匹配。以下是完整目录：\n\n' + allTitles.join('\n') + '\n\n【回复要求】\n1. 告知用户未找到精确匹配\n2. 推荐2-5个相关条款（格式：[合同简称] Clause X）\n3. 建议用户点击「引用条款」按钮查看具体内容';
-    }
-    let clauseContext = '';
-    relevantClauses.forEach(clause => {
-        const modLabel = clause.modificationType && clause.modificationType !== '无 SCC 修改'
-            ? ' [SCC修改类型: ' + clause.modificationType + ']' : '';
-        const relationLabel = clause.relation === 'modifies'
-            ? ' [修改GCC ' + (clause.gccClause || '?') + ']' : '';
-        clauseContext += '<<<' + clause.type + ' Clause ' + clause.id + ': ' + clause.title + modLabel + relationLabel + '>>>\n' + clause.content + '\n\n';
-    });
-    return '【系统角色】你是合同条款数据库查询终端。\n\n【核心原则】回答必须100%基于下方条款原文。当 SCC 对 GCC 存在修改时，以 SCC 为准。\n\n【可用条款数据库】\n' + clauseContext + '【条款数据库结束】\n\n【回复步骤】\n1. 确认找到的条款编号\n2. 如涉及 SCC 修改，明确标注「以 SCC 为准」\n3. 引用条款格式：[合同简称] Clause X\n4. 基于原文解答\n5. 校验引用存在性';
+    const evidence = lastRetrievalEvidence || { clauses: relevantClauses, diagnostic: { query: '', warnings: [], missing: [], omitted: [], relationships: [] } };
+    const base = generateDynamicSystemPrompt() + '\n' + (AI_CONFIG.systemPrompt || '');
+    return AIRetrieval.prompt(evidence, base);
 }
 
 async function streamAPIResponse(messages, existingMessageDiv, existingIndex) {
-    abortController = new AbortController();
-    const response = await AIClient.request(AI_CONFIG, messages, { thinking: isThinkingMode, signal: abortController.signal });
+    if (!abortController || abortController.signal.aborted) abortController = new AbortController();
+    const evidence = messages.retrievalEvidence;
+    const requestConfig = { ...AI_CONFIG }, thinking = isThinkingMode, requestSignal = abortController.signal;
+    const response = await AIClient.request(requestConfig, messages, { thinking, signal: requestSignal });
     hideTypingIndicator();
     let assistantContent = '', reasoningContent = '', thinkingStartTime = null, thinkingEndTime = null;
     let messageDiv = existingMessageDiv || null;
@@ -168,8 +157,31 @@ async function streamAPIResponse(messages, existingMessageDiv, existingIndex) {
             }
         }
     }
+    let validation = null;
+    if (assistantContent && evidence && !streamError) {
+        validation = AIRetrieval.validate(assistantContent, evidence, contracts);
+        if (!validation.passed && evidence.clauses.length && !requestSignal.aborted) {
+            try {
+                if (messageDiv) messageDiv.querySelector('.message-content').insertAdjacentHTML('beforeend', '<p>正在依据原文校验并修正引用…</p>');
+                const repairMessages = [...messages, { role: 'assistant', content: assistantContent }, { role: 'user', content:
+                    '请只修正以下引用校验问题，仍以已提供原文为准；无法修正时明确说明缺口，不补造内容。返回完整修正答案。问题：' + validation.issues.join('；') }];
+                const repair = await AIClient.request(requestConfig, repairMessages, { stream: false, thinking, signal: requestSignal });
+                const repaired = (await repair.json()).choices?.[0]?.message?.content;
+                if (repaired) { assistantContent = repaired; validation = { ...AIRetrieval.validate(repaired, evidence, contracts), repaired: true }; }
+            } catch (_) { validation.repairFailed = true; if (requestSignal.aborted) streamError = new DOMException('已停止生成', 'AbortError'); }
+        }
+        if (!validation.passed) assistantContent += '\n\n[引用校验提示：' + validation.issues.join('；') + '。以上涉及内容需核对原文。]';
+        const gaps = [...evidence.diagnostic.missing, ...evidence.diagnostic.omitted, ...evidence.diagnostic.warnings.filter(text => /不可用|不一致|失效|旧索引|向量索引为空|未检出|缺少/.test(text))];
+        if (gaps.length) assistantContent += '\n\n[依据范围提示：' + gaps.slice(0, 4).join('；') + (gaps.length > 4 ? '；另有 ' + (gaps.length - 4) + ' 项缺口' : '') + '。]';
+        if (messageDiv) {
+            messageDiv.querySelector('.message-content').innerHTML = renderMarkdown(assistantContent);
+            messageDiv.dataset.rawContent = assistantContent;
+        }
+    }
     if (assistantContent) {
         const msgData = { role: 'assistant', content: assistantContent };
+        if (validation) msgData.validation = validation;
+        if (evidence) msgData.retrievalDiagnostic = evidence.diagnostic;
         if (reasoningContent) { msgData.reasoning = reasoningContent; msgData.thinkingDuration = thinkingStartTime && thinkingEndTime ? ((thinkingEndTime - thinkingStartTime) / 1000).toFixed(1) : null; }
         if (existingIndex !== undefined && existingIndex >= 0 && existingIndex < chatMessages.length) {
             chatMessages[existingIndex] = msgData;
@@ -248,13 +260,10 @@ async function regenerateMessage(btn) {
     const msgDiv = btn.closest('.chat-message');
     const index = parseInt(msgDiv.dataset.msgIndex);
     if (!isNaN(index) && index >= 0 && index < chatMessages.length) {
-        // Temporarily remove old assistant message so buildMessagesForAPI doesn't include it
-        const oldMsg = chatMessages.splice(index, 1)[0];
+        abortController = new AbortController();
+        const requestSignal = abortController.signal;
         showTypingIndicator();
-        const messages = await buildMessagesForAPI();
-        // Restore the old message at the same position; it will be replaced when streaming completes
-        chatMessages.splice(index, 0, oldMsg);
-        try { isStreaming = true; updateSendButton(); await streamAPIResponse(messages, msgDiv, index); }
+        try { isStreaming = true; updateSendButton(); const messages = await buildMessagesForAPI(chatMessages.slice(0, index)); if (requestSignal.aborted) throw new DOMException('已停止生成', 'AbortError'); await streamAPIResponse(messages, msgDiv, index); }
         catch (error) { if (error.name !== 'AbortError') { chatMessages[index] = { role: 'assistant', content: '❌ 请求失败: ' + error.message }; renderChatMessages(); } }
         finally { isStreaming = false; hideTypingIndicator(); updateSendButton(); saveChatToStorage(); }
     }
@@ -501,7 +510,7 @@ function toggleKnowledgeBaseMode() {
     const icon = document.getElementById('kbModeIcon');
     const text = document.getElementById('kbModeText');
     const btnUpdate = document.getElementById('btnUpdateIndex');
-    if (isKnowledgeBaseMode) { btn.classList.add('db-active'); icon.innerText = '📂'; text.innerText = '知识库已开启'; btnUpdate.style.display = 'inline-flex'; checkRAGIndexStatus(); }
+    if (isKnowledgeBaseMode) { btn.classList.add('db-active'); icon.innerText = '📂'; text.innerText = '知识库已开启'; btnUpdate.style.display = 'inline-flex'; knowledgeBaseReady = checkRAGIndexStatus(); }
     else { btn.classList.remove('db-active'); icon.innerText = '📂'; text.innerText = '打开知识库'; btnUpdate.style.display = 'none'; }
 }
 
@@ -523,7 +532,7 @@ async function checkRAGIndexStatus() {
             );
             if (count > 0) {
                 showStatus('success',
-                    `已从预构建数据导入 ${count} 条向量，知识库已就绪`, '✅', 4000);
+                    `已导入 ${count} 条向量；旧数据缺少正文指纹时使用本地检索，请主动更新索引`, '📥', 5000);
                 return; // 导入成功，无需弹窗
             }
         }
@@ -545,9 +554,9 @@ async function buildKnowledgeBaseIndex() {
     if (!isEmbeddingConfigured()) { await CustomDialog.alert('🔗 嵌入模型尚未配置\n请点击设置按钮配置。', '未配置'); openSettings(); return; }
     const btn = document.getElementById('btnUpdateIndex'); const orig = btn.innerHTML; btn.innerHTML = '⏳'; btn.disabled = true;
     try {
-        await RAG.buildIndex(contracts, AI_CONFIG, (c, t, s) => { });
+        const summary = await RAG.buildIndex(contracts, AI_CONFIG, (c, t, s) => { });
         const count = await RAG.exportVectorsAsJS(AI_CONFIG.embeddingModel);
-        await CustomDialog.alert('知识库索引构建完成！共 ' + count + ' 条向量。', '构建成功');
+        await CustomDialog.alert('本次成功更新 ' + (summary?.count || 0) + '/' + (summary?.total || 0) + ' 条；失败 ' + (summary?.failed || 0) + ' 条。导出含保留记录共 ' + count + ' 条，仅一致性检查通过的记录参与语义检索。', summary?.failed ? '部分构建失败' : '构建完成');
     } catch (e) { await CustomDialog.alert('构建索引失败: ' + e.message, '构建失败'); }
     finally { btn.innerHTML = orig; btn.disabled = false; }
 }
@@ -584,122 +593,13 @@ function extractKeywords(query) {
     return { clauseNumbers: [...new Set(clauseNumbers)], keywords: [...new Set([...translatedKeywords, ...words])] };
 }
 
-async function findRelevantClauses(query) {
-    if (isKnowledgeBaseMode) {
-        // ==========================================
-        // 第一优先级：交叉引用索引查找（确定性，准确）
-        // ==========================================
-        if (CROSS_REF_INITIALIZED && typeof findRelevantClausesCrossRef === 'function') {
-            try {
-                const crossRefResults = await findRelevantClausesCrossRef(query);
-                if (crossRefResults && crossRefResults.length > 0) {
-                    console.log('[知识库] 交叉引用索引命中 ' + crossRefResults.length + ' 条结果，跳过 RAG');
-                    return crossRefResults;
-                }
-            } catch (e) {
-                console.warn('[知识库] 交叉引用查找出错，回退到 RAG:', e.message);
-            }
-        }
-
-        // ==========================================
-        // 第二优先级：RAG 向量搜索（回退）
-        // ==========================================
-        try {
-            const candidateCount = AI_CONFIG.rerankEnabled ? 15 : 15;
-            const ragResults = await RAG.findMostRelevant(query, AI_CONFIG, candidateCount);
-            if (ragResults && ragResults.length > 0) {
-                let finalResults = ragResults;
-                if (AI_CONFIG.rerankEnabled && ragResults.length > 1) finalResults = await RAG.rerank(query, ragResults, AI_CONFIG, 5);
-                let results = finalResults.map(item => ({ type: item.type, id: item.clauseId, title: item.title, content: contracts[item.type].data[item.clauseId].content.replace(/<[^>]*>/g, ''), score: item.rerankScore || item.score }));
-                const { clauseNumbers } = extractKeywords(query);
-                const existingIds = new Set(results.map(r => r.type + r.id));
-                for (const num of clauseNumbers) {
-                    Object.keys(contracts).forEach(type => {
-                        if (contracts[type].data[num] && !existingIds.has(type + num)) {
-                            const c = contracts[type].data[num]; results.push({ type, id: num, title: c.title, content: c.content.replace(/<[^>]*>/g, ''), score: 200 });
-                        }
-                    });
-                }
-                // 交叉引用增强：为 RAG 结果补充 SCC 修改信息
-                if (CROSS_REF_INITIALIZED) {
-                    for (const result of results) {
-                        if (result.type === 'GCC') {
-                            const xref = lookupCrossRef(result.id);
-                            if (xref && xref.hasModification) {
-                                result.modificationType = xref.modificationType;
-                                result.relation = 'base';
-                                // 添加 SCC 修改条款
-                                const sccModifiers = xref.clauses.filter(c => c.relation === 'modifies');
-                                for (const mod of sccModifiers) {
-                                    if (!existingIds.has('SCC_' + mod.id)) {
-                                        results.push(mod);
-                                        existingIds.add('SCC_' + mod.id);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                // ---- 跨合同引用扩展：查找其他合同中引用了当前结果条款的条目 ----
-                const expandedIds = new Set(results.map(r => r.type + '_' + r.id));
-                for (const result of [...results]) {
-                    const refPatterns = [
-                        new RegExp(`Clause\\s+${result.id}\\b`, 'i'),
-                        new RegExp(`${result.type}\\s+Clause\\s+${result.id}\\b`, 'i'),
-                        new RegExp(`第\\s*${result.id}\\s*条`),
-                    ];
-                    if (result.type === 'GCC' || (contracts[result.type]?.title || '').toLowerCase().includes('general conditions')) {
-                        refPatterns.push(new RegExp(`General\\s+Conditions\\s+of\\s+Contract\\s+Clause\\s+${result.id}\\b`, 'i'));
-                    }
-                    for (const otherType of Object.keys(contracts)) {
-                        if (otherType === result.type) continue;
-                        for (const [clauseId, clause] of Object.entries(contracts[otherType].data)) {
-                            if (expandedIds.has(otherType + '_' + clauseId)) continue;
-                            const searchText = (clause.title + ' ' + clause.content).replace(/<[^>]*>/g, '');
-                            let matched = false;
-                            for (const pattern of refPatterns) {
-                                if (pattern.test(searchText)) { matched = true; break; }
-                            }
-                            if (matched) {
-                                results.push({
-                                    type: otherType, id: clauseId,
-                                    title: clause.title,
-                                    content: clause.content.replace(/<[^>]*>/g, ''),
-                                    score: 150
-                                });
-                                expandedIds.add(otherType + '_' + clauseId);
-                            }
-                        }
-                    }
-                }
-                results = results.filter(r => {
-                    const t = r.content.trim().toLowerCase();
-                    if (t.length <= 30 || t.startsWith('not used')) return false;
-                    // 交叉引用 Not Used SCC 过滤
-                    if (r.type === 'SCC' && window._NOT_USED_SCC_SET) {
-                        const sccId = String(r.id).replace(/^SCC\s*/i, '').trim();
-                        if (window._NOT_USED_SCC_SET.has('SCC' + sccId)) return false;
-                    }
-                    return true;
-                });
-                results.sort((a, b) => b.score - a.score);
-                return results;
-            }
-        } catch (e) { console.error('[知识库] RAG 搜索出错:', e); }
-    }
-    const { clauseNumbers, keywords } = extractKeywords(query);
-    const results = [];
-    Object.keys(contracts).forEach(contractType => {
-        Object.entries(contracts[contractType].data).forEach(([id, clause]) => {
-            let score = 0;
-            const searchText = (clause.title + ' ' + clause.content).toLowerCase();
-            if (clauseNumbers.includes(id)) score += 100;
-            keywords.forEach(kw => { if (searchText.includes(kw.toLowerCase())) score += 10; if (clause.title.toLowerCase().includes(kw.toLowerCase())) score += 5; });
-            if (score > 0) results.push({ type: contractType, id, title: clause.title, content: clause.content.replace(/<[^>]*>/g, ''), score });
-        });
+async function findRelevantClauses(query, historyOverride) {
+    const start = hasContextBreak ? contextBreakIndex : 0;
+    lastRetrievalEvidence = await AIRetrieval.retrieve(query, contracts, AI_CONFIG, {
+        history: historyOverride || chatMessages.slice(start), signal: typeof abortController !== 'undefined' ? abortController?.signal : undefined
     });
-    results.sort((a, b) => b.score - a.score);
-    return results.slice(0, 5);
+    window.assistantRetrievalDiagnostic = lastRetrievalEvidence.diagnostic;
+    return lastRetrievalEvidence.clauses;
 }
 
 console.log('[ai-assistant.js] AI管理助手核心加载完成');

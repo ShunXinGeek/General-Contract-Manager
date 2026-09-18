@@ -1,6 +1,6 @@
 # Verification
 
-`npm test` runs three dependency-free Node regression suites. `npm run check`
+`npm test` runs five dependency-free Node regression suites. `npm run check`
 checks every runtime/vendor/test JS file and manifest/lockfile consistency.
 
 For browser smoke verification, serve this repository on localhost:8765 using an
@@ -35,3 +35,35 @@ other-user and unauthenticated read/write cases on main/subcollection/batch path
 Old snapshots without `originalContent` cannot recover a lost import baseline:
 their surviving current body becomes an explicitly marked migration baseline.
 Fresh imports and newly saved cloud snapshots retain the true import baseline.
+
+## Assistant retrieval verification
+
+`node scripts/verify-assistant-browser.js` runs the smoke function and assistant
+scenarios in isolated Chromium profiles using bundled Playwright (no installation,
+provider calls, real credentials or user-profile clearing). Set
+`GCM_PLAYWRIGHT_MODULE` / `GCM_BROWSER_EXECUTABLE` for existing alternative paths.
+
+The 64 source-grounded questions in `tests/fixtures/retrieval-cases.json` are split
+before tuning into alternating 32-case calibration and held-out partitions.
+`node scripts/evaluate-retrieval.js --baseline` measures the recorded original
+commit; omit `--baseline` for candidate, add `--heldout` for held-out partition.
+`--output path.json` saves measurement artifacts. This is an OFFLINE comparison
+with unavailable semantic APIs, not a live quality claim. Required sets are
+minimum evidence labels, not exhaustive relevance labels; precision cannot be
+inferred. Source heading duplicates are explicitly retained by the reader.
+
+Optional live comparison:
+
+```text
+node scripts/evaluate-retrieval-live.js --config path-to-private-config.json --execute --output output/playwright/live-report.json
+```
+
+The caller-owned private JSON uses existing AI_CONFIG fields and must not be
+committed. Its path may instead be passed in `GCM_EVAL_CONFIG`. Without config or
+`--execute`, no live requests are made. A bounded run compares 32 held-out retrieval
+cases and 16 representative answers per mode (160-call cap; no automatic replay).
+`--index path-to-vector-records.json` optionally supplies an identical array of
+vector records to both modes; without it semantic quality remains unassessed.
+Both modes use the same provider adapter; old comparator keeps legacy index
+eligibility and title-only reranking. Actual answers need source review before
+claiming semantic improvement; structural validation does not establish it.

@@ -28,6 +28,8 @@ const urlsToCache = [
     './js/firebase-config.js',
     './js/firebase-runtime-config.js',
     './js/cross-ref-data.js',
+    './js/retrieval-source.js',
+    './js/ai-retrieval.js',
     './js/cross-ref.js',
     './js/ai-settings.js',
     './js/editor.js',

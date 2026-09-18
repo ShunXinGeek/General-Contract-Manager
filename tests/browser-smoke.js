@@ -122,10 +122,10 @@ async (page) => {
         assert(await fresh.locator('#settingEmbeddingApiKey').inputValue() === 'dummy-embedding-key', 'Embedding key not restored');
         assert(await fresh.locator('#settingRerankApiKey').inputValue() === 'dummy-rerank-key', 'Rerank key not restored');
         await fresh.locator('#settingsModal .close-modal').click();
-        await fresh.route('https://example.invalid/chat', route => {
+        await fresh.route('**/api/ai', route => {
             const request = route.request();
-            assert(request.headers().authorization === 'Bearer dummy-browser-key-two', 'Wrong restored chat key');
-            assert(request.postDataJSON().model === 'two', 'Wrong restored chat model');
+            assert(request.postDataJSON().apiKey === 'dummy-browser-key-two', 'Wrong restored chat key');
+            assert(request.postDataJSON().body.model === 'two', 'Wrong restored chat model');
             return route.fulfill({ contentType: 'text/event-stream', body:
                 'data: {"choices":[{"delta":{"content":"Browser AI mock ready."}}]}\n\ndata: [DONE]\n\n' });
         });
