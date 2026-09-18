@@ -566,12 +566,15 @@
                             style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; font-size:14px; box-sizing:border-box;">
                     </div>
                     <div style="display:flex; gap:10px;">
+                        <button id="modelConnectionTest" onclick="testModelConnection()"
+                            style="flex:1; padding:12px; border:1px solid #3498db; border-radius:6px; cursor:pointer;">测试连接</button>
                         <button onclick="saveModel()"
                             style="flex:1; padding:12px; background:#27ae60; color:white; border:none; border-radius:6px; cursor:pointer; font-size:14px; font-weight:bold;">💾
                             保存</button>
                         <button onclick="closeModelEditModal()"
                             style="flex:1; padding:12px; background:#eee; color:#333; border:none; border-radius:6px; cursor:pointer; font-size:14px;">取消</button>
                     </div>
+                    <div id="modelConnectionStatus" role="status" aria-live="polite"></div>
                 </div>
             </div>
         </div>
@@ -593,6 +596,7 @@
         <script src="js/utils.js"></script>
         <script src="js/logger.js"></script>
         <script src="js/config.js"></script>
+        <script src="js/ai-client.js"></script>
         <script src="js/rag.js"></script>
         <script src="js/comparison.js"></script>
         <script src="js/search.js"></script>

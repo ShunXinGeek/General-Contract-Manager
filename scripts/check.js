@@ -3,7 +3,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const root = path.join(__dirname, '..');
 const files = ['sw.js'];
-for (const dir of ['js', 'vendor', 'scripts', 'tests']) {
+for (const dir of ['js', 'vendor', 'scripts', 'tests', 'netlify/edge-functions']) {
     files.push(...fs.readdirSync(path.join(root, dir)).filter(file => file.endsWith('.js')).map(file => `${dir}/${file}`));
 }
 for (const file of files) {

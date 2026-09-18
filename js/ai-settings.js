@@ -328,6 +328,7 @@ function renderModelCards() {
 
 function openModelEditModal(modelId) {
     const modal = document.getElementById('modelEditModal');
+    document.getElementById('modelConnectionStatus').textContent = '';
     const title = document.getElementById('modelEditTitle');
     document.getElementById('editingModelId').value = modelId || '';
     if (modelId) {
@@ -367,6 +368,30 @@ function saveModel() {
     }
     saveChatModels(); renderModelCards(); updateModelSelector(); closeModelEditModal();
     touchAISettings();
+}
+
+async function testModelConnection() {
+    const button = document.getElementById('modelConnectionTest');
+    const status = document.getElementById('modelConnectionStatus');
+    const config = { apiEndpoint: document.getElementById('modelEditEndpoint').value.trim(),
+        apiKey: document.getElementById('modelEditApiKey').value.trim(),
+        model: document.getElementById('modelEditModel').value.trim() };
+    if (!config.apiEndpoint || !config.apiKey || !config.model) { status.textContent = '请先填写接口地址、密钥和模型名称。'; return; }
+    button.disabled = true;
+    status.textContent = '正在发送简短测试问题（会消耗少量模型用量）…';
+    const controller = new AbortController();
+    try {
+        const response = await AIClient.request(config, [{ role: 'user', content: '请只回复 OK。' }],
+            { thinking: false, signal: controller.signal });
+        let received = false;
+        for await (const event of AIClient.events(response)) {
+            const delta = event.choices?.[0]?.delta;
+            if (delta?.content || delta?.reasoning_content) { received = true; break; }
+        }
+        if (!received) throw new Error('连接已建立，但模型没有返回内容。');
+        status.textContent = '✅ 连接成功，已收到模型输出。';
+    } catch (error) { status.textContent = '❌ ' + error.message; }
+    finally { controller.abort(); button.disabled = false; }
 }
 
 function deleteModel(modelId) {

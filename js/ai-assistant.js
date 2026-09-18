@@ -57,8 +57,7 @@ async function sendMessage() {
     addMessage('user', text);
     input.value = ''; autoResizeInput();
     showTypingIndicator();
-    const messages = await buildMessagesForAPI();
-    try { isStreaming = true; updateSendButton(); await streamAPIResponse(messages); }
+    try { isStreaming = true; updateSendButton(); const messages = await buildMessagesForAPI(); await streamAPIResponse(messages); }
     catch (error) { if (error.name !== 'AbortError') addMessage('assistant', '❌ 请求失败: ' + error.message); }
     finally { isStreaming = false; hideTypingIndicator(); updateSendButton(); saveChatToStorage(); }
 }
@@ -72,9 +71,13 @@ async function buildMessagesForAPI() {
             systemPrompt = buildDatabaseModePrompt(relevantClauses);
         }
     }
-    const messages = [{ role: 'system', content: systemPrompt + (isThinkingMode ? '\n\n请先用 <think>...</think> 标签展示思考过程，然后给出最终回答。' : '') }];
+    const messages = [{ role: 'system', content: systemPrompt }];
+    const keepReasoning = AIClient.needsReasoningHistory(AI_CONFIG.apiEndpoint, AI_CONFIG.model);
     const startIndex = hasContextBreak ? contextBreakIndex : 0;
-    chatMessages.slice(startIndex).forEach(msg => { if (msg.type !== 'break') messages.push({ role: msg.role, content: msg.content }); });
+    chatMessages.slice(startIndex).forEach(msg => {
+        if (msg.type !== 'break') messages.push({ role: msg.role, content: msg.content,
+            ...(keepReasoning && msg.role === 'assistant' ? { reasoning_content: msg.reasoning || '' } : {}) });
+    });
     return messages;
 }
 
@@ -109,14 +112,7 @@ function buildDatabaseModePrompt(relevantClauses) {
 
 async function streamAPIResponse(messages, existingMessageDiv, existingIndex) {
     abortController = new AbortController();
-    const requestBody = { model: AI_CONFIG.model, messages: messages, stream: true };
-    if (isThinkingMode && AI_CONFIG.model && (AI_CONFIG.model.includes('qwen3') || AI_CONFIG.model.includes('qwq'))) {
-        requestBody.enable_thinking = true;
-    }
-    const response = await fetch(AI_CONFIG.apiEndpoint, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AI_CONFIG.apiKey }, body: JSON.stringify(requestBody), signal: abortController.signal
-    });
-    if (!response.ok) { const errText = await response.text(); throw new Error('API Error ' + response.status + ': ' + errText); }
+    const response = await AIClient.request(AI_CONFIG, messages, { thinking: isThinkingMode, signal: abortController.signal });
     hideTypingIndicator();
     let assistantContent = '', reasoningContent = '', thinkingStartTime = null, thinkingEndTime = null;
     let messageDiv = existingMessageDiv || null;
@@ -127,41 +123,36 @@ async function streamAPIResponse(messages, existingMessageDiv, existingIndex) {
         const contentEl = existingMessageDiv.querySelector('.message-content');
         if (contentEl) contentEl.innerHTML = '<span class="regenerating-indicator">🔄 重新生成中...</span>';
     }
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop();
-        for (const line of lines) {
-            if (!line.startsWith('data: ') || line === 'data: [DONE]') continue;
-            try {
-                const data = JSON.parse(line.substring(6));
-                const delta = data.choices?.[0]?.delta;
-                if (!delta) continue;
-                if (delta.reasoning_content) {
-                    if (!thinkingStartTime) thinkingStartTime = Date.now();
-                    reasoningContent += delta.reasoning_content;
-                    if (!messageDiv) { messageDiv = createMessageElement('assistant', '', chatMessages.length, true); document.getElementById('chatMessages').appendChild(messageDiv); }
-                    const bodyInner = messageDiv.querySelector('.thinking-body-inner');
-                    if (bodyInner) bodyInner.textContent = reasoningContent;
-                    scrollToBottom(); continue;
-                }
-                if (delta.content) {
-                    if (reasoningContent && !thinkingEndTime) thinkingEndTime = Date.now();
-                    assistantContent += delta.content;
-                    if (!messageDiv) { messageDiv = createMessageElement('assistant', '', chatMessages.length, false); document.getElementById('chatMessages').appendChild(messageDiv); }
-                    const contentEl = messageDiv.querySelector('.message-content');
-                    contentEl.innerHTML = renderMarkdown(assistantContent);
-                    messageDiv.dataset.rawContent = assistantContent;
-                    if (reasoningContent && thinkingStartTime && thinkingEndTime) updateThinkingBlock(messageDiv, reasoningContent, thinkingStartTime, thinkingEndTime);
-                    scrollToBottom();
-                }
-            } catch (e) { }
+    let streamError = null;
+    try {
+        for await (const data of AIClient.events(response)) {
+            const delta = data.choices?.[0]?.delta;
+            if (!delta) continue;
+            if (delta.reasoning_content) {
+                if (!thinkingStartTime) thinkingStartTime = Date.now();
+                reasoningContent += delta.reasoning_content;
+                if (!messageDiv) { messageDiv = createMessageElement('assistant', '', chatMessages.length, true); document.getElementById('chatMessages').appendChild(messageDiv); }
+                if (!messageDiv.querySelector('.thinking-block')) addThinkingBlockToMessage(messageDiv, '', thinkingStartTime, null);
+                const bodyInner = messageDiv.querySelector('.thinking-body-inner');
+                if (bodyInner) bodyInner.textContent = reasoningContent;
+                scrollToBottom();
+            }
+            if (delta.content) {
+                if (reasoningContent && !thinkingEndTime) thinkingEndTime = Date.now();
+                assistantContent += delta.content;
+                if (!messageDiv) { messageDiv = createMessageElement('assistant', '', chatMessages.length, false); document.getElementById('chatMessages').appendChild(messageDiv); }
+                const contentEl = messageDiv.querySelector('.message-content');
+                contentEl.innerHTML = renderMarkdown(assistantContent);
+                messageDiv.dataset.rawContent = assistantContent;
+                if (reasoningContent && thinkingStartTime && thinkingEndTime) updateThinkingBlock(messageDiv, reasoningContent, thinkingStartTime, thinkingEndTime);
+                scrollToBottom();
+            }
         }
+    } catch (error) { streamError = error; }
+    if (streamError && assistantContent) {
+        assistantContent += streamError.name === 'AbortError' ? '\n\n[已停止生成]' : '\n\n[回答未完成：连接中断或超时]';
+        messageDiv.querySelector('.message-content').innerHTML = renderMarkdown(assistantContent);
+        messageDiv.dataset.rawContent = assistantContent;
     }
     if (!reasoningContent && assistantContent && isThinkingMode) {
         const thinkMatch = assistantContent.match(/^<think>([\s\S]*?)<\/think>\s*/i);
@@ -186,6 +177,7 @@ async function streamAPIResponse(messages, existingMessageDiv, existingIndex) {
             chatMessages.push(msgData);
         }
     }
+    if (streamError) throw streamError;
 }
 
 function stopGeneration() { if (abortController) { abortController.abort(); abortController = null; } }
@@ -194,6 +186,12 @@ function stopGeneration() { if (abortController) { abortController.abort(); abor
 // 16. 思考模式 & 聊天 UI
 // =======================================================
 function toggleThinkingMode() {
+    if (AI_CONFIG.apiEndpoint && AIClient.thinkingCapability(AI_CONFIG.apiEndpoint, AI_CONFIG.model) === 'always') {
+        alert('该模型固定开启思考，无法通过此开关关闭。'); return;
+    }
+    if (AI_CONFIG.apiEndpoint && AIClient.thinkingCapability(AI_CONFIG.apiEndpoint, AI_CONFIG.model) === 'default') {
+        alert('此模型暂未配置原生思考开关，将使用服务商默认行为。'); return;
+    }
     isThinkingMode = !isThinkingMode;
     const btn = document.getElementById('btnThinkingMode');
     const icon = document.getElementById('thinkingModeIcon');

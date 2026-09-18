@@ -265,19 +265,8 @@ User query: "${query}"
 
 Return ONLY a JSON array of relevant clause numbers, e.g. [50, 51, 52]. If no specific clauses match, return []. Do not explain.`;
 
-        const response = await fetch(AI_CONFIG.apiEndpoint, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': 'Bearer ' + AI_CONFIG.apiKey
-            },
-            body: JSON.stringify({
-                model: AI_CONFIG.model,
-                messages: [{ role: 'user', content: prompt }],
-                temperature: 0,
-                max_tokens: 200
-            })
-        });
+        const response = await AIClient.request(AI_CONFIG, [{ role: 'user', content: prompt }],
+            { stream: false, thinking: false, classify: true });
 
         if (!response.ok) {
             console.warn('[cross-ref] LLM 子句识别请求失败:', response.status);

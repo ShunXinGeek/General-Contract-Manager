@@ -6,7 +6,7 @@
 
 **核心技术栈：** 纯 HTML/CSS/JS（零框架依赖） + IndexedDB (LocalForage) + Firebase Firestore + Service Worker (PWA)
 
-**设计理念：** 本地优先 (Local-First)，合同首先保存在用户浏览器中，云端同步为可选增强功能。启用云同步后，AI、Embedding、Rerank API Key 会随个人配置保存到 Firebase，以便其他电脑登录同一账号后恢复；AI 请求仍由浏览器直接调用提供商，不经过自建代理服务器。
+**设计理念：** 本地优先 (Local-First)，合同首先保存在用户浏览器中，云端同步为可选增强功能。启用云同步后，AI、Embedding、Rerank API Key 会随个人配置保存到 Firebase，以便其他电脑登录同一账号后恢复；AI 对话及条款识别经本站 Netlify Edge Function 转发，Embedding、Rerank 仍由浏览器直接调用提供商。
 
 ---
 
@@ -479,6 +479,32 @@ General Contract Manager/
 - AI 对话接口：兼容 OpenAI Chat Completions API 格式 (SSE 流式)
 - Embedding 接口：兼容 OpenAI Embeddings API 格式
 - Rerank 接口：兼容阿里云 DashScope Rerank API 格式
+
+#### AI 同源转发与多平台设置
+
+聊天和 LLM 条款识别统一请求 `/api/ai`，由 `netlify/edge-functions/ai.js` 转发。GitHub 连接的 Netlify 构建会自动部署该函数，不需要把 AI 密钥写入源码或 Netlify 构建环境变量。用户仍在设置中维护各模型自己的地址、密钥和模型名称；密钥、问题及引用的合同文本会经过 Netlify 服务端，代码不会记录或缓存它们。原有本地/云端密钥保存方式不变。
+
+| 平台 | 可填写的 Base URL 示例（也接受完整聊天接口地址） |
+| --- | --- |
+| DeepSeek | `https://api.deepseek.com/v1` |
+| 千问/百炼北京 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| 千问/百炼新加坡 | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |
+| 千问/百炼美国 | `https://dashscope-us.aliyuncs.com/compatible-mode/v1` |
+| 智谱 | `https://open.bigmodel.cn/api/paas/v4` |
+| Kimi 中国 / 国际 | `https://api.moonshot.cn/v1` / `https://api.moonshot.ai/v1` |
+| OpenAI | `https://api.openai.com/v1` |
+
+百炼还允许官方香港地址及北京、香港、新加坡、东京、法兰克福、美国的业务空间专属域名，格式为 `https://{WorkspaceId}.{Region}.maas.aliyuncs.com/compatible-mode/v1`。密钥必须匹配平台和地域。模型名称以服务商账号实际可用的名称为准。
+
+思考参数由 `js/ai-client.js` 按平台和已知模型能力适配：千问混合模型使用 `enable_thinking`，DeepSeek 新模型、智谱 GLM-4.5/4.6/4.7/5 系列、Kimi K2.5/K2.6 使用 `thinking.type`。固定思考模型（如 DeepSeek Reasoner、Kimi K2 Thinking/K2.7 Code/K3）不发送关闭思考参数；Kimi 固定保留思考的模型会带回历史 `reasoning_content`。旧模型及未知能力的模型使用服务商默认行为，不保证存在可切换的思考模式。百炼托管的其他品牌模型也使用百炼的参数协议。
+
+在添加/编辑模型弹窗中点击“测试连接”，会发送一条不含合同内容的简短问题，收到输出后停止，消耗少量模型用量。测试无需先保存配置。没有相应真实凭证的平台，只能完成模拟协议验证，不能据此宣称真实调用已通过。
+
+转发接口只接受本站来源的 JSON POST，仅允许代码白名单内的官方 HTTPS 聊天路径，禁止重定向；不提供任意 URL 转发。每域名/IP 每分钟最多 30 次调用，请求上限 2 MiB，连接响应头超时 30 秒，响应空闲超时 120 秒、总时长上限 15 分钟、响应上限 20 MiB（同时受 Netlify 实际平台限制影响）。失败不会自动重试，避免重复用量。扩展服务商时，维护 Edge Function 的 `PROVIDERS`/路径白名单及客户端的能力适配，并增加测试。
+
+本地 AI 功能需通过 `netlify dev` 运行转发接口；普通静态文件服务器不执行 Edge Function。部署后刷新页面以加载更新脚本，Service Worker 已更新至 v4。`node tests/run.js` 与 `node scripts/check.js` 包含 AI 协议、安全限制、流式取消和离线资源检查。
+
+官方参考：[DeepSeek 思考模式](https://api-docs.deepseek.com/guides/thinking_mode/)、[百炼思考模式](https://help.aliyun.com/zh/model-studio/deep-thinking)、[百炼地域地址](https://help.aliyun.com/en/model-studio/base-url)、[智谱思考模式](https://docs.bigmodel.cn/cn/guide/capabilities/thinking-mode)、[Kimi 思考模型](https://platform.kimi.ai/docs/guide/use-thinking-models)、[Netlify Edge Function 限制](https://docs.netlify.com/build/edge-functions/limits/)。
 
 ---
 
