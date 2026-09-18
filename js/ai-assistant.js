@@ -481,21 +481,34 @@ function showAssistantClause(type, clauseId, preserveScroll) {
     const header = document.getElementById('assistantRefFixedHeader');
     const title = document.getElementById('assistantRefFixedTitle');
     const content = document.getElementById('assistantRefContent');
-    header.style.display = 'block'; header.classList.remove('mode-ref', 'mode-trans'); header.classList.add('mode-ref');
+    header.style.display = 'block'; header.classList.remove('mode-ref', 'mode-trans'); header.classList.add(assistantRefMode === 'ref' ? 'mode-ref' : 'mode-trans');
     let displayTitle = clause.title;
     if (!/^(Clause|clause)/i.test(displayTitle) && !new RegExp('^' + type, 'i').test(displayTitle)) { displayTitle = type + ' Clause ' + displayTitle; }
     else if (/^Clause/i.test(displayTitle)) { displayTitle = type + ' ' + displayTitle; }
     title.innerText = displayTitle;
-    const transText = isAssistantTraditional ? (clause.translation_tc || clause.translation) : clause.translation;
-    const langLabel = isAssistantTraditional ? '繁體譯文' : '中文译文';
-    let html = '<div style="padding:15px;"><div style="font-size:12px; font-weight:bold; color:var(--text-muted); margin-bottom:8px;">English Original</div><div style="line-height:1.6;">' + sanitizeHtml(clause.content) + '</div></div><hr style="border:none; border-top:2px solid var(--border-color); margin:0;"><div style="padding:15px;"><div style="font-size:12px; font-weight:bold; color:var(--trans-border); margin-bottom:8px;">' + langLabel + '</div>';
-    if (transText) html += '<div style="line-height:1.8; text-align:justify;">' + sanitizeHtml(transText) + '</div>';
-    else html += '<div style="color:var(--text-muted); font-style:italic;">暂无译文</div>';
-    html += '</div>';
+    document.getElementById('btnAssistantLangMode').innerText = assistantRefMode === 'ref' ? '译' : '原';
+    let html;
+    if (assistantRefMode === 'ref') {
+        html = '<div style="padding:15px;"><div style="font-size:12px; font-weight:bold; color:var(--text-muted); margin-bottom:8px;">English Original</div><div style="line-height:1.6;">' + sanitizeHtml(clause.content) + '</div></div>';
+    } else {
+        const transText = isAssistantTraditional ? (clause.translation_tc || clause.translation) : clause.translation;
+        const langLabel = isAssistantTraditional ? '繁體譯文' : '中文译文';
+        html = '<div style="padding:15px;"><div style="font-size:12px; font-weight:bold; color:var(--trans-border); margin-bottom:8px;">' + langLabel + '</div>';
+        if (transText) html += '<div style="line-height:1.8; text-align:justify;">' + sanitizeHtml(transText) + '</div>';
+        else html += '<div style="color:var(--text-muted); font-style:italic;">暂无译文</div>';
+        html += '</div>';
+    }
     content.innerHTML = html; if (!preserveScroll) content.scrollTop = 0;
 }
 
+function toggleAssistantRefLangMode() {
+    assistantRefMode = assistantRefMode === 'ref' ? 'trans' : 'ref';
+    document.getElementById('btnAssistantLangMode').innerText = assistantRefMode === 'ref' ? '译' : '原';
+    if (assistantRefClauseType && assistantRefClauseId) showAssistantClause(assistantRefClauseType, assistantRefClauseId);
+}
+
 function toggleAssistantLang() {
+    if (assistantRefMode !== 'trans') return;
     isAssistantTraditional = !isAssistantTraditional;
     const btn = document.getElementById('btnAssistantLangToggle'); btn.innerText = isAssistantTraditional ? '繁' : '简';
     if (assistantRefClauseType && assistantRefClauseId) showAssistantClause(assistantRefClauseType, assistantRefClauseId, true);

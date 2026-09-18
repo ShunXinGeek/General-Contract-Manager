@@ -50,6 +50,7 @@ let isKnowledgeBaseMode = false;
 let isAssistantRefVisible = false;
 let assistantRefClauseType = null;
 let assistantRefClauseId = null;
+let assistantRefMode = 'ref';
 let isAssistantTraditional = false;
 let isThinkingMode = false;
 

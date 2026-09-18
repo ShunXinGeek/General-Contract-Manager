@@ -47,8 +47,8 @@ async function run() {
         });
         await page.goto('http://127.0.0.1:8765/'); await page.evaluate(() => window.contractAppReady);
         await page.evaluate(async () => {
-            registerContract('GCC', 'General Conditions', { '34': { title: 'Facilities', content: 'Facilities for other persons.' }, '50': { title: 'Extension', content: '(1) Original extension notice.' } });
-            registerContract('SCC', 'Special Conditions', { 'SCC 34': { title: 'Night concreting', content: 'Night concreting permission must be obtained.' } });
+            registerContract('GCC', 'General Conditions', { '34': { title: 'Facilities', content: 'Facilities for other persons.' }, '50': { title: 'Extension', content: '(1) Original extension notice.', translation: '工期延长通知。', translation_tc: '工期延長通知。' } });
+            registerContract('SCC', 'Special Conditions', { 'SCC 34': { title: 'Night concreting', content: 'Night concreting permission must be obtained.', translation: '夜间混凝土浇筑须获批准。', translation_tc: '夜間混凝土澆築須獲批准。' } });
             AI_CHAT_MODELS = [{ id: 'browser-test', name: 'Browser Test', endpoint: 'https://api.deepseek.com/v1', apiKey: 'dummy-key', model: 'deepseek-flash' }];
             currentSelectedModelId = 'browser-test'; applySelectedModel(); saveChatModels(); saveSelectedModelId(); updateModelSelector();
             await new Promise((resolve, reject) => {
@@ -64,8 +64,31 @@ async function run() {
         assert.ok(await page.locator('.thinking-block').count() > 0); assert.ok(await page.locator('.chat-clause-link').count() > 0);
         await page.locator('.chat-message.assistant .chat-clause-link').first().click();
         assert.ok((await page.locator('#assistantRefContent').innerText()).includes('Night concreting'));
+        assert.ok(await page.locator('#btnAssistantLangMode').isVisible());
+        assert.ok(await page.locator('#btnAssistantLangToggle').isVisible());
+        assert.ok(!(await page.locator('#assistantRefContent').innerText()).includes('夜间'));
+        await page.locator('#btnAssistantLangToggle').click();
+        assert.strictEqual(await page.locator('#btnAssistantLangToggle').innerText(), '简');
+        await page.locator('#btnAssistantLangMode').click();
+        assert.strictEqual(await page.locator('#btnAssistantLangMode').innerText(), '原');
+        assert.ok((await page.locator('#assistantRefContent').innerText()).includes('夜间混凝土浇筑须获批准。'));
+        assert.ok(!(await page.locator('#assistantRefContent').innerText()).includes('Night concreting permission'));
+        await page.locator('#btnAssistantLangToggle').click();
+        assert.ok((await page.locator('#assistantRefContent').innerText()).includes('夜間混凝土澆築須獲批准。'));
         await send('该条款的条件？'); assert.ok(requests.at(-1).messages[0].content.includes('<<<SCC Clause 34'));
         await send('GCC Clause 50');
+        await page.locator('.chat-message.assistant').last().locator('.chat-clause-link').first().click();
+        assert.ok((await page.locator('#assistantRefContent').innerText()).includes('工期延長通知。'));
+        assert.ok(!(await page.locator('#assistantRefContent').innerText()).includes('Original extension notice'));
+        await page.locator('#btnAssistantLangToggle').click();
+        await page.locator('.chat-message.assistant .chat-clause-link').first().click();
+        assert.ok((await page.locator('#assistantRefContent').innerText()).includes('夜间混凝土浇筑须获批准。'));
+        await page.locator('#btnAssistantLangMode').click();
+        await page.locator('.chat-message.assistant').last().locator('.chat-clause-link').first().click();
+        assert.ok((await page.locator('#assistantRefContent').innerText()).includes('Original extension notice'));
+        assert.ok(!(await page.locator('#assistantRefContent').innerText()).includes('工期延长通知。'));
+        await page.locator('#btnAssistantLangToggle').click();
+        assert.strictEqual(await page.locator('#btnAssistantLangToggle').innerText(), '简');
         await page.locator('.chat-message.assistant button[title="重新生成"]').first().click(); await page.waitForFunction(() => !isStreaming);
         assert.ok(requests.at(-1).messages[0].content.includes('<<<SCC Clause 34')); assert.ok(!requests.at(-1).messages.some(message => message.role === 'user' && message.content === 'GCC Clause 50'));
         await page.locator('#btnContextBreak').click(); await send('该条款的条件？');
@@ -104,7 +127,7 @@ async function run() {
         assert.ok(exportedContext.window.PREBUILT_VECTORS.vectors.GCC_50.sourceHash); assert.ok(exportedContext.window.PREBUILT_VECTORS.vectors.GCC_50.embeddingSpace);
         await page.screenshot({ path: path.join(output, 'assistant-retrieval.png'), fullPage: true });
         assert.deepStrictEqual(errors, []);
-        const report = { passed: true, scope: 'isolated localhost with mocked providers', checks: ['existing browser regression', 'thinking+knowledge flags', 'typed SCC evidence', 'followup', 'clause link', 'regeneration history', 'context break', 'one repair', 'failed repair warning', 'legacy vector feedback', 'stop', 'reload', 'native IndexedDB build/import/freshness/export'], providerRequests: 0 };
+        const report = { passed: true, scope: 'isolated localhost with mocked providers', checks: ['existing browser regression', 'thinking+knowledge flags', 'typed SCC evidence', 'followup', 'clause link', 'assistant original/translation and Chinese-variant preference across links', 'regeneration history', 'context break', 'one repair', 'failed repair warning', 'legacy vector feedback', 'stop', 'reload', 'native IndexedDB build/import/freshness/export'], providerRequests: 0 };
         fs.writeFileSync(path.join(output, 'assistant-browser-report.json'), JSON.stringify(report, null, 2));
         console.log(JSON.stringify(report)); await context.close();
     } finally { if (browser) await browser.close(); await new Promise(resolve => server.close(resolve)); }
