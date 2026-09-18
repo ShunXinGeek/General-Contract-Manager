@@ -46,6 +46,40 @@ function statusMessage(status) {
         404: 'AI 服务未找到接口或模型，请检查接口地址和模型名称。',
         429: 'AI 服务限流或额度不足，请稍后手动重试。' })[status] || 'AI 服务暂时不可用（HTTP ' + status + '），请稍后手动重试。';
 }
+async function providerError(upstream) {
+    // Interpret bounded JSON diagnostics; never echo provider text or request contents.
+    if (![400, 404, 422].includes(upstream.status) || !upstream.body ||
+        !(upstream.headers.get('content-type') || '').includes('application/json')) {
+        await upstream.body?.cancel();
+        return statusMessage(upstream.status);
+    }
+    const reader = upstream.body.getReader();
+    const decoder = new TextDecoder();
+    let text = '', bytes = 0;
+    try {
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            bytes += value.byteLength;
+            if (bytes > 16384) return statusMessage(upstream.status);
+            text += decoder.decode(value, { stream: true });
+        }
+        const data = JSON.parse(text + decoder.decode());
+        const error = data.error && typeof data.error === 'object' ? data.error : data;
+        const diagnostic = [error.code, error.type, error.message].filter(v => typeof v === 'string').join(' ').toLowerCase();
+        if (/model[_ .-]?(?:not[_ .-]?(?:found|exist)|does[_ .-]?not[_ .-]?exist)|invalid[_ .-]?model|unsupported[_ .-]?model|模型不存在/.test(diagnostic)) {
+            return 'AI 服务商未找到此模型，请检查设置中的 Model 字段是否为当前有效的官方模型 ID。';
+        }
+        if (/context[_ .-]?length|maximum context|token limit|上下文.*(?:超|限)/.test(diagnostic)) {
+            return 'AI 请求超过模型上下文长度，请减少历史消息或引用条款。';
+        }
+        const fields = ['thinking', 'enable_thinking', 'reasoning_effort', 'temperature', 'max_tokens', 'messages', 'stream']
+            .filter(field => new RegExp('\\b' + field + '\\b').test(diagnostic));
+        if (fields.length) return 'AI 服务商拒绝请求参数（' + fields.join('、') + '），请核对该模型的参数要求。';
+        return statusMessage(upstream.status);
+    } catch (_) { return statusMessage(upstream.status); }
+    finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+}
 export default async function handler(request) {
     if (request.method !== 'POST') return failure(405, 'AI 转发接口只接受 POST 请求。');
     const origin = request.headers.get('origin');
@@ -83,8 +117,8 @@ export default async function handler(request) {
         const upstream = await fetch(target, { method: 'POST', redirect: 'error', signal: controller.signal,
             headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key.trim() }, body: JSON.stringify(outgoing) });
         if (!upstream.ok) {
-            await upstream.body?.cancel(); cleanup();
-            return failure(upstream.status, statusMessage(upstream.status));
+            const message = await providerError(upstream); cleanup();
+            return failure(upstream.status, message);
         }
         const type = upstream.headers.get('content-type') || '';
         if (!upstream.body || (body.stream ? !type.includes('text/event-stream') : !type.includes('application/json'))) {

@@ -90,6 +90,21 @@ async function run() {
             assert.strictEqual(r.status, status);
             assert.ok(!(await r.text()).includes('sensitive'), 'do not leak upstream response contents');
         }
+        for (const [diagnostic, expected] of [
+            [{ error: { message: 'Model Not Exist', code: 'model_not_found' } }, /Model 字段/],
+            [{ error: { message: 'Invalid model ID' } }, /Model 字段/],
+            [{ code: 'InvalidParameter', message: 'enable_thinking is unsupported: secret request contents' }, /enable_thinking/],
+            [{ error: { code: 'context_length_exceeded', message: 'secret prompt' } }, /上下文长度/]
+        ]) {
+            global.fetch = async () => Response.json(diagnostic, { status: 400 });
+            const r = await handler(request());
+            assert.strictEqual(r.status, 400);
+            const text = await r.text();
+            assert.match(text, expected);
+            assert.ok(!text.includes('secret'), 'diagnostics must not echo secrets or prompts');
+        }
+        global.fetch = async () => Response.json({ error: { message: 'secret request ' + 'x'.repeat(17000) } }, { status: 400 });
+        assert.ok(!(await (await handler(request())).text()).includes('secret'), 'oversized diagnostics must be discarded');
         global.fetch = async () => { throw new Error('secret connection diagnostic'); };
         assert.strictEqual((await handler(request())).status, 502);
         global.fetch = async () => new Response('HTML', { headers: { 'content-type': 'text/html' } });
