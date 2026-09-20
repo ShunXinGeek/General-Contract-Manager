@@ -1035,6 +1035,10 @@ function highlightActiveLink() {
     if (event && event.target && event.target.classList.contains('clause-ref')) event.target.classList.add('active');
 }
 function toggleNav() {
+    if (isAssistantMode && window.AssistantTopics) {
+        window.AssistantTopics.toggleSidebar();
+        return;
+    }
     const panel = document.getElementById('panelNav');
     const resizer = document.getElementById('resizer1');
     if (window.innerWidth <= 768) {

@@ -1,6 +1,6 @@
 async (page) => {
     const assert = (condition, message) => { if (!condition) throw new Error(message); };
-    const baseURL = 'http://127.0.0.1:8765/';
+    const baseURL = globalThis.__GCM_TEST_BASE_URL || 'http://127.0.0.1:8911/';
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(baseURL);
@@ -132,7 +132,7 @@ async (page) => {
         await fresh.getByRole('button', { name: '管理助手', exact: true }).click();
         await fresh.locator('#chatInput').fill('Browser test question');
         await fresh.locator('#sendBtn').click();
-        await fresh.getByText('Browser AI mock ready.', { exact: true }).waitFor();
+        await fresh.locator('#chatMessages .chat-message.assistant p').filter({ hasText: 'Browser AI mock ready.' }).waitFor();
         assert((await fresh.locator('#clause-1 .clause-text').innerText()).includes('Original browser'), 'New-device contract restore failed');
     } finally {
         await secondContext.close();

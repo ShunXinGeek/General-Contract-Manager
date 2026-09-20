@@ -113,7 +113,7 @@ const CustomDialog = {
 
     _createContent: function (title, messageHtml) {
         const content = document.createElement('div');
-        content.className = 'modal-content';
+        content.className = 'modal-content custom-dialog-content';
         content.style.width = '400px';
         content.style.maxWidth = '90%';
 

@@ -37,7 +37,7 @@ async function run() {
     assert.ok(!resources.includes('./js/vectors-data.js'), 'large optional vectors must stay lazy');
     events.activate({ waitUntil: promise => { pending = promise; } });
     await pending;
-    assert.deepStrictEqual(deleted, ['general-contract-shell-v2', 'general-contract-shell-v3'], 'do not delete other apps caches');
+    assert.deepStrictEqual(deleted, ['general-contract-shell-v2', 'general-contract-shell-v3', 'general-contract-shell-v4'], 'do not delete other apps caches');
     cached.set('./index.html', new Response('offline shell'));
     let response;
     events.fetch({ request: { method: 'GET', url: 'http://localhost/deep-link', mode: 'navigate' },

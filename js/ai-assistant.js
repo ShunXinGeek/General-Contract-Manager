@@ -23,6 +23,8 @@ function switchToAssistant() {
     document.getElementById('resizer2').style.display = 'none';
     document.getElementById('panelRef').style.display = 'none';
     document.getElementById('panelAssistant').style.display = 'flex';
+    const navigatorButton = document.getElementById('btnToggleNavigator');
+    if (navigatorButton) { navigatorButton.disabled = false; navigatorButton.title = '切换侧边栏'; navigatorButton.setAttribute('aria-label', '切换侧边栏'); }
     if (!isStreaming) loadChatFromStorage();
 }
 
@@ -61,9 +63,9 @@ async function sendMessage() {
     addMessage('user', text);
     input.value = ''; autoResizeInput();
     showTypingIndicator();
-    try { isStreaming = true; updateSendButton(); const messages = await buildMessagesForAPI(); if (requestSignal.aborted) throw new DOMException('已停止生成', 'AbortError'); await streamAPIResponse(messages); }
+    try { isStreaming = true; window.AssistantTopics?.setBusy(true); updateSendButton(); const messages = await buildMessagesForAPI(); if (requestSignal.aborted) throw new DOMException('已停止生成', 'AbortError'); await streamAPIResponse(messages); }
     catch (error) { if (error.name !== 'AbortError') addMessage('assistant', '❌ 请求失败: ' + error.message); }
-    finally { isStreaming = false; hideTypingIndicator(); updateSendButton(); saveChatToStorage(); }
+    finally { isStreaming = false; window.AssistantTopics?.setBusy(false); hideTypingIndicator(); updateSendButton(); saveChatToStorage(); }
 }
 
 async function buildMessagesForAPI(historyOverride) {
@@ -237,6 +239,7 @@ function addMessage(role, content) {
     const messageDiv = createMessageElement(role, content);
     document.getElementById('chatMessages').appendChild(messageDiv);
     scrollToBottom();
+    saveChatToStorage();
 }
 
 function createMessageElement(role, content, index, hasThinking) {
@@ -246,14 +249,29 @@ function createMessageElement(role, content, index, hasThinking) {
     const renderedContent = role === 'assistant' ? renderMarkdown(content) : escapeHtml(content);
     const thinkingHtml = hasThinking ? '<div class="thinking-block" id="streamingThinkingBlock"><div class="thinking-header" onclick="toggleThinkingBlock(this)"><div class="thinking-header-left">🧠 思考中...</div><span class="thinking-arrow">▼</span></div><div class="thinking-body"><div class="thinking-body-inner"></div></div></div>' : '';
     const actionsHtml = role === 'assistant'
-        ? '<div class="msg-actions"><button onclick="copyMessage(this)" title="复制">📋</button><button onclick="regenerateMessage(this)" title="重新生成">🔄</button><button onclick="deleteMessage(this)" title="删除">🗑️</button></div>'
-        : '<div class="msg-actions"><button onclick="copyMessage(this)" title="复制">📋</button><button onclick="deleteMessage(this)" title="删除">🗑️</button></div>';
+        ? '<div class="msg-actions"><button onclick="copyMessage(this)" title="复制" aria-label="复制消息">📋</button><button onclick="regenerateMessage(this)" title="重新生成" aria-label="重新生成回复">🔄</button><button class="msg-branch-action" onclick="branchMessage(this)" title="分支" aria-label="从此回复创建分支"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2"></circle><circle cx="18" cy="7" r="2"></circle><circle cx="6" cy="19" r="2"></circle><path d="M6 7v10M8 7h4a6 6 0 0 1 6 6v4"></path></svg></button><button onclick="deleteMessage(this)" title="删除" aria-label="删除消息">🗑️</button></div>'
+        : '<div class="msg-actions"><button onclick="copyMessage(this)" title="复制" aria-label="复制消息">📋</button><button onclick="deleteMessage(this)" title="删除" aria-label="删除消息">🗑️</button></div>';
     div.innerHTML = thinkingHtml + '<div class="message-content">' + renderedContent + '</div>' + actionsHtml;
     return div;
 }
 
 function copyMessage(btn) { const msgDiv = btn.closest('.chat-message'); const content = msgDiv.dataset.rawContent || msgDiv.querySelector('.message-content').innerText; navigator.clipboard.writeText(content).then(() => { const orig = btn.innerText; btn.innerText = '✅'; setTimeout(() => btn.innerText = orig, 1500); }); }
 function deleteMessage(btn) { const msgDiv = btn.closest('.chat-message'); const index = parseInt(msgDiv.dataset.msgIndex); if (!isNaN(index) && index >= 0 && index < chatMessages.length) { chatMessages.splice(index, 1); saveChatToStorage(); renderChatMessages(); } else { msgDiv.remove(); } }
+async function branchMessage(btn) {
+    if (isStreaming || !window.AssistantTopics?.branchFromMessage) return;
+    const msgDiv = btn.closest('.chat-message');
+    const index = parseInt(msgDiv?.dataset.msgIndex);
+    if (isNaN(index) || chatMessages[index]?.role !== 'assistant') return;
+    btn.disabled = true;
+    try {
+        await saveChatToStorage();
+        await window.AssistantTopics.branchFromMessage(index, chatMessages);
+    } catch (error) {
+        console.warn('创建话题分支失败:', error);
+    } finally {
+        if (btn.isConnected) btn.disabled = false;
+    }
+}
 async function regenerateMessage(btn) {
     if (isStreaming) return;
     if (!isAIConfigured()) { alert('🤖 AI 助手尚未配置\n\n请点击 ⚙️ 设置按钮配置。'); openSettings(); return; }
@@ -263,9 +281,9 @@ async function regenerateMessage(btn) {
         abortController = new AbortController();
         const requestSignal = abortController.signal;
         showTypingIndicator();
-        try { isStreaming = true; updateSendButton(); const messages = await buildMessagesForAPI(chatMessages.slice(0, index)); if (requestSignal.aborted) throw new DOMException('已停止生成', 'AbortError'); await streamAPIResponse(messages, msgDiv, index); }
+        try { isStreaming = true; window.AssistantTopics?.setBusy(true); updateSendButton(); const messages = await buildMessagesForAPI(chatMessages.slice(0, index)); if (requestSignal.aborted) throw new DOMException('已停止生成', 'AbortError'); await streamAPIResponse(messages, msgDiv, index); }
         catch (error) { if (error.name !== 'AbortError') { chatMessages[index] = { role: 'assistant', content: '❌ 请求失败: ' + error.message }; renderChatMessages(); } }
-        finally { isStreaming = false; hideTypingIndicator(); updateSendButton(); saveChatToStorage(); }
+        finally { isStreaming = false; window.AssistantTopics?.setBusy(false); hideTypingIndicator(); updateSendButton(); saveChatToStorage(); }
     }
     else { msgDiv.remove(); }
 }
@@ -310,8 +328,10 @@ function handleFileUpload(event) {
 
 function handleInputKeydown(event) { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } }
 function autoResizeInput() { const input = document.getElementById('chatInput'); input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 120) + 'px'; }
-async function saveChatToStorage() { try { await localforage.setItem('general_contract_chat', JSON.stringify({ messages: chatMessages, hasContextBreak, contextBreakIndex })); } catch (e) { } }
-async function loadChatFromStorage() { try { const saved = await localforage.getItem('general_contract_chat'); if (saved) { const data = JSON.parse(saved); chatMessages = data.messages || []; hasContextBreak = data.hasContextBreak || false; contextBreakIndex = data.contextBreakIndex || -1; renderChatMessages(); } } catch (e) { } }
+window.autoResizeInput = autoResizeInput;
+window.applyAssistantTopicChatState = function (data) { chatMessages = data.messages || []; hasContextBreak = !!data.hasContextBreak; contextBreakIndex = data.contextBreakIndex ?? -1; const container = document.getElementById('chatMessages'); if (chatMessages.length) renderChatMessages(); else if (container) container.innerHTML = '<div class="chat-welcome"><div class="welcome-icon">🤖</div><div class="welcome-title">合同管理助手</div><div class="welcome-text">开始一个新话题，或从左侧选择已有记录。</div></div>'; };
+async function saveChatToStorage() { try { if (window.AssistantTopics?.saveCurrentChat) { await window.AssistantTopics.saveCurrentChat({ messages: chatMessages, hasContextBreak, contextBreakIndex }); return; } await localforage.setItem('general_contract_chat', JSON.stringify({ messages: chatMessages, hasContextBreak, contextBreakIndex })); } catch (e) { console.warn('保存聊天记录失败:', e); } }
+async function loadChatFromStorage() { try { if (window.AssistantTopics?.loadCurrentChat) { await window.AssistantTopics.loadCurrentChat(); return; } const saved = await localforage.getItem('general_contract_chat'); if (saved) { const data = JSON.parse(saved); chatMessages = data.messages || []; hasContextBreak = data.hasContextBreak || false; contextBreakIndex = data.contextBreakIndex || -1; renderChatMessages(); } } catch (e) { console.warn('加载聊天记录失败:', e); } }
 
 function renderChatMessages() {
     const container = document.getElementById('chatMessages');
