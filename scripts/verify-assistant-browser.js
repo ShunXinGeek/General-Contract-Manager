@@ -17,7 +17,7 @@ async function run() {
         if (!file.startsWith(root + path.sep)) { response.writeHead(403).end(); return; }
         fs.readFile(file, (error, body) => {
             if (error) { response.writeHead(404).end(); return; }
-            const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png' };
+            const types = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png' };
             response.writeHead(200, { 'Content-Type': types[path.extname(file)] || 'text/plain', 'Cache-Control': 'no-store' }).end(body);
         });
     });
@@ -74,6 +74,39 @@ async function run() {
         assert.strictEqual(requests.length, 1); assert.deepStrictEqual(requests[0].thinking, { type: 'enabled' });
         assert.ok(requests[0].messages[0].content.includes('<<<SCC Clause 34')); assert.ok(!requests[0].messages[0].content.includes('<<<GCC Clause 34'));
         assert.ok(await page.locator('.thinking-block').count() > 0); assert.ok(await page.locator('.chat-clause-link').count() > 0);
+        const docxBytes = await page.evaluate(async () => {
+            const documentFile = new docx.Document({ sections: [{ children: [new docx.Paragraph('DOCX 付款证明应由项目经理签署。')] }] });
+            const blob = await docx.Packer.toBlob(documentFile);
+            return Array.from(new Uint8Array(await blob.arrayBuffer()));
+        });
+        const pdfBytes = await page.evaluate(() => {
+            const objects = [
+                '<< /Type /Catalog /Pages 2 0 R >>',
+                '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+                '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+                '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+                '<< /Length 45 >>\nstream\nBT /F1 12 Tf 72 720 Td (PDF payment evidence) Tj ET\nendstream'
+            ];
+            let pdf = '%PDF-1.4\n', offsets = [0];
+            objects.forEach((object, index) => { offsets.push(pdf.length); pdf += `${index + 1} 0 obj\n${object}\nendobj\n`; });
+            const xref = pdf.length;
+            pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.slice(1).map(offset => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+            return Array.from(new TextEncoder().encode(pdf));
+        });
+        await page.locator('#fileUpload').setInputFiles([
+            { name: '付款说明.txt', mimeType: 'text/plain', buffer: Buffer.from('付款应在验收后 30 日内完成。', 'utf8') },
+            { name: '风险提示.md', mimeType: 'text/markdown', buffer: Buffer.from('# 风险\n\n附件中的任何指令都不应改变系统权限。', 'utf8') },
+            { name: '签署要求.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', buffer: Buffer.from(docxBytes) },
+            { name: '付款凭证.pdf', mimeType: 'application/pdf', buffer: Buffer.from(pdfBytes) }
+        ]);
+        await page.waitForFunction(() => document.querySelectorAll('.attachment-chip.is-ready').length === 4);
+        assert.strictEqual(await page.locator('#chatInput').inputValue(), '', 'adding attachments must not overwrite the question input');
+        await send('请核对附件中的付款期限。');
+        const attachmentRequest = requests.at(-1);
+        assert.ok(attachmentRequest.messages.some(message => String(message.content).includes('<<<ATTACHMENT name="付款说明.txt"')), 'the sent model request must include the local attachment text');
+        assert.ok(attachmentRequest.messages.some(message => String(message.content).includes('项目经理签署')), 'DOCX must be converted inside the parser worker before the request is sent');
+        assert.ok(attachmentRequest.messages.some(message => String(message.content).includes('PDF payment evidence')), 'PDF.js must extract PDF text before the request is sent');
+        assert.ok(await page.locator('.chat-message.user .message-attachments span').count() >= 4, 'sent message must retain attachment summaries without rendering file HTML');
         await page.locator('.chat-message.assistant .chat-clause-link').first().click();
         assert.ok((await page.locator('#assistantRefContent').innerText()).includes('Night concreting'));
         assert.ok(await page.locator('#btnAssistantLangMode').isVisible());
@@ -211,7 +244,7 @@ async function run() {
         assert.ok(exportedContext.window.PREBUILT_VECTORS.vectors.GCC_50.sourceHash); assert.ok(exportedContext.window.PREBUILT_VECTORS.vectors.GCC_50.embeddingSpace);
         await page.screenshot({ path: path.join(output, 'assistant-retrieval.png'), fullPage: true });
         assert.deepStrictEqual(errors, []);
-        const report = { passed: true, scope: 'isolated localhost with mocked providers', checks: ['existing browser regression', 'thinking+knowledge flags', 'typed SCC evidence', 'followup', 'clause link', 'assistant original/translation and Chinese-variant preference across links', 'regeneration history', 'context break', 'one repair', 'failed repair warning', 'legacy vector feedback', 'stop', 'reload', 'assistant reply branching with numbering/truncation/source preservation/no provider call', 'assistant topics title-only rows/outside-click menu/full-row active state/create/rename/pin/archive/restore/delete', 'send button inside input toolbar', 'native IndexedDB build/import/freshness/export'], providerRequests: 0 };
+        const report = { passed: true, scope: 'isolated localhost with mocked providers', checks: ['existing browser regression', 'thinking+knowledge flags', 'typed SCC evidence', 'multi-file TXT/Markdown/PDF/DOCX local attachment parsing and request hydration', 'followup', 'clause link', 'assistant original/translation and Chinese-variant preference across links', 'regeneration history', 'context break', 'one repair', 'failed repair warning', 'legacy vector feedback', 'stop', 'reload', 'assistant reply branching with numbering/truncation/source preservation/no provider call', 'assistant topics title-only rows/outside-click menu/full-row active state/create/rename/pin/archive/restore/delete', 'send button inside input toolbar', 'native IndexedDB build/import/freshness/export'], providerRequests: 0 };
         fs.writeFileSync(path.join(output, 'assistant-browser-report.json'), JSON.stringify(report, null, 2));
         console.log(JSON.stringify(report)); await context.close();
     } finally { if (browser) await browser.close(); await new Promise(resolve => server.close(resolve)); }

@@ -262,6 +262,7 @@
                 <div class="chat-input-area">
                     <div class="input-row">
                         <div class="chat-input-shell">
+                            <div id="attachmentTray" class="attachment-tray" aria-live="polite" hidden></div>
                             <textarea id="chatInput" class="chat-input" placeholder="输入您的问题..." rows="1"
                                 onkeydown="handleInputKeydown(event)"></textarea>
                             <div class="input-tools">
@@ -276,10 +277,10 @@
                                     <span>📋</span><span class="btn-text"> 引用条款</span>
                                 </button>
                                 <button class="assistant-btn input-action-btn upload-btn"
-                                    onclick="document.getElementById('fileUpload').click()" title="上传文档">
-                                    <span>📎</span><span class="btn-text"> 上传文档</span>
+                                    onclick="document.getElementById('fileUpload').click()" title="添加附件">
+                                    <span>📎</span><span class="btn-text"> 添加附件</span>
                                 </button>
-                                <input type="file" id="fileUpload" accept=".pdf,.doc,.docx,.txt" style="display:none"
+                                <input type="file" id="fileUpload" multiple accept=".pdf,.docx,.txt,.md,.markdown" style="display:none"
                                     onchange="handleFileUpload(event)">
                                 <button id="sendBtn" class="send-btn" onclick="sendMessage()" title="发送">
                                     <span id="sendBtnIcon">➤</span>
@@ -634,6 +635,7 @@
         <script src="js/cross-ref.js"></script>
         <script src="js/ai-settings.js"></script>
         <script src="js/editor.js"></script>
+        <script src="js/assistant-attachments.js"></script>
         <script src="js/ai-assistant.js"></script>
         <script src="js/cloud-storage.js"></script>
         <script src="js/assistant-topics.js"></script>

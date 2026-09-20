@@ -1,6 +1,6 @@
 // Service Worker for General Contract Shell
 const CACHE_PREFIX = 'general-contract-shell-';
-const CACHE_NAME = CACHE_PREFIX + 'v5';
+const CACHE_NAME = CACHE_PREFIX + 'v6';
 const urlsToCache = [
     './',
     './index.html',
@@ -10,6 +10,9 @@ const urlsToCache = [
     './vendor/localforage.min.js',
     './vendor/html2pdf.bundle.min.js',
     './vendor/docx.js',
+    './vendor/pdf.mjs',
+    './vendor/pdf.worker.mjs',
+    './vendor/mammoth.browser.min.js',
     './vendor/firebase-app-compat.js',
     './vendor/firebase-auth-compat.js',
     './vendor/firebase-firestore-compat.js',
@@ -34,6 +37,8 @@ const urlsToCache = [
     './js/ai-settings.js',
     './js/editor.js',
     './js/ai-assistant.js',
+    './js/assistant-attachments.js',
+    './js/attachment-parser-worker.js',
     './js/assistant-topics.js'
 ];
 

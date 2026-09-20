@@ -96,19 +96,33 @@
         const pending = [...state.outbox];
         notify('同步中…', 'pending');
         try {
-            for (let start = 0; start < pending.length; start += 350) {
+            // 附件正文单独写入 message/attachments 子集合；主消息只保存摘要，避免触及 Firestore 1 MiB 文档上限。
+            for (let start = 0; start < pending.length; start += 40) {
                 const batch = db.batch();
-                pending.slice(start, start + 350).forEach(op => {
+                for (const op of pending.slice(start, start + 40)) {
                     const ref = cloudTopicRef(op.topicId);
                     const topic = getTopic(op.topicId);
                     if (op.kind === 'topic' && topic) batch.set(ref, compactTopic(topic), { merge: true });
                     if (op.kind === 'topic-delete' && topic) batch.set(ref, { status: 'deleted', deletedAt: topic.deletedAt || now(), updatedAt: now(), schemaVersion: 2 }, { merge: true });
                     if (op.kind === 'message' && topic) {
                         const message = (state.messages.get(op.topicId) || []).find(item => item.id === op.messageId);
-                        if (message) batch.set(ref.collection('messages').doc(message.id), { ...clone(message), schemaVersion: 2, cloudUpdatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+                        if (message) {
+                            const messageRef = ref.collection('messages').doc(message.id);
+                            batch.set(messageRef, { ...clone(message), schemaVersion: 2, cloudUpdatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+                            const attachments = await window.AssistantAttachments?.messageAttachments?.(op.topicId, message.id) || [];
+                            attachments.forEach(attachment => batch.set(messageRef.collection('attachments').doc(attachment.id), {
+                                id: attachment.id, name: attachment.name, type: attachment.type, size: attachment.size, extractedBytes: attachment.extractedBytes,
+                                text: attachment.text, warning: attachment.warning || null, status: 'ready', schemaVersion: 1, updatedAt: now(), cloudUpdatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                            }, { merge: true }));
+                        }
                     }
-                    if (op.kind === 'message-delete') batch.set(ref.collection('messages').doc(op.messageId), { status: 'deleted', deletedAt: now(), updatedAt: now(), schemaVersion: 2 }, { merge: true });
-                });
+                    if (op.kind === 'message-delete') {
+                        const messageRef = ref.collection('messages').doc(op.messageId);
+                        // 不使用 merge，确保此前消息正文不再残留在删除墓碑上。
+                        batch.set(messageRef, { status: 'deleted', deletedAt: now(), updatedAt: now(), schemaVersion: 2 });
+                        (op.attachmentIds || []).forEach(attachmentId => batch.set(messageRef.collection('attachments').doc(attachmentId), { status: 'deleted', deletedAt: now(), updatedAt: now(), schemaVersion: 1 }));
+                    }
+                }
                 await batch.commit();
             }
             const sent = new Set(pending.map(item => `${item.kind}:${item.topicId}:${item.messageId || ''}`));
@@ -137,6 +151,12 @@
         state.messages.set(topicId, messages);
         state.hashes.set(topicId, new Map(messages.map(item => [item.id, hash(item)])));
         await persistMessages(topicId);
+        // 附件正文位于独立子集合；只有已有摘要的消息才读取，主消息保持轻量。
+        await Promise.all(messages.filter(message => Array.isArray(message.attachments) && message.attachments.length).map(async message => {
+            const attachmentSnapshot = await cloudTopicRef(topicId).collection('messages').doc(message.id).collection('attachments').get();
+            const rows = []; attachmentSnapshot.forEach(doc => rows.push({ ...doc.data(), id: doc.id }));
+            await window.AssistantAttachments?.importCloud?.(topicId, message.id, rows);
+        }));
     }
     async function syncWithCloud() {
         if (!canSync()) return false;
@@ -225,6 +245,7 @@
         const input = document.getElementById('chatInput');
         const chat = document.getElementById('chatMessages');
         state.drafts[state.currentTopicId] = { text: input?.value || '', scrollTop: chat?.scrollTop || 0, updatedAt: now() };
+        window.AssistantAttachments?.loadDraft?.(state.currentTopicId).catch(() => {});
     }
     async function switchTopic(topicId) {
         if (!requireIdle() || !topicId || topicId === state.currentTopicId) return;
@@ -236,6 +257,7 @@
         window.applyAssistantTopicChatState?.({ messages, hasContextBreak: !!topic?.hasContextBreak, contextBreakIndex: topic?.contextBreakIndex ?? -1 });
         const draft = state.drafts[topicId] || {};
         const input = document.getElementById('chatInput'); if (input) { input.value = draft.text || ''; window.autoResizeInput?.(); }
+        await window.AssistantAttachments?.loadDraft?.(topicId);
         const chat = document.getElementById('chatMessages'); if (chat && Number.isFinite(draft.scrollTop)) chat.scrollTop = draft.scrollTop;
         if (typeof toggleAssistantRef === 'function' && document.getElementById('assistantRefPanel')?.style.display !== 'none') toggleAssistantRef();
         await persistIndex(); render();
@@ -251,6 +273,7 @@
         await persistMessages(topic.id); queueTopic(topic); await persistIndex();
         window.applyAssistantTopicChatState?.({ messages: [], hasContextBreak: false, contextBreakIndex: -1 });
         const input = document.getElementById('chatInput'); if (input) { input.value = ''; input.focus(); window.autoResizeInput?.(); }
+        await window.AssistantAttachments?.clearDraft?.(topic.id);
         render();
     }
     async function branchFromMessage(messageIndex, sourceMessages) {
@@ -284,6 +307,7 @@
         group.forEach((topic, index) => { topic.rank = (index + 1) * RANK_GAP; topic.updatedAt = timestamp; queueTopic(topic); });
         state.messages.set(branch.id, copiedMessages);
         state.hashes.set(branch.id, new Map(copiedMessages.map(message => [message.id, hash(message)])));
+        for (const message of copiedMessages) await window.AssistantAttachments?.copyMessage?.(sourceTopic.id, message.id, branch.id, message.id);
         state.drafts[branch.id] = { text: '', scrollTop: 0, updatedAt: timestamp };
         copiedMessages.forEach(message => enqueue({ kind: 'message', topicId: branch.id, messageId: message.id }));
         state.currentTopicId = branch.id;
@@ -293,6 +317,7 @@
         window.applyAssistantTopicChatState?.({ messages: copiedMessages, hasContextBreak: branch.hasContextBreak, contextBreakIndex: branch.contextBreakIndex });
         const input = document.getElementById('chatInput');
         if (input) { input.value = ''; input.focus(); window.autoResizeInput?.(); }
+        await window.AssistantAttachments?.clearDraft?.(branch.id);
         if (typeof toggleAssistantRef === 'function' && document.getElementById('assistantRefPanel')?.style.display !== 'none') toggleAssistantRef();
         render();
         notify(`已创建分支 ${branch.title}`, 'ok');
@@ -329,7 +354,7 @@
         const topic = getTopic(topicId); if (!topic) return;
         if (!await CustomDialog.confirm(`永久删除“${topic.title}”及其全部聊天记录？此操作不可恢复。`, '永久删除话题')) return;
         const messages = await loadMessages(topicId);
-        messages.forEach(message => enqueue({ kind: 'message-delete', topicId, messageId: message.id }));
+        messages.forEach(message => enqueue({ kind: 'message-delete', topicId, messageId: message.id, attachmentIds: (message.attachments || []).map(item => item.id) }));
         topic.status = 'deleted'; topic.deletedAt = now(); topic.updatedAt = now(); topic.title = ''; topic.preview = ''; queueTopic(topic);
         state.messages.delete(topicId); state.hashes.delete(topicId); delete state.drafts[topicId]; await localforage.removeItem(topicKey(topicId));
         if (state.currentTopicId === topicId) { const next = sortedTopics(activeTopics())[0]; if (next) await switchTopic(next.id); else await createTopic(); }
@@ -416,7 +441,7 @@
         const topic = getTopic(); if (!topic) return;
         const messages = normalizeMessages(chatState.messages || []); const priorHashes = state.hashes.get(topic.id) || new Map(); const nextHashes = new Map();
         messages.forEach(message => { const signature = hash(message); nextHashes.set(message.id, signature); if (priorHashes.get(message.id) !== signature) enqueue({ kind: 'message', topicId: topic.id, messageId: message.id }); });
-        priorHashes.forEach((_, messageId) => { if (!nextHashes.has(messageId)) enqueue({ kind: 'message-delete', topicId: topic.id, messageId }); });
+        priorHashes.forEach((_, messageId) => { if (!nextHashes.has(messageId)) { const previous = (state.messages.get(topic.id) || []).find(message => message.id === messageId); enqueue({ kind: 'message-delete', topicId: topic.id, messageId, attachmentIds: (previous?.attachments || []).map(item => item.id) }); } });
         state.messages.set(topic.id, messages); state.hashes.set(topic.id, nextHashes);
         topic.messageCount = messages.length; topic.preview = messagePreview(messages); topic.lastMessageAt = now(); topic.updatedAt = now(); topic.hasContextBreak = !!chatState.hasContextBreak; topic.contextBreakIndex = chatState.contextBreakIndex ?? -1;
         if (topic.titleSource === 'default') { const first = messages.find(message => message.role === 'user' && message.content); if (first) { topic.title = String(first.content).replace(/\s+/g, ' ').slice(0, 24) || '新话题'; topic.titleSource = 'auto'; } }
@@ -429,6 +454,7 @@
         const topic = getTopic(); const messages = await loadMessages(topic.id);
         window.applyAssistantTopicChatState?.({ messages, hasContextBreak: !!topic.hasContextBreak, contextBreakIndex: topic.contextBreakIndex ?? -1 });
         const draft = state.drafts[topic.id] || {}; const input = document.getElementById('chatInput'); if (input) { input.value = draft.text || ''; window.autoResizeInput?.(); }
+        await window.AssistantAttachments?.loadDraft?.(topic.id);
         render();
     }
     const api = window.AssistantTopics = {

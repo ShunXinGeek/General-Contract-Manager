@@ -3611,6 +3611,14 @@ header .icon-btn:disabled {
 
 }
 
+.chat-message.assistant .msg-actions {
+
+    top: auto;
+
+    bottom: 6px;
+
+}
+
 
 
 .chat-message:hover .msg-actions {
@@ -5935,3 +5943,13 @@ header .icon-btn:disabled {
     .assistant-ref-panel { position:absolute; z-index:18; inset:0 0 0 auto; width:min(92vw,520px); box-shadow:-8px 0 24px var(--shadow); }
 }
 @media (prefers-reduced-motion: reduce) { .assistant-topic-sidebar { transition:none; } }
+
+/* 管理助手附件：仅展示文件摘要，正文以 textContent 处理而不渲染为 HTML。 */
+.attachment-tray { display:flex; flex-wrap:wrap; gap:6px; padding:7px 8px 0; }
+.attachment-chip,.message-attachments span { display:inline-flex; align-items:center; gap:5px; min-width:0; border:1px solid var(--border-color); border-radius:7px; background:var(--bg-nav-header); color:var(--text-main); font-size:12px; }
+.attachment-chip { max-width:100%; padding:4px 5px 4px 8px; }
+.attachment-chip-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:260px; }
+.attachment-chip-detail { color:var(--text-muted); white-space:nowrap; }
+.attachment-chip button { width:20px; height:20px; padding:0; border-radius:50%; color:var(--text-muted); font-size:17px; line-height:1; }
+.attachment-chip button:hover:not(:disabled) { color:#fff; background:#b42318; }.attachment-chip.is-error { border-color:#d92d20; }.attachment-chip.is-parsing { opacity:.7; }
+.message-attachments { display:flex; flex-wrap:wrap; gap:5px; margin-top:7px; }.message-attachments span { padding:3px 7px; }

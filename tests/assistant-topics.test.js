@@ -127,6 +127,28 @@ async function run() {
     assert.ok(branching.cloudWrites.some(write => write.path === `general_contract_mods/branch-test-user/assistant_topics/${secondBranch.id}`), 'branch metadata must use the normal user-scoped topic path');
     assert.strictEqual(branching.cloudWrites.filter(write => write.path.includes(`/assistant_topics/${secondBranch.id}/messages/`) && write.data.role).length, 6, 'all non-break branch messages must sync with their metadata');
     assert.strictEqual(branching.cloudWrites.filter(write => write.path.includes(`/assistant_topics/${secondBranch.id}/messages/`) && write.data.type === 'break').length, 1, 'branch context breaks must sync as messages');
+
+    const attachmentCloud = loadTopicModule({});
+    await attachmentCloud.context.window.assistantTopicsReady;
+    attachmentCloud.context.window.AssistantAttachments = {
+        messageAttachments: async () => [{ id: 'attachment-1', name: 'evidence.md', type: 'md', size: 12, extractedBytes: 12, text: '仅存于附件子文档', warning: null }],
+        clearDraft: async () => {}, loadDraft: async () => {}
+    };
+    const attachmentApi = attachmentCloud.context.window.AssistantTopics;
+    const attachmentTopicId = attachmentApi.getCurrentTopicId();
+    const attachmentMessage = { id: 'attachment-message', role: 'user', content: '请分析附件', attachments: [{ id: 'attachment-1', name: 'evidence.md', type: 'md', extractedBytes: 12 }] };
+    await attachmentApi.saveCurrentChat({ messages: [attachmentMessage], hasContextBreak: false, contextBreakIndex: -1 });
+    attachmentCloud.context.currentUser = { uid: 'attachment-user' };
+    attachmentCloud.context.navigator.onLine = true;
+    assert.strictEqual(await attachmentApi.flushOutbox(), true, 'attachment message should synchronize');
+    const parentWrite = attachmentCloud.cloudWrites.find(write => write.path.endsWith(`/assistant_topics/${attachmentTopicId}/messages/attachment-message`));
+    const childWrite = attachmentCloud.cloudWrites.find(write => write.path.endsWith(`/assistant_topics/${attachmentTopicId}/messages/attachment-message/attachments/attachment-1`));
+    assert.ok(parentWrite && !Object.prototype.hasOwnProperty.call(parentWrite.data, 'text'), 'message document must retain only attachment summaries');
+    assert.strictEqual(childWrite?.data.text, '仅存于附件子文档', 'attachment body must use the separate attachment subcollection');
+    await attachmentApi.saveCurrentChat({ messages: [], hasContextBreak: false, contextBreakIndex: -1 });
+    assert.strictEqual(await attachmentApi.flushOutbox(), true, 'attachment deletion should synchronize');
+    const tombstone = attachmentCloud.cloudWrites.find(write => write.path.endsWith(`/assistant_topics/${attachmentTopicId}/messages/attachment-message`) && write.data.status === 'deleted');
+    assert.ok(tombstone && tombstone.options === undefined && !Object.prototype.hasOwnProperty.call(tombstone.data, 'content'), 'message tombstone must overwrite instead of merge so prior content is not retained');
     console.log('assistant topic tests passed (migration, persistence, branching, offline outbox, Firebase writes)');
 }
 
