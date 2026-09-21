@@ -1,5 +1,32 @@
 # 更新日志
 
+## v2026.09.21（2026-09-21）
+
+本版本完成国内外大模型的统一配置、协议适配与受控网关升级，重点解决不同服务商的地址、端口、思考参数、流式协议和浏览器跨域调用差异。
+
+### 多供应商模型配置
+
+- 新增供应商注册表，支持 OpenAI、Gemini、智谱 AI、Kimi 中国/国际、DeepSeek、通义千问北京/新加坡/美国，以及部署者授权的自定义 OpenAI 兼容服务。
+- 设置页新增供应商/区域、调用协议、Base URL、连接超时和流式空闲超时字段；端口统一写在 URL 中，避免独立端口字段与地址不一致。
+- 支持 OpenAI Chat Completions、OpenAI Responses 和 Gemini OpenAI 兼容协议；Responses 流会转换为现有统一 SSE 事件格式。
+- 思考参数按模型能力适配：通义使用 `enable_thinking`，Gemini 使用 `reasoning_effort`，其他兼容模型使用对应的 `thinking` 结构；推理模型不再接收不兼容的采样参数。
+- AI 配置快照由 v2 升级为 v3；旧版单模型、旧云端快照和旧模型列表会自动补齐供应商、协议及超时字段，并保留旧字段兼容读取。
+
+### 受控网关与检索调用
+
+- `/api/ai` 统一转发聊天请求，新增 Gemini 官方兼容地址和 OpenAI Responses 转换，同时保留原有国内模型路径及错误诊断。
+- Embedding 与 Rerank 迁移至同源 `/api/retrieval`，浏览器不再直接向第三方服务商发送 API Key，消除跨域和鉴权格式差异。
+- 聊天、Embedding 和 Rerank 目标均采用 HTTPS、域名、端口和路径精确校验；自定义目标需由部署者通过 `AI_ALLOWED_ENDPOINTS` 或 `AI_ALLOWED_RETRIEVAL_ENDPOINTS` 明确授权，不提供任意 URL 代理。
+- Service Worker 缓存版本升级至 v7，确保新适配脚本能够刷新到客户端。
+
+### 文档与验证
+
+- 更新 README，补充供应商地址、协议、端口、自定义白名单和部署说明。
+- `npm test`：通过，覆盖云同步、旧配置迁移、AI 传输、Responses 流、检索网关和既有 RAG 回归。
+- `npm run check`：通过，53 个 JavaScript 文件及项目清单/锁文件检查通过。
+- `node scripts/verify-assistant-browser.js`：通过，覆盖管理助手、话题、附件、检索索引、离线冷启动和配置恢复；使用 Mock，真实供应商请求数为 0。
+- 未执行 Netlify、Firebase 规则或生产数据部署；真实供应商连通性和用量仍需使用用户提供的测试凭据另行验收。
+
 ## v2026.09.20（2026-09-20）
 
 本版本完善“管理助手”的话题工作区，并增加从大模型回复继续探索的独立分支能力。

@@ -6,7 +6,7 @@
 
 **核心技术栈：** 纯 HTML/CSS/JS（零框架依赖） + IndexedDB (LocalForage) + Firebase Firestore + Service Worker (PWA)
 
-**设计理念：** 本地优先 (Local-First)，合同首先保存在用户浏览器中，云端同步为可选增强功能。启用云同步后，AI、Embedding、Rerank API Key 会随个人配置保存到 Firebase，以便其他电脑登录同一账号后恢复；AI 对话及条款识别经本站 Netlify Edge Function 转发，Embedding、Rerank 仍由浏览器直接调用提供商。
+**设计理念：** 本地优先 (Local-First)，合同首先保存在用户浏览器中，云端同步为可选增强功能。启用云同步后，AI、Embedding、Rerank API Key 会随个人配置保存到 Firebase，以便其他电脑登录同一账号后恢复；所有聊天、Embedding 和 Rerank 请求均经本站 Netlify Edge Function 转发，浏览器不会直接把服务商密钥放入跨域请求头。
 
 ---
 
@@ -19,7 +19,7 @@
 - **合同管理面板**（设置 → 📁 合同管理）：表格化管理所有合同，支持行内编辑标签名和完整名称
 
 ### 2.2 智能化 AI 助手
-- **多模型管理**：支持添加、编辑、删除多个兼容 OpenAI 格式的大语言模型（如 GLM-4、DeepSeek、GPT 系列等），一键切换当前使用的模型；API Key 经由简单 Base64 混淆后存储于 localStorage
+- **多模型管理**：支持添加、编辑、删除多个国内外模型；设置项包含供应商/区域、协议、Base URL（端口直接写在 URL 中）、连接超时和流式空闲超时，一键切换当前使用的模型；API Key 经由简单 Base64 混淆后存储于 localStorage
 - **流式对话**：支持 SSE (Server-Sent Events) 流式输出，实时显示 AI 回复内容
 - **思考模式 (Thinking Mode)**：支持 `reasoning_content` 的深度思考模型（如 QwQ、DeepSeek-R1），以折叠面板展示 AI 思考过程及耗时
 - **上下文管理**：支持"终止上下文"功能，在对话中插入断点标记，后续对话只使用断点之后的消息上下文
@@ -491,7 +491,7 @@ General Contract Manager/
 
 #### AI 同源转发与多平台设置
 
-聊天和 LLM 条款识别统一请求 `/api/ai`，由 `netlify/edge-functions/ai.js` 转发。GitHub 连接的 Netlify 构建会自动部署该函数，不需要把 AI 密钥写入源码或 Netlify 构建环境变量。用户仍在设置中维护各模型自己的地址、密钥和模型名称；密钥、问题及引用的合同文本会经过 Netlify 服务端，代码不会记录或缓存它们。原有本地/云端密钥保存方式不变。
+聊天和 LLM 条款识别统一请求 `/api/ai`，Embedding 与 Rerank 统一请求 `/api/retrieval`，分别由对应 Edge Function 转发。GitHub 连接的 Netlify 构建会自动部署这些函数，不需要把 AI 密钥写入源码或 Netlify 构建环境变量。用户仍在设置中维护各模型自己的地址、密钥和模型名称；密钥、问题、合同文本及检索文本会经过 Netlify 服务端，代码不会记录或缓存它们。原有本地/云端密钥保存方式不变。
 
 | 平台 | 可填写的 Base URL 示例（也接受完整聊天接口地址） |
 | --- | --- |
@@ -502,18 +502,19 @@ General Contract Manager/
 | 智谱 | `https://open.bigmodel.cn/api/paas/v4` |
 | Kimi 中国 / 国际 | `https://api.moonshot.cn/v1` / `https://api.moonshot.ai/v1` |
 | OpenAI | `https://api.openai.com/v1` |
+| Gemini（官方 OpenAI 兼容） | `https://generativelanguage.googleapis.com/v1beta/openai` |
 
 百炼还允许官方香港地址及北京、香港、新加坡、东京、法兰克福、美国的业务空间专属域名，格式为 `https://{WorkspaceId}.{Region}.maas.aliyuncs.com/compatible-mode/v1`。密钥必须匹配平台和地域。模型名称以服务商账号实际可用的名称为准。
 
-思考参数由 `js/ai-client.js` 按平台和已知模型能力适配：千问混合模型使用 `enable_thinking`，DeepSeek 新模型、智谱 GLM-4.5/4.6/4.7/5 系列、Kimi K2.5/K2.6 使用 `thinking.type`。固定思考模型（如 DeepSeek Reasoner、Kimi K2 Thinking/K2.7 Code/K3）不发送关闭思考参数；Kimi 固定保留思考的模型会带回历史 `reasoning_content`。旧模型及未知能力的模型使用服务商默认行为，不保证存在可切换的思考模式。百炼托管的其他品牌模型也使用百炼的参数协议。
+思考参数由 `js/ai-providers.js` 按平台和已知模型能力适配：千问混合模型使用 `enable_thinking`，DeepSeek 新模型、智谱 GLM-4.5/4.6/4.7/5 系列、Kimi K2.5/K2.6 使用 `thinking.type`，Gemini 官方兼容模式使用 `reasoning_effort`。OpenAI 可选 Responses 协议会由 Gateway 转换为统一事件流。固定思考模型（如 DeepSeek Reasoner、Kimi K2 Thinking/K2.7 Code/K3）不发送关闭思考参数；Kimi 固定保留思考的模型会带回历史 `reasoning_content`。旧模型及未知能力的模型使用服务商默认行为，不保证存在可切换的思考模式。
 
 在添加/编辑模型弹窗中点击“测试连接”，会发送一条不含合同内容的简短问题，收到输出后停止，消耗少量模型用量。测试无需先保存配置。没有相应真实凭证的平台，只能完成模拟协议验证，不能据此宣称真实调用已通过。
 
-转发接口只接受本站来源的 JSON POST，仅允许代码白名单内的官方 HTTPS 聊天路径，禁止重定向；不提供任意 URL 转发。每域名/IP 每分钟最多 30 次调用，请求上限 2 MiB，连接响应头超时 30 秒，响应空闲超时 120 秒、总时长上限 15 分钟、响应上限 20 MiB（同时受 Netlify 实际平台限制影响）。失败不会自动重试，避免重复用量。扩展服务商时，维护 Edge Function 的 `PROVIDERS`/路径白名单及客户端的能力适配，并增加测试。
+转发接口只接受本站来源的 JSON POST，仅允许受控注册表内的官方 HTTPS 路径，禁止重定向；不提供任意 URL 转发。每域名/IP 每分钟最多 30 次聊天调用、60 次检索调用，请求上限 2 MiB，聊天连接与空闲超时可在受限范围内配置（总时长上限 15 分钟、响应上限 20 MiB）。失败不会自动重试，避免重复用量。自定义服务需要部署者在 Netlify 环境变量中精确配置白名单，例如 `AI_ALLOWED_ENDPOINTS=[{"hostname":"llm.example.com","port":8443,"pathPrefix":"/v1","protocol":"openai-chat"}]`；自定义 Embedding/Rerank 则使用 `AI_ALLOWED_RETRIEVAL_ENDPOINTS=[{"kind":"embedding","hostname":"embed.example.com","port":8443,"path":"/v1/embeddings"}]`。不要开放通配符、查询参数或任意 Header。
 
-本地 AI 功能需通过 `netlify dev` 运行转发接口；普通静态文件服务器不执行 Edge Function。部署后刷新页面以加载更新脚本，Service Worker 已更新至 v4。`node tests/run.js` 与 `node scripts/check.js` 包含 AI 协议、安全限制、流式取消和离线资源检查。
+本地 AI 功能需通过 `netlify dev` 运行转发接口；普通静态文件服务器不执行 Edge Function。部署后刷新页面以加载更新脚本，Service Worker 已更新至 v7。`node tests/run.js`、`node scripts/check.js` 与 `node scripts/verify-assistant-browser.js` 包含 AI 协议、安全限制、流式取消、离线资源和浏览器回归检查。
 
-官方参考：[DeepSeek 思考模式](https://api-docs.deepseek.com/guides/thinking_mode/)、[百炼思考模式](https://help.aliyun.com/zh/model-studio/deep-thinking)、[百炼地域地址](https://help.aliyun.com/en/model-studio/base-url)、[智谱思考模式](https://docs.bigmodel.cn/cn/guide/capabilities/thinking-mode)、[Kimi 思考模型](https://platform.kimi.ai/docs/guide/use-thinking-models)、[Netlify Edge Function 限制](https://docs.netlify.com/build/edge-functions/limits/)。
+官方参考：[OpenAI Responses](https://developers.openai.com/api/reference/resources/responses/)、[Gemini OpenAI 兼容](https://ai.google.dev/gemini-api/docs/openai)、[DeepSeek 思考模式](https://api-docs.deepseek.com/guides/thinking_mode/)、[百炼地域地址](https://help.aliyun.com/en/model-studio/base-url)、[智谱思考模式](https://docs.bigmodel.cn/cn/guide/capabilities/thinking-mode)、[Kimi 思考模型](https://platform.kimi.ai/docs/guide/use-thinking-models)、[Netlify Edge Function 限制](https://docs.netlify.com/build/edge-functions/limits/)。
 
 ---
 

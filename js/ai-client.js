@@ -1,7 +1,9 @@
-// Shared browser transport for OpenAI-compatible chat providers.
+// Shared browser transport for the normalized AI Gateway protocol.
 (function (root) {
     'use strict';
+    const providers = root.AIProviders;
     function endpoint(value) {
+        if (providers) return providers.endpoint(value);
         let url;
         try { url = new URL(value.trim()); } catch (_) { throw new Error('AI 接口地址无效，请填写完整的 HTTPS 地址。'); }
         if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
@@ -20,20 +22,26 @@
         return url.href;
     }
     function provider(value) {
+        if (providers) return providers.provider(value);
         const host = new URL(endpoint(value)).hostname;
         if (host === 'api.deepseek.com') return 'deepseek';
         if (host === 'open.bigmodel.cn') return 'zhipu';
-        if (host === 'api.moonshot.cn' || host === 'api.moonshot.ai') return 'kimi';
-        if (/^dashscope(?:-intl|-us)?\.aliyuncs\.com$/.test(host) || host.endsWith('.maas.aliyuncs.com') || host === 'cn-hongkong.dashscope.aliyuncs.com') return 'qwen';
+        if (host === 'api.moonshot.cn') return 'kimi-cn';
+        if (host === 'api.moonshot.ai') return 'kimi-global';
+        if (host === 'dashscope-intl.aliyuncs.com') return 'qwen-intl';
+        if (host === 'dashscope-us.aliyuncs.com') return 'qwen-us';
+        if (/^dashscope\.aliyuncs\.com$/.test(host) || host.endsWith('.maas.aliyuncs.com') || host === 'cn-hongkong.dashscope.aliyuncs.com') return 'qwen';
         return 'openai';
     }
     function thinkingCapability(value, model) {
-        const p = provider(value), m = (model || '').toLowerCase();
+        if (providers) return providers.thinkingCapability(value, model);
+        const source = value && typeof value === 'object' ? (value.apiEndpoint || value.endpoint || value.baseUrl) : value;
+        const p = provider(source), m = (model || '').toLowerCase();
         if (p === 'deepseek') {
             if (m === 'deepseek-reasoner') return 'always';
             if (/^deepseek-(?:v4|flash)/.test(m)) return 'switch';
         }
-        if (p === 'qwen') {
+        if (p === 'qwen' || p === 'qwen-intl' || p === 'qwen-us') {
             if (m.includes('-instruct')) return 'default';
             if (/^(?:qwq|qwen3-[\w-]*thinking)/.test(m)) return 'always';
             // qwen3-max predates switchable thinking; dated variants may differ.
@@ -41,42 +49,51 @@
             if (/^qwen-(?:plus|flash)(?:-|$)/.test(m)) return 'switch';
         }
         if (p === 'zhipu' && /^glm-(?:4\.[567]|5)(?:[.-]|$)/.test(m)) return 'switch';
-        if (p === 'kimi') {
+        if (p === 'kimi-cn' || p === 'kimi-global') {
             if (/^kimi-(?:k3|k2\.7-code|k2-thinking)/.test(m)) return 'always';
             if (/^kimi-k2\.[56](?:-|$)/.test(m)) return 'switch';
         }
         return 'default';
     }
     function needsReasoningHistory(value, model) {
-        return provider(value) === 'kimi' && /^kimi-(?:k3|k2\.7-code)/i.test(model || '');
+        if (providers) return providers.needsReasoningHistory(value, model);
+        const source = value && typeof value === 'object' ? (value.apiEndpoint || value.endpoint || value.baseUrl) : value;
+        return ['kimi-cn', 'kimi-global'].includes(provider(source)) && /^kimi-(?:k3|k2\.7-code)/i.test(model || '');
     }
     function requestBody(config, messages, options = {}) {
-        const p = provider(config.apiEndpoint), m = (config.model || '').toLowerCase();
+        const profile = providers ? providers.normalizeProfile(config) : { ...config, providerId: provider(config.apiEndpoint), protocol: 'openai-chat' };
+        const p = profile.providerId, m = (profile.model || '').toLowerCase();
         const body = { model: config.model, messages, stream: options.stream !== false };
-        if (typeof options.thinking === 'boolean' && thinkingCapability(config.apiEndpoint, m) === 'switch') {
-            if (p === 'qwen') body.enable_thinking = options.thinking;
+        if (profile.protocol === 'openai-responses') body.apiStyle = 'responses';
+        if (typeof options.thinking === 'boolean' && thinkingCapability(profile, m) === 'switch') {
+            if (p === 'qwen' || p === 'qwen-intl' || p === 'qwen-us') body.enable_thinking = options.thinking;
+            else if (profile.protocol === 'gemini-openai') body.reasoning_effort = options.thinking ? 'medium' : 'none';
             else body.thinking = { type: options.thinking ? 'enabled' : 'disabled' };
         }
         // Only set sampling/output limits on models known to accept them.
         // Kimi hybrid/fixed-thinking models have model-specific fixed temperatures.
-        if (options.classify && !(p === 'kimi' && /^kimi-k[23]/.test(m))) {
+        const parameterSensitive = profile.protocol === 'openai-responses' ||
+            (p === 'openai' && /^(?:o[1-9]|gpt-5)/.test(m));
+        if (options.classify && !parameterSensitive && !((p === 'kimi-cn' || p === 'kimi-global') && /^kimi-k[23]/.test(m))) {
             body.temperature = 0;
-            if (thinkingCapability(config.apiEndpoint, m) !== 'always') body.max_tokens = 200;
+            if (thinkingCapability(profile, m) !== 'always') body.max_tokens = 200;
         }
         return body;
     }
     async function request(config, messages, options = {}) {
-        const target = endpoint(config.apiEndpoint);
+        const profile = providers ? providers.normalizeProfile(config) : { ...config, baseUrl: config.apiEndpoint };
+        const target = providers ? endpoint(profile) : endpoint(config.apiEndpoint);
         const controller = new AbortController();
         const abort = () => controller.abort(options.signal.reason);
         if (options.signal?.aborted) abort();
         else options.signal?.addEventListener('abort', abort, { once: true });
-        const timer = setTimeout(() => controller.abort(new Error('连接 AI 接口超时，请稍后重试。')), 35000);
+        const timer = setTimeout(() => controller.abort(new Error('连接 AI 接口超时，请稍后重试。')), profile.connectTimeoutMs || 35000);
         try {
             const response = await fetch('/api/ai', {
                 method: 'POST', cache: 'no-store', signal: controller.signal,
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ endpoint: target, apiKey: config.apiKey, body: requestBody(config, messages, options) })
+                body: JSON.stringify({ endpoint: target, apiKey: config.apiKey, profile: providers ? providers.publicProfile(profile) : undefined,
+                    body: requestBody(profile, messages, options) })
             });
             clearTimeout(timer);
             if (!response.ok) {
@@ -106,7 +123,7 @@
     }
     async function* events(response) {
         const reader = response.body.getReader(), decoder = new TextDecoder();
-        let buffer = '', completed = false;
+        let buffer = '', completed = false, finishSeen = false;
         function parse(block) {
             const data = block.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
             if (!data) return null;
@@ -130,13 +147,19 @@
                     const event = parse(buffer.slice(0, boundary));
                     buffer = buffer.slice(boundary + 2);
                     if (event?.done) { completed = true; return; }
-                    if (event) yield event;
+                    if (event) {
+                        if (event.choices?.some(choice => choice && choice.finish_reason)) finishSeen = true;
+                        yield event;
+                    }
                 }
                 if (chunk.done) {
                     const event = parse(buffer);
                     if (event?.done) completed = true;
-                    else if (event) yield event;
-                    if (!completed) throw new Error('AI 响应提前结束，回答可能不完整；请手动重试。');
+                    else if (event) {
+                        if (event.choices?.some(choice => choice && choice.finish_reason)) finishSeen = true;
+                        yield event;
+                    }
+                    if (!completed && !finishSeen) throw new Error('AI 响应提前结束，回答可能不完整；请手动重试。');
                     return;
                 }
             }
@@ -145,5 +168,8 @@
             reader.releaseLock();
         }
     }
-    root.AIClient = { endpoint, provider, thinkingCapability, needsReasoningHistory, requestBody, request, events };
+    function instructionRole(config) {
+        return providers ? providers.instructionRole(config) : 'system';
+    }
+    root.AIClient = { endpoint, provider, thinkingCapability, needsReasoningHistory, instructionRole, requestBody, request, events };
 })(globalThis);

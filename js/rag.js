@@ -111,14 +111,11 @@ const RAG = {
         if (signal?.aborted) cancel();
         const timer = setTimeout(cancel, 25000);
         try {
-            const response = await fetch(url, {
+            const response = await fetch('/api/retrieval', {
                 method: 'POST',
                 signal: controller.signal,
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${apiKey}`
-                },
-                body: JSON.stringify({ input: text, model: model })
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ kind: 'embedding', endpoint: url, apiKey, body: { input: text, model: model } })
             });
             if (!response.ok) {
                 throw new Error(`Embedding API Error ${response.status}`);
@@ -467,19 +464,13 @@ window.PREBUILT_VECTORS = PREBUILT_VECTORS;
         try {
             const documents = candidates.map(c => `${c.type} Clause ${AIRetrieval.number(c.id ?? c.clauseId, c.type)}: ${c.title}\n${AIRetrieval.snippet(c, query)}`);
 
-            const response = await fetch(rerankEndpoint, {
+            const response = await fetch('/api/retrieval', {
                 method: 'POST',
                 signal: controller.signal,
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${rerankApiKey}`
-                },
-                body: JSON.stringify({
-                    model: rerankModel,
-                    query: query,
-                    documents: documents,
-                    top_n: Math.min(topN, candidates.length)
-                })
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ kind: 'rerank', endpoint: rerankEndpoint, apiKey: rerankApiKey, body: {
+                    model: rerankModel, query: query, documents: documents, top_n: Math.min(topN, candidates.length)
+                } })
             });
 
             if (!response.ok) {

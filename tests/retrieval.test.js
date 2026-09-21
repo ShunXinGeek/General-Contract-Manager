@@ -78,8 +78,12 @@ async function run() {
     rag.getEmbedding = async () => [1, 0, 0]; assert.strictEqual((await rag.findMostRelevant('query', config, 10, minimal)).length, 0); assert.strictEqual(rag.lastSearchStatus.code, 'query-dimension-mismatch');
     rag.getEmbedding = async () => { throw new Error('service failure'); }; await rag.findMostRelevant('query', config, 10, minimal); assert.strictEqual(rag.lastSearchStatus.code, 'service-unavailable');
     const candidates = api.rows(minimal).slice(0, 2);
-    ctx.fetch = async (_, options) => {
-        const body = JSON.parse(options.body); assert.match(body.documents[0], /Facilities for persons/); assert.match(body.documents[0], /GCC Clause/);
+    ctx.fetch = async (url, options) => {
+        assert.strictEqual(url, '/api/retrieval');
+        const envelope = JSON.parse(options.body), body = envelope.body;
+        assert.strictEqual(envelope.kind, 'rerank'); assert.strictEqual(envelope.endpoint, config.rerankEndpoint || 'https://dashscope.aliyuncs.com/compatible-api/v1/reranks');
+        assert.ok(!options.headers.Authorization, 'provider key must only be sent to the same-origin gateway');
+        assert.match(body.documents[0], /Facilities for persons/); assert.match(body.documents[0], /GCC Clause/);
         return { ok: true, json: async () => ({ results: [{ index: -1, relevance_score: 1 }, { index: 0, relevance_score: 0 }, { index: 0, relevance_score: 0.5 }, { index: 99, relevance_score: 1 }] }) };
     };
     let reranked = await rag.rerank('query', candidates, { ...config, rerankEnabled: true }, 5);

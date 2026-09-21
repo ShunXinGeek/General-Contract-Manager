@@ -6,7 +6,7 @@ const root = path.join(__dirname, '..');
 
 function createAppContext(storage = new Map(), database = new Map()) {
     const context = {
-        Blob, AbortController, TextDecoder, setTimeout, clearTimeout, setInterval, clearInterval, confirm: () => true,
+        Blob, URL, AbortController, TextDecoder, setTimeout, clearTimeout, setInterval, clearInterval, confirm: () => true,
         console: { log() {}, info() {}, warn() {}, error() {} },
         navigator: { onLine: true },
         document: { addEventListener() {}, getElementById() { return null; },
@@ -22,7 +22,7 @@ function createAppContext(storage = new Map(), database = new Map()) {
     };
     context.window = context;
     vm.createContext(context);
-    for (const file of ['config', 'comparison', 'app', 'ai-settings', 'editor', 'import', 'cloud-storage']) {
+    for (const file of ['config', 'ai-providers', 'comparison', 'app', 'ai-settings', 'editor', 'import', 'cloud-storage']) {
         vm.runInContext(fs.readFileSync(path.join(root, 'js', `${file}.js`), 'utf8'), context, { filename: `${file}.js` });
     }
     // DOM interactions are tested separately in a real browser. Keep persistence/merge code real here.
@@ -143,14 +143,17 @@ async function run() {
         saveToCloud = async function () { window.uploaded = getAISettingsForCloud(); return { success: true }; };
     `);
     assert.strictEqual((await evaluate(fresh, 'syncWithCloud()')).success, true);
-    assert.deepStrictEqual(json(fresh, 'uploaded.models'), aiSnapshot.models, 'fresh device cannot upload an empty model list');
+    assert.deepStrictEqual(json(fresh, 'uploaded.models.map(m => ({ id: m.id, name: m.name, endpoint: m.endpoint, apiKey: m.apiKey, model: m.model }))'), aiSnapshot.models, 'fresh device cannot upload an empty model list');
     assert.strictEqual(evaluate(fresh, 'uploaded.selectedModelId'), 'm2');
     assert.strictEqual(evaluate(fresh, 'AI_CONFIG.embeddingApiKey'), 'test-embedding-key');
     assert.strictEqual(evaluate(fresh, 'AI_CONFIG.rerankApiKey'), 'test-rerank-key');
     assert.notStrictEqual(freshStorage.get('ai_api_key'), 'test-key-two', 'local keys remain obfuscated');
     const aiReloaded = createAppContext(freshStorage, freshDatabase);
     evaluate(aiReloaded, 'loadAISettings(); initModelSelector();');
-    assert.deepStrictEqual(json(aiReloaded, 'getAISettingsForCloud()'), aiSnapshot, 'all AI settings survive reload');
+    const reloadedSnapshot = json(aiReloaded, 'getAISettingsForCloud()');
+    assert.strictEqual(reloadedSnapshot.version, 3, 'legacy cloud settings migrate to v3 on next save');
+    assert.deepStrictEqual(reloadedSnapshot.models.map(m => ({ id: m.id, name: m.name, endpoint: m.endpoint, apiKey: m.apiKey, model: m.model })), aiSnapshot.models, 'all AI settings survive reload');
+    assert.strictEqual(reloadedSnapshot.selectedModelId, 'm2');
 
     fresh.localNewer = { ...aiSnapshot, modifiedAt: 300, apiKey: 'local-key' };
     assert.strictEqual(evaluate(fresh, 'mergeAISettings(localNewer, aiSnapshot).apiKey'), 'local-key');

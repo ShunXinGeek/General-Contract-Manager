@@ -6,6 +6,7 @@ const { pathToFileURL } = require('url');
 const root = path.join(__dirname, '..');
 const context = { URL, Response, DOMException, AbortController, TextDecoder, setTimeout, clearTimeout };
 vm.createContext(context);
+vm.runInContext(fs.readFileSync(path.join(root, 'js/ai-providers.js'), 'utf8'), context);
 vm.runInContext(fs.readFileSync(path.join(root, 'js/ai-client.js'), 'utf8'), context);
 const client = context.AIClient;
 const messages = [{ role: 'user', content: 'test' }];
@@ -17,12 +18,12 @@ async function run() {
     const cases = [
         ['https://api.deepseek.com/v1', 'deepseek-v4-pro', 'deepseek', 'thinking'],
         ['https://dashscope.aliyuncs.com', 'qwen3-32b', 'qwen', 'enable_thinking'],
-        ['https://dashscope-intl.aliyuncs.com/compatible-mode/v1', 'qwen-plus', 'qwen', 'enable_thinking'],
-        ['https://dashscope-us.aliyuncs.com/compatible-mode/v1', 'qwen3.5-plus', 'qwen', 'enable_thinking'],
+        ['https://dashscope-intl.aliyuncs.com/compatible-mode/v1', 'qwen-plus', 'qwen-intl', 'enable_thinking'],
+        ['https://dashscope-us.aliyuncs.com/compatible-mode/v1', 'qwen3.5-plus', 'qwen-us', 'enable_thinking'],
         ['https://workspace123.cn-beijing.maas.aliyuncs.com', 'qwen-plus', 'qwen', 'enable_thinking'],
         ['https://open.bigmodel.cn', 'glm-4.7', 'zhipu', 'thinking'],
-        ['https://api.moonshot.cn/v1', 'kimi-k2.5', 'kimi', 'thinking'],
-        ['https://api.moonshot.ai/v1', 'kimi-k2.6', 'kimi', 'thinking']
+        ['https://api.moonshot.cn/v1', 'kimi-k2.5', 'kimi-cn', 'thinking'],
+        ['https://api.moonshot.ai/v1', 'kimi-k2.6', 'kimi-global', 'thinking']
     ];
     for (const [url, model, provider, field] of cases) {
         assert.strictEqual(client.provider(url), provider);
@@ -32,6 +33,12 @@ async function run() {
         assert.deepStrictEqual(JSON.parse(JSON.stringify(off[field])), field === 'thinking' ? { type: 'disabled' } : false);
         assert.ok(!(field === 'thinking' ? 'enable_thinking' in on : 'thinking' in on));
     }
+    const gemini = body('https://generativelanguage.googleapis.com/v1beta/openai', 'gemini-2.5-flash', true);
+    assert.strictEqual(client.provider('https://generativelanguage.googleapis.com/v1beta/openai'), 'gemini');
+    assert.strictEqual(gemini.reasoning_effort, 'medium');
+    assert.ok(validateEndpoint(client.endpoint('https://generativelanguage.googleapis.com/v1beta/openai')).endsWith('/chat/completions'));
+    assert.strictEqual(client.instructionRole({ apiEndpoint: 'https://api.openai.com/v1', model: 'gpt-5-mini' }), 'developer');
+    assert.ok(client.endpoint({ apiEndpoint: 'https://api.openai.com/v1', protocol: 'openai-responses' }).endsWith('/responses'));
     for (const [url, model] of [['https://api.deepseek.com', 'deepseek-chat'], ['https://open.bigmodel.cn', 'glm-4'],
         ['https://api.moonshot.cn', 'moonshot-v1-8k'], ['https://dashscope.aliyuncs.com', 'qwen-max']]) {
         const b = body(url, model, true);
@@ -123,6 +130,22 @@ async function run() {
         const cancelReader = cancelResponse.body.getReader();
         await cancelReader.read(); await cancelReader.cancel();
         assert.ok(canceledByUser);
+    } finally { global.fetch = originalFetch; }
+    // Responses protocol is converted at the gateway so the browser continues to consume one SSE shape.
+    global.fetch = async (url, options) => {
+        assert.strictEqual(url, 'https://api.openai.com/v1/responses');
+        const outgoing = JSON.parse(options.body);
+        assert.ok(Array.isArray(outgoing.input) && !outgoing.messages);
+        return new Response('data: {"type":"response.output_text.delta","delta":"OK"}\n\ndata: {"type":"response.completed"}\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    };
+    try {
+        const responsePayload = { endpoint: 'https://api.openai.com/v1/responses', apiKey: 'test-only-key',
+            profile: { providerId: 'openai', protocol: 'openai-responses' }, body: { model: 'gpt-5-mini', messages, stream: true, apiStyle: 'responses' } };
+        const output = [];
+        for await (const event of client.events(await handler(request(responsePayload)))) {
+            if (event.choices?.[0]?.delta?.content) output.push(event.choices[0].delta.content);
+        }
+        assert.deepStrictEqual(output, ['OK']);
     } finally { global.fetch = originalFetch; }
     // Test SSE across arbitrary UTF-8/network boundaries, missing final newline, heartbeat and usage events.
     const raw = ': keep-alive\r\n\r\ndata: {"choices":[{"delta":{"reasoning_content":"想","content":"答"}}]}\r\n\r\ndata: {"choices":[]}\n\ndata: [DONE]';

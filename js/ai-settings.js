@@ -16,7 +16,7 @@ const AI_CONFIG_STORAGE_FIELDS = {
 
 function getAISettingsForCloud() {
     const snapshot = {
-        version: 2,
+        version: 3,
         modifiedAt: Number(localStorage.getItem(AI_SETTINGS_MODIFIED_KEY)) || 0,
         models: AI_CHAT_MODELS.map(({ _isDecrypted, ...model }) => ({ ...model })),
         selectedModelId: currentSelectedModelId,
@@ -69,11 +69,11 @@ function applyCloudAISettings(settings) {
     });
     if (typeof settings.rerankEnabled === 'boolean') AI_CONFIG.rerankEnabled = settings.rerankEnabled;
     if (Array.isArray(settings.models)) {
-        AI_CHAT_MODELS = settings.models.map(({ _isDecrypted, ...model }) => ({ ...model }));
+        AI_CHAT_MODELS = settings.models.map(({ _isDecrypted, ...model }) => normalizeChatModel(model));
     } else if (settings.apiEndpoint && settings.apiKey && settings.model) {
         // 旧云快照只有一个活动模型，把它转换为可在下拉框中选择的模型。
-        AI_CHAT_MODELS = [{ id: 'legacy_cloud_model', name: settings.model,
-            endpoint: settings.apiEndpoint, apiKey: settings.apiKey, model: settings.model }];
+        AI_CHAT_MODELS = [normalizeChatModel({ id: 'legacy_cloud_model', name: settings.model,
+            endpoint: settings.apiEndpoint, apiKey: settings.apiKey, model: settings.model })];
     }
     currentSelectedModelId = AI_CHAT_MODELS.some(m => m.id === settings.selectedModelId)
         ? settings.selectedModelId : (AI_CHAT_MODELS[0]?.id || null);
@@ -283,7 +283,7 @@ function loadChatModels() {
     try {
         const s = localStorage.getItem('ai_chat_models');
         if (s) {
-            AI_CHAT_MODELS = JSON.parse(s);
+            AI_CHAT_MODELS = JSON.parse(s).map(normalizeChatModel);
             // 解密已有模型的 API Key
             AI_CHAT_MODELS.forEach(m => {
                 if (m.apiKey && !m._isDecrypted) {
@@ -293,6 +293,14 @@ function loadChatModels() {
             });
         }
     } catch (e) { AI_CHAT_MODELS = []; }
+}
+
+function normalizeChatModel(model) {
+    const source = model && typeof model === 'object' ? model : {};
+    const profile = AIProviders.normalizeProfile(source);
+    return { ...source, providerId: profile.providerId, protocol: profile.protocol, authType: profile.authType,
+        endpoint: profile.baseUrl, baseUrl: profile.baseUrl, connectTimeoutMs: profile.connectTimeoutMs,
+        idleTimeoutMs: profile.idleTimeoutMs };
 }
 
 function saveChatModels() {
@@ -321,7 +329,7 @@ function renderModelCards() {
         '<button class="model-card-btn" onclick="openModelEditModal(\'' + m.id + '\')">✏️</button>' +
         '<button class="model-card-btn" onclick="deleteModel(\'' + m.id + '\')">🗑️</button>' +
         '</div></div>' +
-        '<div class="model-card-info"><div>Model: ' + escapeHtml(m.model) + '</div></div>' +
+        '<div class="model-card-info"><div>' + escapeHtml(AIProviders.preset(m.providerId).label) + ' · ' + escapeHtml(m.model) + '</div></div>' +
         '</div>'
     ).join('');
 }
@@ -338,10 +346,16 @@ function openModelEditModal(modelId) {
             ['Name', 'Endpoint', 'ApiKey', 'Model'].forEach(f => {
                 document.getElementById('modelEdit' + f).value = m[f.toLowerCase()] || m[f.charAt(0).toLowerCase() + f.slice(1)] || '';
             });
+            document.getElementById('modelEditProvider').value = m.providerId || 'custom';
+            document.getElementById('modelEditProtocol').value = m.protocol || 'openai-chat';
+            document.getElementById('modelEditConnectTimeout').value = m.connectTimeoutMs || 35000;
+            document.getElementById('modelEditIdleTimeout').value = m.idleTimeoutMs || 120000;
         }
     } else {
         title.textContent = '➕ 添加新模型';
         ['Name', 'Endpoint', 'ApiKey', 'Model'].forEach(f => document.getElementById('modelEdit' + f).value = '');
+        document.getElementById('modelEditProvider').value = 'deepseek';
+        applyModelProviderPreset();
     }
     modal.style.display = 'flex';
 }
@@ -350,20 +364,38 @@ function closeModelEditModal() {
     document.getElementById('modelEditModal').style.display = 'none';
 }
 
-function saveModel() {
-    const modelId = document.getElementById('editingModelId').value;
+function applyModelProviderPreset() {
+    const providerId = document.getElementById('modelEditProvider').value;
+    const preset = AIProviders.preset(providerId);
+    if (providerId !== 'custom') {
+        document.getElementById('modelEditEndpoint').value = preset.baseUrl;
+        document.getElementById('modelEditProtocol').value = preset.protocol;
+    }
+}
+
+function readModelEditor() {
     const name = document.getElementById('modelEditName').value.trim();
-    const endpoint = document.getElementById('modelEditEndpoint').value.trim();
     const apiKey = document.getElementById('modelEditApiKey').value.trim();
     const model = document.getElementById('modelEditModel').value.trim();
-    if (!name || !endpoint || !apiKey || !model) { alert('请填写所有必填项'); return; }
+    if (!name || !apiKey || !model) throw new Error('请填写模型名称、密钥和 Model。');
+    const profile = AIProviders.normalizeProfile({ providerId: document.getElementById('modelEditProvider').value,
+        protocol: document.getElementById('modelEditProtocol').value, endpoint: document.getElementById('modelEditEndpoint').value.trim(),
+        connectTimeoutMs: document.getElementById('modelEditConnectTimeout').value, idleTimeoutMs: document.getElementById('modelEditIdleTimeout').value });
+    if (!profile.baseUrl) throw new Error('请填写 Base URL。');
+    return { name, apiKey, model, ...profile, endpoint: profile.baseUrl };
+}
+
+function saveModel() {
+    const modelId = document.getElementById('editingModelId').value;
+    let config;
+    try { config = readModelEditor(); } catch (error) { alert(error.message); return; }
     if (modelId) {
         const idx = AI_CHAT_MODELS.findIndex(m => m.id === modelId);
-        if (idx !== -1) AI_CHAT_MODELS[idx] = { id: modelId, name, endpoint, apiKey, model };
+        if (idx !== -1) AI_CHAT_MODELS[idx] = { id: modelId, ...config };
         if (currentSelectedModelId === modelId) applySelectedModel();
     } else {
         const newId = 'model_' + Date.now();
-        AI_CHAT_MODELS.push({ id: newId, name, endpoint, apiKey, model });
+        AI_CHAT_MODELS.push({ id: newId, ...config });
         if (AI_CHAT_MODELS.length === 1) { currentSelectedModelId = newId; saveSelectedModelId(); applySelectedModel(); }
     }
     saveChatModels(); renderModelCards(); updateModelSelector(); closeModelEditModal();
@@ -373,10 +405,9 @@ function saveModel() {
 async function testModelConnection() {
     const button = document.getElementById('modelConnectionTest');
     const status = document.getElementById('modelConnectionStatus');
-    const config = { apiEndpoint: document.getElementById('modelEditEndpoint').value.trim(),
-        apiKey: document.getElementById('modelEditApiKey').value.trim(),
-        model: document.getElementById('modelEditModel').value.trim() };
-    if (!config.apiEndpoint || !config.apiKey || !config.model) { status.textContent = '请先填写接口地址、密钥和模型名称。'; return; }
+    let config;
+    try { config = { ...readModelEditor(), apiEndpoint: document.getElementById('modelEditEndpoint').value.trim() }; }
+    catch (error) { status.textContent = '❌ ' + error.message; return; }
     button.disabled = true;
     status.textContent = '正在发送简短测试问题（会消耗少量模型用量）…';
     const controller = new AbortController();
@@ -456,6 +487,10 @@ function applySelectedModel() {
     AI_CONFIG.apiEndpoint = m.endpoint;
     AI_CONFIG.apiKey = m.apiKey;
     AI_CONFIG.model = m.model;
+    AI_CONFIG.providerId = m.providerId;
+    AI_CONFIG.protocol = m.protocol;
+    AI_CONFIG.connectTimeoutMs = m.connectTimeoutMs;
+    AI_CONFIG.idleTimeoutMs = m.idleTimeoutMs;
     localStorage.setItem(AI_SETTINGS_KEYS.endpoint, m.endpoint);
     localStorage.setItem(AI_SETTINGS_KEYS.apiKey, obfuscateKey(m.apiKey));
     localStorage.setItem(AI_SETTINGS_KEYS.model, m.model);

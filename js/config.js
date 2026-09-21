@@ -12,6 +12,12 @@ const AI_CONFIG = {
     // 模型名称 - 用户在设置中配置
     model: "",
 
+    // 聊天模型公开连接配置（密钥仍单独保存）。旧版仅有 apiEndpoint 的配置会自动推断。
+    providerId: "",
+    protocol: "openai-chat",
+    connectTimeoutMs: 35000,
+    idleTimeoutMs: 120000,
+
     // 嵌入模型配置 - 用于 RAG 知识库索引
     embeddingEndpoint: "",
     embeddingApiKey: "",
