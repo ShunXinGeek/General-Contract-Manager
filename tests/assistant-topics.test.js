@@ -80,6 +80,17 @@ async function run() {
     assert.strictEqual(changed.hasContextBreak, true, 'topic should persist context break state');
     assert.strictEqual(changed.contextBreakIndex, 1, 'topic should persist context break index');
     assert.strictEqual(JSON.parse(first.values.get(`assistant_topic_messages_v2:${changed.id}`)).length, 2, 'new topic messages should persist by topic id');
+    let titleRequest;
+    first.context.window.AIClient = {
+        instructionRole: () => 'system',
+        request: async (config, messages, options) => { titleRequest = { config, messages, options }; return { json: async () => ({ choices: [{ message: { content: '标题：付款风险提示与处置方案' } }] }) }; }
+    };
+    const generated = await first.context.window.AssistantTopics.generateTitle({ topicId: changed.id, modelConfig: { apiEndpoint: 'https://api.example.test/v1', apiKey: 'test-key', model: 'test-model' }, modelId: 'test-model-id', question: '请解释第 50 条', answer: '这里是解释' });
+    assert.strictEqual(generated, '付款风险提示与处置方案', 'generated topic title should retain only concise Chinese characters');
+    assert.ok(Array.from(generated).length <= 13, 'generated topic title must stay within 13 Chinese characters');
+    assert.strictEqual(titleRequest.options.stream, false, 'title generation must use a short non-streaming call');
+    assert.strictEqual(titleRequest.config.model, 'test-model', 'title generation must retain the reply model configuration');
+    assert.strictEqual(first.context.window.AssistantTopics.getTopics()[0].titleSource, 'ai', 'successful generated title should be marked as AI-owned');
     assert.ok(JSON.parse(first.values.get('assistant_topic_outbox_v1')).length >= 3, 'offline changes should queue topic and message synchronization');
     first.context.currentUser = { uid: 'topic-test-user' };
     first.context.navigator.onLine = true;

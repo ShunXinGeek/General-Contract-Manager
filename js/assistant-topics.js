@@ -11,7 +11,7 @@
     const RANK_GAP = 1000;
     const state = {
         topics: [], currentTopicId: null, drafts: {}, outbox: [], messages: new Map(), hashes: new Map(),
-        view: 'active', search: '', ready: false, busy: false, initializedDom: false, flushTimer: null
+        view: 'active', archivePreviewTopicId: null, search: '', ready: false, busy: false, initializedDom: false, flushTimer: null
     };
 
     const now = () => Date.now();
@@ -34,6 +34,13 @@
     function messagePreview(messages) {
         const message = [...messages].reverse().find(item => item.type !== 'break' && item.content);
         return message ? String(message.content).replace(/\s+/g, ' ').slice(0, 72) : '尚未开始对话';
+    }
+    function fallbackTitle(content) {
+        return Array.from(String(content || '').replace(/\s+/g, ' ').trim()).slice(0, 13).join('') || '新话题';
+    }
+    function generatedTitle(content) {
+        const line = String(content || '').replace(/```/g, '').split(/\r?\n/)[0].replace(/^(?:话题(?:名称)?|标题)\s*[：:]\s*/i, '').replace(/[“”"'`#*_]/g, '').trim();
+        return Array.from(line).filter(char => /[\u3400-\u9fff]/.test(char)).slice(0, 13).join('');
     }
     function normalizeMessages(messages) {
         return (messages || []).map((message, index) => ({
@@ -251,10 +258,10 @@
         if (!requireIdle() || !topicId || topicId === state.currentTopicId) return;
         saveDraftForCurrent();
         await persistIndex();
-        state.currentTopicId = topicId;
+        state.currentTopicId = topicId; state.archivePreviewTopicId = null;
         const topic = getTopic(topicId);
         const messages = await loadMessages(topicId);
-        window.applyAssistantTopicChatState?.({ messages, hasContextBreak: !!topic?.hasContextBreak, contextBreakIndex: topic?.contextBreakIndex ?? -1 });
+        window.applyAssistantTopicChatState?.({ messages, hasContextBreak: !!topic?.hasContextBreak, contextBreakIndex: topic?.contextBreakIndex ?? -1, readOnly: false });
         const draft = state.drafts[topicId] || {};
         const input = document.getElementById('chatInput'); if (input) { input.value = draft.text || ''; window.autoResizeInput?.(); }
         await window.AssistantAttachments?.loadDraft?.(topicId);
@@ -264,6 +271,15 @@
         if (canSync()) syncTopicMessages(topicId).then(() => {
             const fresh = getTopic(topicId); window.applyAssistantTopicChatState?.({ messages: state.messages.get(topicId) || [], hasContextBreak: !!fresh?.hasContextBreak, contextBreakIndex: fresh?.contextBreakIndex ?? -1 });
         }).catch(() => {});
+    }
+    async function previewArchivedTopic(topicId) {
+        if (!requireIdle()) return;
+        const topic = getTopic(topicId); if (!topic || topic.status !== 'archived') return;
+        state.archivePreviewTopicId = topicId;
+        const messages = await loadMessages(topicId);
+        window.applyAssistantTopicChatState?.({ messages, hasContextBreak: !!topic.hasContextBreak, contextBreakIndex: topic.contextBreakIndex ?? -1, readOnly: true });
+        if (typeof toggleAssistantRef === 'function' && document.getElementById('assistantRefPanel')?.style.display !== 'none') toggleAssistantRef();
+        render();
     }
     async function createTopic() {
         if (!requireIdle()) return;
@@ -332,6 +348,35 @@
         const next = title.trim().slice(0, 80); if (!next) return;
         topic.title = next; topic.titleSource = 'user'; topic.updatedAt = now(); queueTopic(topic); await persistIndex(); render();
     }
+    async function generateTitle({ topicId, modelConfig, modelId, question, answer }) {
+        const topic = getTopic(topicId);
+        if (!topic || topic.status !== 'active' || !['default', 'fallback'].includes(topic.titleSource) || topic.titleGenerationState === 'pending') return null;
+        const config = modelConfig && typeof modelConfig === 'object' ? { ...modelConfig } : null;
+        if (!config?.apiEndpoint || !config?.apiKey || !config?.model || !question || !answer || !window.AIClient) return null;
+        topic.titleGenerationState = 'pending'; topic.updatedAt = now(); queueTopic(topic); await persistIndex();
+        const trim = value => {
+            const chars = Array.from(String(value || ''));
+            return chars.length > 5000 ? `${chars.slice(0, 4000).join('')}\n…\n${chars.slice(-1000).join('')}` : chars.join('');
+        };
+        const instruction = '请根据下面的用户问题和助手完整回答，为该对话生成一个标题。仅输出不超过13个简体中文汉字，不要标点、数字、引号、Markdown、解释或前缀。';
+        const messages = [{ role: window.AIClient.instructionRole(config), content: instruction }, { role: 'user', content: `用户问题：${trim(question)}\n\n助手回答：${trim(answer)}` }];
+        try {
+            const response = await window.AIClient.request(config, messages, { stream: false, classify: true });
+            const data = await response.json();
+            const title = generatedTitle(data?.choices?.[0]?.message?.content);
+            const current = getTopic(topicId);
+            if (!current || current.titleSource === 'user') return null;
+            current.titleGenerationState = title ? 'done' : 'failed'; current.titleGeneratedAt = now(); current.titleModelId = modelId || null;
+            if (title) { current.title = title; current.titleSource = 'ai'; }
+            current.updatedAt = now(); queueTopic(current); await persistIndex(); render();
+            return title || null;
+        } catch (error) {
+            const current = getTopic(topicId);
+            if (current && current.titleSource !== 'user') { current.titleGenerationState = 'failed'; current.titleGeneratedAt = now(); current.updatedAt = now(); queueTopic(current); await persistIndex(); render(); }
+            console.warn('自动生成话题标题失败:', error);
+            return null;
+        }
+    }
     async function archiveTopic(topicId) {
         if (!requireIdle()) return;
         const topic = getTopic(topicId); if (!topic) return;
@@ -347,7 +392,10 @@
     async function restoreTopic(topicId) {
         if (!requireIdle()) return;
         const topic = getTopic(topicId); if (!topic) return;
-        topic.status = 'active'; topic.archivedAt = null; topic.pinned = false; topic.rank = nextRank(false); topic.updatedAt = now(); queueTopic(topic); await persistIndex(); state.view = 'active'; render();
+        const wasPreviewing = state.archivePreviewTopicId === topicId;
+        topic.status = 'active'; topic.archivedAt = null; topic.pinned = false; topic.rank = nextRank(false); topic.updatedAt = now(); queueTopic(topic); await persistIndex(); state.view = 'active';
+        if (wasPreviewing) { state.archivePreviewTopicId = null; state.currentTopicId = null; await switchTopic(topicId); }
+        else render();
     }
     async function deleteTopic(topicId) {
         if (!requireIdle()) return;
@@ -356,6 +404,7 @@
         const messages = await loadMessages(topicId);
         messages.forEach(message => enqueue({ kind: 'message-delete', topicId, messageId: message.id, attachmentIds: (message.attachments || []).map(item => item.id) }));
         topic.status = 'deleted'; topic.deletedAt = now(); topic.updatedAt = now(); topic.title = ''; topic.preview = ''; queueTopic(topic);
+        if (state.archivePreviewTopicId === topicId) state.archivePreviewTopicId = null;
         state.messages.delete(topicId); state.hashes.delete(topicId); delete state.drafts[topicId]; await localforage.removeItem(topicKey(topicId));
         if (state.currentTopicId === topicId) { const next = sortedTopics(activeTopics())[0]; if (next) await switchTopic(next.id); else await createTopic(); }
         await persistIndex(); render();
@@ -375,7 +424,26 @@
         group.forEach((item, i) => { item.rank = (i + 1) * RANK_GAP; item.updatedAt = now(); queueTopic(item); });
         await persistIndex(); render();
     }
-    function toggleArchive() { state.view = state.view === 'archive' ? 'active' : 'archive'; render(); }
+    async function toggleArchive() {
+        if (!requireIdle()) return;
+        if (state.view === 'archive') {
+            state.view = 'active'; state.archivePreviewTopicId = null;
+            await loadCurrentChat();
+        } else {
+            if (state.view === 'notebook' && !await window.AssistantNotebook?.requestClose?.()) return;
+            state.view = 'archive'; render();
+        }
+    }
+    async function openNotebook() {
+        if (!requireIdle()) return;
+        if (state.view === 'archive') { state.archivePreviewTopicId = null; window.applyAssistantTopicChatState?.({ messages: await loadMessages(state.currentTopicId), hasContextBreak: !!getTopic()?.hasContextBreak, contextBreakIndex: getTopic()?.contextBreakIndex ?? -1, readOnly: false }); }
+        state.view = 'notebook'; await window.AssistantNotebook?.open?.(); render();
+    }
+    async function closeNotebook() {
+        if (state.view !== 'notebook') return;
+        if (!await window.AssistantNotebook?.requestClose?.()) return;
+        state.view = 'active'; await loadCurrentChat();
+    }
     function closeTopicMenus(returnFocus = false) {
         document.querySelectorAll('.assistant-topic-menu').forEach(menu => {
             const opener = menu.parentElement?.querySelector('.assistant-topic-more');
@@ -396,8 +464,9 @@
         opener.setAttribute('aria-expanded', 'true'); host.appendChild(menu);
     }
     function renderTopicItem(topic) {
-        const item = document.createElement('div'); item.className = `assistant-topic-item${topic.id === state.currentTopicId ? ' is-active' : ''}`; item.draggable = state.view === 'active'; item.dataset.topicId = topic.id;
-        const select = document.createElement('button'); select.type = 'button'; select.className = 'assistant-topic-select'; select.setAttribute('aria-current', topic.id === state.currentTopicId ? 'page' : 'false'); select.innerHTML = `${topic.pinned ? '<span class="assistant-topic-pin" aria-hidden="true">●</span>' : ''}<span class="assistant-topic-title">${escaped(topic.title || '已删除话题')}</span>`; select.onclick = () => state.view === 'active' && switchTopic(topic.id);
+        const selected = state.view === 'archive' ? topic.id === state.archivePreviewTopicId : topic.id === state.currentTopicId;
+        const item = document.createElement('div'); item.className = `assistant-topic-item${selected ? ' is-active' : ''}`; item.draggable = state.view === 'active'; item.dataset.topicId = topic.id;
+        const select = document.createElement('button'); select.type = 'button'; select.className = 'assistant-topic-select'; select.setAttribute('aria-current', selected ? 'page' : 'false'); select.innerHTML = `${topic.pinned ? '<span class="assistant-topic-pin" aria-hidden="true">●</span>' : ''}<span class="assistant-topic-title">${escaped(topic.title || '已删除话题')}</span>`; select.onclick = () => state.view === 'active' ? switchTopic(topic.id) : previewArchivedTopic(topic.id);
         const menuButton = document.createElement('button'); menuButton.type = 'button'; menuButton.className = 'assistant-topic-more'; menuButton.textContent = '⋯'; menuButton.title = '话题操作'; menuButton.setAttribute('aria-label', `操作：${topic.title || '话题'}`); menuButton.setAttribute('aria-haspopup', 'menu'); menuButton.setAttribute('aria-expanded', 'false'); menuButton.onclick = event => { event.stopPropagation(); renderMenu(item, topic, menuButton); };
         item.append(select, menuButton);
         if (state.view === 'active') {
@@ -410,7 +479,20 @@
     function render() {
         if (!state.initializedDom) return;
         const list = document.getElementById('assistantTopicList'); if (!list) return;
+        if (state.view === 'notebook') {
+            document.getElementById('assistantTopicSearch').placeholder = '搜索笔记';
+            document.querySelector('.assistant-topic-heading').textContent = '笔记本';
+            document.getElementById('btnNewAssistantTopic').hidden = true;
+            document.getElementById('assistantArchiveCount').textContent = String(archivedTopics().length);
+            document.getElementById('btnAssistantArchive').classList.remove('is-active');
+            document.getElementById('btnAssistantNotebook').classList.add('is-active');
+            window.AssistantNotebook?.renderSidebar?.();
+            return;
+        }
         const archive = state.view === 'archive'; const source = archive ? archivedTopics() : activeTopics();
+        document.getElementById('assistantTopicSearch').placeholder = '搜索话题';
+        document.querySelector('.assistant-topic-heading').textContent = archive ? '档案库' : '话题';
+        document.getElementById('btnNewAssistantTopic').hidden = archive;
         const filter = state.search.trim().toLowerCase(); const topics = sortedTopics(source).filter(topic => !filter || String(topic.title || '').toLowerCase().includes(filter));
         list.replaceChildren();
         if (archive) { const back = document.createElement('button'); back.type = 'button'; back.className = 'assistant-topic-back'; back.textContent = '‹ 返回话题'; back.onclick = toggleArchive; list.appendChild(back); }
@@ -423,11 +505,13 @@
         });
         document.getElementById('assistantArchiveCount').textContent = String(archivedTopics().length);
         document.getElementById('btnAssistantArchive').classList.toggle('is-active', archive);
+        document.getElementById('btnAssistantNotebook').classList.remove('is-active');
     }
     function attachDom() {
         if (state.initializedDom) return; state.initializedDom = true;
         document.getElementById('btnNewAssistantTopic')?.addEventListener('click', createTopic);
-        document.getElementById('btnAssistantArchive')?.addEventListener('click', toggleArchive);
+        document.getElementById('btnAssistantArchive')?.addEventListener('click', () => toggleArchive().catch(() => {}));
+        document.getElementById('btnAssistantNotebook')?.addEventListener('click', () => (state.view === 'notebook' ? closeNotebook() : openNotebook()).catch(() => {}));
         document.getElementById('assistantTopicSearch')?.addEventListener('input', event => { state.search = event.target.value; render(); });
         document.getElementById('assistantTopicScrim')?.addEventListener('click', () => setSidebarOpen(false));
         document.addEventListener('click', event => { if (!event.target.closest('.assistant-topic-menu') && !event.target.closest('.assistant-topic-more')) closeTopicMenus(); });
@@ -437,14 +521,14 @@
         if (typeof BroadcastChannel !== 'undefined') { const channel = new BroadcastChannel('assistant-topics'); channel.onmessage = () => initialize(); window.addEventListener('beforeunload', () => channel.close()); state.channel = channel; }
     }
     async function saveCurrentChat(chatState) {
-        if (!state.ready || !state.currentTopicId) return;
+        if (!state.ready || !state.currentTopicId || state.archivePreviewTopicId) return;
         const topic = getTopic(); if (!topic) return;
         const messages = normalizeMessages(chatState.messages || []); const priorHashes = state.hashes.get(topic.id) || new Map(); const nextHashes = new Map();
         messages.forEach(message => { const signature = hash(message); nextHashes.set(message.id, signature); if (priorHashes.get(message.id) !== signature) enqueue({ kind: 'message', topicId: topic.id, messageId: message.id }); });
         priorHashes.forEach((_, messageId) => { if (!nextHashes.has(messageId)) { const previous = (state.messages.get(topic.id) || []).find(message => message.id === messageId); enqueue({ kind: 'message-delete', topicId: topic.id, messageId, attachmentIds: (previous?.attachments || []).map(item => item.id) }); } });
         state.messages.set(topic.id, messages); state.hashes.set(topic.id, nextHashes);
         topic.messageCount = messages.length; topic.preview = messagePreview(messages); topic.lastMessageAt = now(); topic.updatedAt = now(); topic.hasContextBreak = !!chatState.hasContextBreak; topic.contextBreakIndex = chatState.contextBreakIndex ?? -1;
-        if (topic.titleSource === 'default') { const first = messages.find(message => message.role === 'user' && message.content); if (first) { topic.title = String(first.content).replace(/\s+/g, ' ').slice(0, 24) || '新话题'; topic.titleSource = 'auto'; } }
+        if (topic.titleSource === 'default') { const first = messages.find(message => message.role === 'user' && message.content); if (first) { topic.title = fallbackTitle(first.content); topic.titleSource = 'fallback'; } }
         queueTopic(topic); await persistMessages(topic.id); await persistIndex(); render();
         state.channel?.postMessage({ type: 'changed', topicId: topic.id });
     }
@@ -452,15 +536,17 @@
         await window.assistantTopicsReady;
         if (!state.currentTopicId) await createTopic();
         const topic = getTopic(); const messages = await loadMessages(topic.id);
-        window.applyAssistantTopicChatState?.({ messages, hasContextBreak: !!topic.hasContextBreak, contextBreakIndex: topic.contextBreakIndex ?? -1 });
+        window.applyAssistantTopicChatState?.({ messages, hasContextBreak: !!topic.hasContextBreak, contextBreakIndex: topic.contextBreakIndex ?? -1, readOnly: false });
         const draft = state.drafts[topic.id] || {}; const input = document.getElementById('chatInput'); if (input) { input.value = draft.text || ''; window.autoResizeInput?.(); }
         await window.AssistantAttachments?.loadDraft?.(topic.id);
         render();
     }
     const api = window.AssistantTopics = {
-        init: initialize, saveCurrentChat, loadCurrentChat, switchTopic, createTopic, branchFromMessage, toggleSidebar: () => setSidebarOpen(!isSidebarOpen()),
+        init: initialize, saveCurrentChat, loadCurrentChat, switchTopic, createTopic, branchFromMessage, toggleSidebar: () => setSidebarOpen(!isSidebarOpen()), previewArchivedTopic,
         setBusy: value => { state.busy = !!value; }, syncWithCloud, flushOutbox, getCurrentTopicId: () => state.currentTopicId,
-        getTopics: () => clone(state.topics.filter(topic => topic.status !== 'deleted'))
+        getDisplayedTopicId: () => state.archivePreviewTopicId || state.currentTopicId,
+        getTopicInfo: id => clone(getTopic(id)), isReadOnlyPreview: () => !!state.archivePreviewTopicId,
+        openNotebook, closeNotebook, generateTitle, getTopics: () => clone(state.topics.filter(topic => topic.status !== 'deleted'))
     };
     window.assistantTopicsReady = initialize();
     // 让既有云同步入口在合同同步成功后顺带对账话题，不改变其返回数据结构。

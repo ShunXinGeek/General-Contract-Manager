@@ -73,6 +73,11 @@ async function run() {
         await send('SCC Clause 34');
         assert.strictEqual(requests.length, 1); assert.deepStrictEqual(requests[0].thinking, { type: 'enabled' });
         assert.ok(requests[0].messages[0].content.includes('<<<SCC Clause 34')); assert.ok(!requests[0].messages[0].content.includes('<<<GCC Clause 34'));
+        await page.waitForFunction(() => AssistantTopics.getTopics().some(topic => topic.titleSource === 'ai'), null, { timeout: 5000 });
+        const generatedTopic = await page.evaluate(() => AssistantTopics.getTopics().find(topic => topic.titleSource === 'ai'));
+        assert.ok(Array.from(generatedTopic.title).length <= 13 && /^[\u3400-\u9fff]+$/u.test(generatedTopic.title), 'AI topic title must be concise Chinese text');
+        const titleRequest = requests.find(body => body.stream === false && String(body.messages?.[0]?.content || '').includes('生成一个标题'));
+        assert.strictEqual(titleRequest?.model, 'deepseek-flash', 'topic title request must use the same model as the completed reply');
         assert.ok(await page.locator('.thinking-block').count() > 0); assert.ok(await page.locator('.chat-clause-link').count() > 0);
         const docxBytes = await page.evaluate(async () => {
             const documentFile = new docx.Document({ sections: [{ children: [new docx.Paragraph('DOCX 付款证明应由项目经理签署。')] }] });
@@ -152,6 +157,7 @@ async function run() {
         assert.ok(!(await page.locator('#btnToggleNavigator').isDisabled()), 'assistant sidebar toggle must stay enabled');
         assert.strictEqual(await page.locator('#btnToggleNavigator').getAttribute('title'), '切换侧边栏');
         assert.ok(await page.locator('#assistantTopicSidebar').isVisible(), 'assistant sidebar should be open by default');
+        assert.strictEqual(await page.locator('#chatMessages .chat-message.assistant button[title="收藏"]').count(), await page.locator('#chatMessages .chat-message.assistant').count(), 'every assistant reply must expose a favorite action');
         const sourceTopicTitle = await page.locator('#assistantTopicList .assistant-topic-item.is-active .assistant-topic-title').innerText();
         const originalMessageCount = await page.evaluate(() => chatMessages.length);
         const assistantMessageCount = await page.locator('#chatMessages .chat-message.assistant').count();
@@ -198,6 +204,7 @@ async function run() {
         await page.locator('.modal-overlay:visible input[type="text"]').fill('浏览器话题');
         await page.locator('.modal-overlay:visible').getByRole('button', { name: '确定', exact: true }).click();
         await page.locator('#assistantTopicList .assistant-topic-item.is-active').getByText('浏览器话题', { exact: true }).waitFor();
+        await send('为档案预览创建内容');
         await page.locator('#assistantTopicList .assistant-topic-item.is-active .assistant-topic-more').click();
         await page.getByRole('menuitem', { name: '置顶', exact: true }).click();
         await page.locator('#assistantTopicList .assistant-topic-group').filter({ hasText: '已置顶' }).waitFor();
@@ -207,11 +214,29 @@ async function run() {
         await page.locator('#btnAssistantArchive').click();
         const archivedTopic = page.locator('#assistantTopicList .assistant-topic-item').filter({ hasText: '浏览器话题' });
         await archivedTopic.waitFor();
+        await archivedTopic.locator('.assistant-topic-select').click();
+        await page.waitForFunction(() => document.getElementById('assistantChatInputArea').hidden === true && chatMessages.some(message => message.role === 'assistant'));
+        assert.strictEqual(await page.locator('#chatMessages .chat-message.assistant button[title="重新生成"]').count(), 0, 'archive preview must not expose mutating reply actions');
+        assert.ok(await page.locator('#chatMessages .chat-message.assistant button[title="收藏"]').count() > 0, 'archive preview should still allow collecting a useful reply');
         await archivedTopic.locator('.assistant-topic-more').click();
         await page.getByRole('menuitem', { name: '恢复', exact: true }).click();
         await page.waitForFunction(() => document.getElementById('assistantArchiveCount').textContent === '0');
         await page.locator('#assistantTopicList .assistant-topic-item').filter({ hasText: '浏览器话题' }).waitFor();
         assert.strictEqual(await page.locator('#assistantArchiveCount').innerText(), '0', 'restored topic should leave the archive');
+        const favorite = page.locator('#chatMessages .chat-message.assistant button[title="收藏"]').first();
+        await favorite.click(); await page.waitForFunction(() => document.getElementById('assistantNotebookCount').textContent === '1');
+        await page.locator('#btnAssistantNotebook').click();
+        await page.locator('#assistantNotebookWorkspace').waitFor();
+        assert.ok(await page.locator('#assistantNotebookWorkspace').isVisible(), 'notebook workspace should open from the sidebar');
+        assert.ok((await page.locator('#assistantNotebookContent').innerText()).includes('本次未取得有效正文') || (await page.locator('#assistantNotebookContent').innerText()).includes('GCC Clause'), 'saved notebook should display the collected reply');
+        await page.locator('#btnNotebookEdit').click();
+        await page.locator('#assistantNotebookTitleInput').fill('已编辑笔记');
+        await page.locator('#assistantNotebookContentInput').fill('这是一条已保存的笔记正文。');
+        await page.locator('#btnNotebookSave').click();
+        await page.locator('#assistantTopicList .assistant-topic-title').getByText('已编辑笔记', { exact: true }).waitFor();
+        assert.ok((await page.locator('#assistantNotebookContent').innerText()).includes('已保存的笔记正文'), 'edited notebook content should render after saving');
+        await page.locator('.assistant-topic-back').click();
+        await page.waitForFunction(() => !document.getElementById('assistantNotebookWorkspace').offsetParent);
         await page.locator('#btnNewAssistantTopic').click();
         await page.locator('#assistantTopicList .assistant-topic-item.is-active .assistant-topic-more').click();
         await page.getByRole('menuitem', { name: '归档', exact: true }).click();
@@ -243,8 +268,12 @@ async function run() {
         const exportedContext = { window: {} }; vm.createContext(exportedContext); vm.runInContext(fs.readFileSync(await download.path(), 'utf8'), exportedContext);
         assert.ok(exportedContext.window.PREBUILT_VECTORS.vectors.GCC_50.sourceHash); assert.ok(exportedContext.window.PREBUILT_VECTORS.vectors.GCC_50.embeddingSpace);
         await page.screenshot({ path: path.join(output, 'assistant-retrieval.png'), fullPage: true });
+        await page.reload(); await page.evaluate(() => window.contractAppReady); await page.getByRole('button', { name: '管理助手', exact: true }).click();
+        await page.locator('#btnAssistantNotebook').click();
+        await page.locator('#assistantTopicList .assistant-topic-title').getByText('已编辑笔记', { exact: true }).waitFor();
+        assert.ok((await page.locator('#assistantNotebookContent').innerText()).includes('已保存的笔记正文'), 'saved notebook edits must survive a reload');
         assert.deepStrictEqual(errors, []);
-        const report = { passed: true, scope: 'isolated localhost with mocked providers', checks: ['existing browser regression', 'thinking+knowledge flags', 'typed SCC evidence', 'multi-file TXT/Markdown/PDF/DOCX local attachment parsing and request hydration', 'followup', 'clause link', 'assistant original/translation and Chinese-variant preference across links', 'regeneration history', 'context break', 'one repair', 'failed repair warning', 'legacy vector feedback', 'stop', 'reload', 'assistant reply branching with numbering/truncation/source preservation/no provider call', 'assistant topics title-only rows/outside-click menu/full-row active state/create/rename/pin/archive/restore/delete', 'send button inside input toolbar', 'native IndexedDB build/import/freshness/export'], providerRequests: 0 };
+        const report = { passed: true, scope: 'isolated localhost with mocked providers', checks: ['existing browser regression', 'thinking+knowledge flags', 'typed SCC evidence', 'multi-file TXT/Markdown/PDF/DOCX local attachment parsing and request hydration', 'followup', 'clause link', 'assistant original/translation and Chinese-variant preference across links', 'regeneration history', 'context break', 'one repair', 'failed repair warning', 'legacy vector feedback', 'stop', 'reload', 'AI topic title with same-model request and length guard', 'assistant reply branching with numbering/truncation/source preservation/no provider call', 'assistant topics title-only rows/outside-click menu/full-row active state/create/rename/archive preview/restore/delete', 'favorite action, notebook rendering and editable persistence', 'send button inside input toolbar', 'native IndexedDB build/import/freshness/export'], providerRequests: 0 };
         fs.writeFileSync(path.join(output, 'assistant-browser-report.json'), JSON.stringify(report, null, 2));
         console.log(JSON.stringify(report)); await context.close();
     } finally { if (browser) await browser.close(); await new Promise(resolve => server.close(resolve)); }

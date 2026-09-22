@@ -1,6 +1,6 @@
 // Service Worker for General Contract Shell
 const CACHE_PREFIX = 'general-contract-shell-';
-const CACHE_NAME = CACHE_PREFIX + 'v7';
+const CACHE_NAME = CACHE_PREFIX + 'v8';
 const urlsToCache = [
     './',
     './index.html',
@@ -40,7 +40,8 @@ const urlsToCache = [
     './js/ai-assistant.js',
     './js/assistant-attachments.js',
     './js/attachment-parser-worker.js',
-    './js/assistant-topics.js'
+    './js/assistant-topics.js',
+    './js/assistant-notebook.js'
 ];
 
 self.addEventListener('install', event => {

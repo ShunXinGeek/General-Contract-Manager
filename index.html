@@ -209,6 +209,9 @@
                 </label>
                 <div class="assistant-topic-list" id="assistantTopicList" aria-live="polite"></div>
                 <div class="assistant-topic-footer">
+                    <button class="assistant-archive-link" id="btnAssistantNotebook" type="button" aria-label="打开笔记本">
+                        <span aria-hidden="true">★</span><span>笔记本</span><span class="assistant-archive-count" id="assistantNotebookCount">0</span>
+                    </button>
                     <button class="assistant-archive-link" id="btnAssistantArchive" type="button" aria-label="打开档案库">
                         <span aria-hidden="true">▣</span><span>档案库</span><span class="assistant-archive-count" id="assistantArchiveCount">0</span>
                     </button>
@@ -218,7 +221,7 @@
             <div class="assistant-topic-scrim" id="assistantTopicScrim" aria-hidden="true"></div>
             <!-- 左侧：聊天区域 -->
             <div class="assistant-chat-area">
-                <div class="assistant-toolbar">
+                <div class="assistant-toolbar" id="assistantChatToolbar">
                     <div class="toolbar-left"></div>
                     <div class="toolbar-center">
                         <div class="toolbar-title"><span class="title-icon">🤖</span><span class="title-text">
@@ -259,7 +262,26 @@
                     </div>
                 </div>
 
-                <div class="chat-input-area">
+                <section class="assistant-notebook-workspace" id="assistantNotebookWorkspace" hidden aria-label="笔记本">
+                    <div class="assistant-notebook-toolbar">
+                        <div>
+                            <div class="assistant-notebook-heading">笔记本</div>
+                            <div class="assistant-notebook-status" id="assistantNotebookStatus" role="status"></div>
+                        </div>
+                        <div class="assistant-notebook-actions">
+                            <button class="assistant-btn" id="btnNotebookEdit" type="button">编辑</button>
+                            <button class="assistant-btn" id="btnNotebookSave" type="button" hidden>保存</button>
+                            <button class="assistant-btn" id="btnNotebookCancel" type="button" hidden>取消</button>
+                        </div>
+                    </div>
+                    <div class="assistant-notebook-body">
+                        <input class="assistant-notebook-title-input" id="assistantNotebookTitleInput" type="text" maxlength="80" hidden aria-label="笔记标题">
+                        <article class="assistant-notebook-content" id="assistantNotebookContent"></article>
+                        <textarea class="assistant-notebook-editor" id="assistantNotebookContentInput" hidden aria-label="笔记内容"></textarea>
+                    </div>
+                </section>
+
+                <div class="chat-input-area" id="assistantChatInputArea">
                     <div class="input-row">
                         <div class="chat-input-shell">
                             <div id="attachmentTray" class="attachment-tray" aria-live="polite" hidden></div>
@@ -663,6 +685,7 @@
         <script src="js/assistant-attachments.js"></script>
         <script src="js/ai-assistant.js"></script>
         <script src="js/cloud-storage.js"></script>
+        <script src="js/assistant-notebook.js"></script>
         <script src="js/assistant-topics.js"></script>
 
         <!-- Service Worker 注册 -->
