@@ -1,5 +1,5 @@
 // Credentials and chat content are transient: never log, store, or cache them.
-import { resolveEndpoint, validateEndpoint, profileTimeout } from './ai-providers.js';
+import { resolveEndpoint, validateEndpoint, profileTimeout } from '../edge-shared/ai-providers.mjs';
 export { validateEndpoint };
 
 const MAX_BYTES = 2 * 1024 * 1024;
