@@ -50,7 +50,7 @@ async function run() {
         });
         await page.goto(baseURL); await page.evaluate(() => window.contractAppReady);
         await page.evaluate(async () => {
-            registerContract('GCC', 'General Conditions', { '34': { title: 'Facilities', content: 'Facilities for other persons.' }, '50': { title: 'Extension', content: '(1) Original extension notice.', translation: '工期延长通知。', translation_tc: '工期延長通知。' } });
+            registerContract('GCC', 'General Conditions', { '5': { title: 'Documents mutually explanatory', content: 'The Architect shall respond within 14 days of receipt of the Contractor’s request in writing for instructions.' }, '34': { title: 'Facilities', content: 'Facilities for other persons.' }, '50': { title: 'Extension', content: '(1) Original extension notice.', translation: '工期延长通知。', translation_tc: '工期延長通知。' } });
             registerContract('SCC', 'Special Conditions', { 'SCC 34': { title: 'Night concreting', content: 'Night concreting permission must be obtained.', translation: '夜间混凝土浇筑须获批准。', translation_tc: '夜間混凝土澆築須獲批准。' } });
             AI_CHAT_MODELS = [{ id: 'browser-test', name: 'Browser Test', endpoint: 'https://api.deepseek.com/v1', apiKey: 'dummy-key', model: 'deepseek-flash' }];
             currentSelectedModelId = 'browser-test'; applySelectedModel(); saveChatModels(); saveSelectedModelId(); updateModelSelector();
@@ -69,10 +69,16 @@ async function run() {
         assert.ok(Math.abs(inputToolLayout.toolsRight - inputToolLayout.sendRight) < 2, 'send button must align to the right edge of the input toolbar');
         assert.ok(Math.abs(inputToolLayout.sendCenterY - inputToolLayout.clearCenterY) < 6, 'send button must share the input action row');
         await page.locator('#btnThinkingMode').click(); await page.locator('#btnKnowledgeBase').click();
+        await page.locator('#statusBar').getByText('已加载 4 条合同正文', { exact: false }).waitFor();
+        assert.strictEqual(await page.locator('#statusBar').getAttribute('aria-live'), 'polite', 'knowledge-base status must be announced without moving focus');
+        assert.match(await page.locator('#btnUpdateIndex').getAttribute('aria-label'), /有效语义向量 0\/4/, 'knowledge-base action must report the valid index count');
         const send = async query => { await page.locator('#chatInput').fill(query); await page.locator('#sendBtn').click(); await page.waitForFunction(() => !isStreaming); };
         await send('SCC Clause 34');
         assert.strictEqual(requests.length, 1); assert.deepStrictEqual(requests[0].thinking, { type: 'enabled' });
         assert.ok(requests[0].messages[0].content.includes('<<<SCC Clause 34')); assert.ok(!requests[0].messages[0].content.includes('<<<GCC Clause 34'));
+        await send('在合同条款中，是否对于“一方理应在多久之内对另外一方的信函做出回复”给出明确的时间要求？');
+        const deadlineRequest = requests.find(body => String(body.messages?.at?.(-1)?.content || '').includes('一方理应在多久之内'));
+        assert.ok(deadlineRequest?.messages?.[0]?.content.includes('<<<GCC Clause 5'), 'Chinese response-deadline query must send GCC Clause 5 original text to the model');
         await page.waitForFunction(() => AssistantTopics.getTopics().some(topic => topic.titleSource === 'ai'), null, { timeout: 5000 });
         const generatedTopic = await page.evaluate(() => AssistantTopics.getTopics().find(topic => topic.titleSource === 'ai'));
         assert.ok(Array.from(generatedTopic.title).length <= 13 && /^[\u3400-\u9fff]+$/u.test(generatedTopic.title), 'AI topic title must be concise Chinese text');
@@ -261,7 +267,7 @@ async function run() {
             const imported = (await RAG.readRecords()).find(row => row.id === 'legacy');
             return { summary, ready: ready.length, stale: code, legacy: RAG.validateRecord(imported, AI_CONFIG, contracts) };
         });
-        assert.strictEqual(indexCheck.summary.count, 3); assert.strictEqual(indexCheck.ready, 3); assert.strictEqual(indexCheck.stale, 'source-stale'); assert.strictEqual(indexCheck.legacy, 'legacy-unverified');
+        assert.strictEqual(indexCheck.summary.count, 4); assert.strictEqual(indexCheck.ready, 4); assert.strictEqual(indexCheck.stale, 'source-stale'); assert.strictEqual(indexCheck.legacy, 'legacy-unverified');
         const downloadPromise = page.waitForEvent('download');
         await page.evaluate(() => RAG.exportVectorsAsJS(AI_CONFIG.embeddingModel));
         const download = await downloadPromise;
@@ -273,7 +279,7 @@ async function run() {
         await page.locator('#assistantTopicList .assistant-topic-title').getByText('已编辑笔记', { exact: true }).waitFor();
         assert.ok((await page.locator('#assistantNotebookContent').innerText()).includes('已保存的笔记正文'), 'saved notebook edits must survive a reload');
         assert.deepStrictEqual(errors, []);
-        const report = { passed: true, scope: 'isolated localhost with mocked providers', checks: ['existing browser regression', 'thinking+knowledge flags', 'typed SCC evidence', 'multi-file TXT/Markdown/PDF/DOCX local attachment parsing and request hydration', 'followup', 'clause link', 'assistant original/translation and Chinese-variant preference across links', 'regeneration history', 'context break', 'one repair', 'failed repair warning', 'legacy vector feedback', 'stop', 'reload', 'AI topic title with same-model request and length guard', 'assistant reply branching with numbering/truncation/source preservation/no provider call', 'assistant topics title-only rows/outside-click menu/full-row active state/create/rename/archive preview/restore/delete', 'favorite action, notebook rendering and editable persistence', 'send button inside input toolbar', 'native IndexedDB build/import/freshness/export'], providerRequests: 0 };
+        const report = { passed: true, scope: 'isolated localhost with mocked providers', checks: ['existing browser regression', 'thinking+knowledge flags', 'knowledge-base status distinguishes loaded corpus from invalid vectors', 'typed SCC evidence', 'Chinese response-deadline query retrieves GCC Clause 5 without semantic vectors', 'multi-file TXT/Markdown/PDF/DOCX local attachment parsing and request hydration', 'followup', 'clause link', 'assistant original/translation and Chinese-variant preference across links', 'regeneration history', 'context break', 'one repair', 'failed repair warning', 'legacy vector feedback', 'stop', 'reload', 'AI topic title with same-model request and length guard', 'assistant reply branching with numbering/truncation/source preservation/no provider call', 'assistant topics title-only rows/outside-click menu/full-row active state/create/rename/archive preview/restore/delete', 'favorite action, notebook rendering and editable persistence', 'send button inside input toolbar', 'native IndexedDB build/import/freshness/export'], providerRequests: 0 };
         fs.writeFileSync(path.join(output, 'assistant-browser-report.json'), JSON.stringify(report, null, 2));
         console.log(JSON.stringify(report)); await context.close();
     } finally { if (browser) await browser.close(); await new Promise(resolve => server.close(resolve)); }

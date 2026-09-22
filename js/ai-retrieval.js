@@ -2,6 +2,13 @@
 (function (root) {
     'use strict';
     const DEFAULTS = { roots: 8, candidates: 20, characters: 60000, expansion: 24, topics: 3 };
+    // Query expansion is used only to locate candidate contract text. It never becomes
+    // evidence and the final answer remains constrained to the retrieved original text.
+    const BILINGUAL_CONCEPTS = [
+        { id: 'correspondence', forms: ['信函', '函件', '来函', '來函', '书面请求', '書面請求', '书面申请', '書面申請', '书面函件', '書面函件', 'correspondence', 'letter', 'written request'], terms: ['letter', 'correspondence', 'request', 'written', 'writing'] },
+        { id: 'response', forms: ['回复', '回覆', '答复', '答覆', '回应', '回應', '回函', 'respond', 'responding', 'reply', 'response'], terms: ['respond', 'reply', 'response'] },
+        { id: 'deadline', forms: ['多久', '几日', '幾日', '几天', '幾天', '期限', '时限', '時限', '时间要求', '時間要求', '时间限制', '時間限制', '限期', 'within', 'days', 'day', 'time limit', 'deadline'], terms: ['within', 'day', 'days'] }
+    ];
     function plain(value) {
         return String(value || '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;|&#160;/gi, ' ')
             .replace(/&amp;/gi, '&').replace(/&quot;|&#34;/gi, '"').replace(/&#39;|&apos;/gi, "'")
@@ -108,23 +115,72 @@
         '变更': ['variation'], '估价': ['valuing', 'valuation'], '付款': ['payment'], '保留金': ['retention'], '暂停': ['suspension'],
         '分包': ['subcontract', 'sub-contract'], '争议': ['dispute'], '仲裁': ['arbitration'], '安全': ['safety', 'security'],
         '缺陷': ['defect'], '终止': ['determination', 'termination'], '保险': ['insurance'], '竣工': ['completion'], '劳工': ['labour'] };
+    function chineseWords(value) {
+        const source = String(value || '');
+        const words = [];
+        try {
+            if (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function') {
+                const segmenter = new Intl.Segmenter('zh', { granularity: 'word' });
+                for (const segment of segmenter.segment(source)) {
+                    if (segment.isWordLike && /[\u3400-\u9fff]/.test(segment.segment)) words.push(segment.segment);
+                }
+            }
+        } catch (_) { /* Fall through to the conservative portable tokenizer. */ }
+        return words.length ? words : (source.match(/[\u3400-\u9fff]{2,}/g) || []);
+    }
+    function occurrences(text, term) {
+        if (!term) return 0;
+        let count = 0, start = 0, index;
+        while ((index = text.indexOf(term, start)) !== -1) { count++; start = index + term.length; }
+        return count;
+    }
+    function activeConcepts(query) {
+        const lowered = String(query || '').toLowerCase();
+        return BILINGUAL_CONCEPTS.filter(concept => concept.forms.some(form => lowered.includes(form.toLowerCase())));
+    }
     function terms(query) {
-        const stop = new Set(['the', 'and', 'for', 'what', 'how', 'clause', 'gcc', 'scc', '请', '解释', '查找', '原文', '条款', '规定', '如何']);
-        const words = query.toLowerCase().match(/[a-z][a-z-]+|[\u4e00-\u9fff]+/g) || [];
-        const result = words.filter(word => word.length > 1 && !stop.has(word));
-        for (const [cn, en] of Object.entries(translations)) if (query.includes(cn)) result.push(cn, ...en);
+        const source = String(query || ''), lowered = source.toLowerCase();
+        const stop = new Set(['the', 'and', 'for', 'what', 'how', 'clause', 'gcc', 'scc', '请', '解释', '查找', '原文', '条款', '规定', '如何', '合同', '是否', '对于', '一方', '另外', '做出', '给出', '明确', '要求']);
+        const words = lowered.match(/[a-z][a-z-]+/g) || [];
+        const result = [...words, ...chineseWords(source)].map(word => String(word).toLowerCase()).filter(word => word.length > 1 && !stop.has(word));
+        for (const [cn, en] of Object.entries(translations)) if (source.includes(cn)) result.push(cn, ...en);
+        for (const concept of activeConcepts(source)) result.push(...concept.terms);
         return [...new Set(result)];
     }
     function lexical(query, all) {
         const keywords = terms(query), index = typeof GCC_CLAUSE_KEYWORD_INDEX === 'undefined' ? {} : GCC_CLAUSE_KEYWORD_INDEX;
-        return all.map(row => {
-            const title = plain(row.title).toLowerCase(), body = row.content.toLowerCase();
+        const concepts = new Map(activeConcepts(query).map(concept => [concept.id, concept]));
+        if (!keywords.length || !all.length) return [];
+        const documents = all.map(row => ({ row, title: plain(row.title).toLowerCase(), body: row.content.toLowerCase(), length: Math.max(1, plain(row.content).split(/\s+/).length) }));
+        const averageLength = documents.reduce((total, document) => total + document.length, 0) / documents.length;
+        const frequencies = new Map(keywords.map(keyword => [keyword, documents.reduce((total, document) => total + Number(document.title.includes(keyword) || document.body.includes(keyword)), 0)]));
+        const k1 = 1.2, b = 0.75;
+        return documents.map(document => {
             let score = 0;
-            for (const kw of keywords) if (title.includes(kw) || body.includes(kw)) score += title.includes(kw) ? 3 : 1;
-            if (row.type === 'GCC' && trusted(row)) for (const [kw, ids] of Object.entries(index)) {
-                if (query.toLowerCase().includes(kw.toLowerCase()) && ids.map(String).includes(number(row.id, 'GCC'))) score += 4;
+            for (const keyword of keywords) {
+                const titleMatches = occurrences(document.title, keyword), bodyMatches = occurrences(document.body, keyword);
+                if (!titleMatches && !bodyMatches) continue;
+                const documentFrequency = frequencies.get(keyword) || 0;
+                const idf = Math.log(1 + (documents.length - documentFrequency + 0.5) / (documentFrequency + 0.5));
+                const tf = bodyMatches + titleMatches * 1.8;
+                score += idf * ((tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (document.length / averageLength))));
+                score += titleMatches * idf * 2;
             }
-            return { ...row, lexicalScore: score };
+            // A response-period question is a compound procedure. Reward documents
+            // that contain the requested procedural concepts together, rather than
+            // letting generic words such as "days" dominate the ranking.
+            const conceptHit = id => {
+                const concept = concepts.get(id);
+                return concept ? concept.terms.filter(term => document.title.includes(term) || document.body.includes(term)).length : 0;
+            };
+            const correspondenceHits = conceptHit('correspondence'), responseHits = conceptHit('response'), deadlineHits = conceptHit('deadline');
+            if (responseHits) score += responseHits * 5;
+            if (responseHits && deadlineHits) score += 8;
+            if (correspondenceHits && responseHits) score += 4;
+            if (document.row.type === 'GCC' && trusted(document.row)) for (const [keyword, ids] of Object.entries(index)) {
+                if (keywords.includes(keyword.toLowerCase()) && ids.map(String).includes(number(document.row.id, 'GCC'))) score += 4;
+            }
+            return { ...document.row, lexicalScore: score };
         }).filter(row => row.lexicalScore > 0).sort((a, b) => b.lexicalScore - a.lexicalScore || identity(a).localeCompare(identity(b), undefined, { numeric: true }));
     }
     function fuse(lists) {
@@ -145,7 +201,8 @@
         if (options.signal?.aborted) throw new DOMException('已停止生成', 'AbortError');
         const started = Date.now(), all = rows(data), lookup = new Map(all.map(row => [identity(row), row]));
         const prepared = standalone(query, options.history, data);
-        const diagnostic = { query: prepared.query, paths: [], warnings: [], missing: [], omitted: [], calls: { embedding: 0, rerank: 0, classify: 0 }, inherited: prepared.inherited };
+        const diagnostic = { query: prepared.query, paths: [], warnings: [], missing: [], omitted: [], calls: { embedding: 0, rerank: 0, classify: 0 }, inherited: prepared.inherited,
+            corpus: { clauses: all.length, lexicalCandidates: 0, semanticCandidates: 0 } };
         if (prepared.unresolved) diagnostic.warnings.push('追问指代未能可靠恢复，请明确条款或事实范围');
         const exact = [];
         for (const ref of prepared.refs) {
@@ -155,7 +212,9 @@
         }
         const exactOnly = prepared.refs.length === 1 && !/综合|结合|以及|同时|另外|相关其他|compare|together/i.test(query);
         let selected = exact;
-        const lists = [['lexical', lexical(prepared.query, all).slice(0, DEFAULTS.candidates)]];
+        const localCandidates = lexical(prepared.query, all).slice(0, DEFAULTS.candidates);
+        diagnostic.corpus.lexicalCandidates = localCandidates.length;
+        const lists = [['lexical', localCandidates]];
         if (!exactOnly) {
             diagnostic.paths.push('hybrid');
             try {
@@ -164,6 +223,7 @@
                 if (RAG.lastSearchStatus?.message) diagnostic.warnings.push(RAG.lastSearchStatus.message);
                 const minScore = Number.isFinite(config.retrievalMinSimilarity) ? config.retrievalMinSimilarity : null;
                 const valid = semantic.filter(item => minScore === null || item.score >= minScore).map(item => lookup.get(`${item.type}:${number(item.clauseId, item.type)}`)).filter(Boolean);
+                diagnostic.corpus.semanticCandidates = valid.length;
                 if (valid.length) lists.push(['semantic', valid]);
                 if (valid.length && minScore === null) diagnostic.warnings.push('语义相关性门槛尚未用当前模型校准；候选并非确定结论');
             } catch (_) { if (options.signal?.aborted) throw new DOMException('已停止生成', 'AbortError'); diagnostic.warnings.push('语义检索不可用，已使用当前原文本地检索'); }
@@ -216,7 +276,9 @@
         }
         diagnostic.relationships = edges.filter(edge => clauses.some(row => identity(row) === edge.base || identity(row) === edge.modifier));
         for (const edge of diagnostic.relationships) if (!clauses.some(row => identity(row) === edge.base) || !clauses.some(row => identity(row) === edge.modifier)) diagnostic.missing.push(`${edge.base} 与 ${edge.modifier} 修改关系未完整纳入`);
-        if (!clauses.length) diagnostic.warnings.push('当前范围未检出有效正文，不代表合同不存在相关规定');
+        if (!clauses.length) diagnostic.warnings.push(all.length
+            ? `已加载 ${all.length} 条合同正文，但本地检索未找到足够关联内容；当前范围未检出有效正文，不代表合同不存在相关规定`
+            : '当前没有可检索的合同正文；当前范围未检出有效正文，不代表合同不存在相关规定');
         diagnostic.warnings = [...new Set(diagnostic.warnings)]; diagnostic.missing = [...new Set(diagnostic.missing)];
         diagnostic.characters = characters; diagnostic.elapsedMs = Date.now() - started;
         if (options.signal?.aborted) throw new DOMException('已停止生成', 'AbortError');
@@ -255,5 +317,5 @@ ${texts || '未取得有效正文。只能说明检索状态并请求定位信�
         for (const edge of evidence.diagnostic.relationships || []) if (citedIds.has(edge.base) && available.has(edge.modifier) && !citedIds.has(edge.modifier)) issues.push(`${edge.base} 的已提供修改 ${edge.modifier} 未明确引用`);
         return { passed: !issues.length, issues: [...new Set(issues)], scope: '身份、直接引文与已知修改引用检查；不替代语义及适用性审查' };
     }
-    root.AIRetrieval = { plain, canonical, fingerprint, number, identity, parseRefs, standalone, rows, trusted, relationships, lexical, fuse, snippet, retrieve, prompt, validate, defaults: DEFAULTS };
+    root.AIRetrieval = { plain, canonical, fingerprint, number, identity, parseRefs, standalone, rows, trusted, relationships, terms, lexical, fuse, snippet, retrieve, prompt, validate, defaults: DEFAULTS };
 })(globalThis);

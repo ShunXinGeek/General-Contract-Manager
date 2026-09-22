@@ -59,6 +59,9 @@ function showStatus(type, message, icon, duration) {
     if (!statusBar) {
         statusBar = document.createElement('div');
         statusBar.id = 'statusBar';
+        statusBar.setAttribute('role', 'status');
+        statusBar.setAttribute('aria-live', 'polite');
+        statusBar.setAttribute('aria-atomic', 'true');
         statusBar.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);padding:10px 20px;border-radius:8px;z-index:10000;font-size:14px;box-shadow:0 2px 10px rgba(0,0,0,0.3);transition:opacity 0.3s;';
         document.body.appendChild(statusBar);
     }

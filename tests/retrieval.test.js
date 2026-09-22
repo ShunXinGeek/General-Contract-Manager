@@ -42,6 +42,25 @@ async function run() {
     const corpusEdges = api.relationships(api.rows(source));
     for (const pair of [['1', '3A'], ['4', '6'], ['50', '84'], ['50', '111'], ['52', '45'], ['86', '59']]) assert.ok(corpusEdges.some(edge => edge.base === 'GCC:' + pair[0] && edge.modifier === 'SCC:' + pair[1]), `Source relation missing ${pair}`);
 
+    // A natural Chinese paraphrase must still find the English source when semantic
+    // vectors are unavailable. This is the production regression that prompted the
+    // local bilingual retrieval path.
+    ctx.RAG.findMostRelevant = async () => [];
+    const responseDeadlineQueries = [
+        '在合同条款中，是否对于“一方理应在多久之内对另外一方的信函做出回复”给出明确的时间要求？',
+        '对方收到书面请求后多久要回复？',
+        '来函答复期限是多少？',
+        '建筑师应在几日内回应承包商的书面请求？',
+        'Is there a time limit for responding to a written request?'
+    ];
+    for (const query of responseDeadlineQueries) {
+        evidence = await api.retrieve(query, source, {});
+        assert.ok(evidence.clauses.some(row => api.identity(row) === 'GCC:5'), `Response-deadline query must retrieve GCC:5: ${query}`);
+        assert.ok(evidence.diagnostic.corpus.clauses > 0, 'Diagnostics must distinguish a loaded corpus from an empty one');
+    }
+    const unrelatedDeadline = { GCC: { data: { '5': { title: 'Reply deadline', content: 'The Architect shall respond within 14 days of receipt of the written request.' }, '25': { title: 'Insurance', content: 'The Contractor shall maintain insurance within 7 days.' } } } };
+    assert.strictEqual(api.lexical('保险期限', api.rows(unrelatedDeadline))[0].id, '25', 'A generic deadline must not make the reply clause the top result');
+
     ctx.RAG.findMostRelevant = async () => [{ type: 'SCC', clauseId: '34', score: 0.9 }];
     evidence = await api.retrieve('extension and night concreting', minimal, {});
     assert.ok(evidence.clauses.some(row => api.identity(row) === 'SCC:34')); assert.ok(evidence.clauses.some(row => api.identity(row) === 'GCC:50')); assert.ok(calls === 0);
@@ -59,10 +78,11 @@ async function run() {
     // Real RAG methods with controlled DB/API boundaries.
     vm.runInContext(fs.readFileSync(path.join(root, 'js/rag.js'), 'utf8'), ctx);
     const rag = ctx.RAG, config = { embeddingModel: 'test-model', embeddingEndpoint: 'https://example.test/v1', embeddingApiKey: 'test-key' };
-    const record = { type: 'GCC', clauseId: '50', title: 'Extension', embeddingModel: 'test-model', sourceHash: api.fingerprint(minimal.GCC.data['50'].content), dimension: 2, vector: [1, 0] };
+    const record = { type: 'GCC', clauseId: '50', title: 'Extension', embeddingModel: 'test-model', schemaVersion: rag.INDEX_SCHEMA_VERSION, sourceHash: api.fingerprint(minimal.GCC.data['50'].content), dimension: 2, vector: [1, 0] };
     record.titleHash = api.fingerprint('Extension'); record.embeddingSpace = rag.embeddingSpace(config.embeddingEndpoint, config.embeddingModel);
     assert.strictEqual(rag.validateRecord(record, config, minimal), 'ready');
     assert.strictEqual(rag.validateRecord({ ...record, sourceHash: null }, config, minimal), 'legacy-unverified');
+    assert.strictEqual(rag.validateRecord({ ...record, schemaVersion: 1 }, config, minimal), 'schema-mismatch');
     assert.strictEqual(rag.validateRecord({ ...record, embeddingModel: 'other' }, config, minimal), 'model-mismatch');
     assert.strictEqual(rag.validateRecord(record, { ...config, embeddingEndpoint: 'https://another.test/v1' }, minimal), 'space-mismatch');
     const retitled = JSON.parse(JSON.stringify(minimal)); retitled.GCC.data['50'].title = 'New title'; assert.strictEqual(rag.validateRecord(record, config, retitled), 'source-stale');
@@ -75,6 +95,10 @@ async function run() {
     assert.strictEqual((await rag.findMostRelevant('extension', config, 10, minimal)).length, 0); assert.strictEqual(embedded, 0);
     rag.readRecords = async () => [record, { ...record, clauseId: '999' }];
     assert.strictEqual((await rag.findMostRelevant('extension', config, 10, minimal)).length, 1); assert.strictEqual(rag.lastSearchStatus.rejected['source-removed'], 1);
+    rag.readRecords = async () => [record, { ...record, sourceHash: null }];
+    const indexStatus = await rag.getIndexStatus(config, minimal);
+    assert.strictEqual(indexStatus.corpus, 4); assert.strictEqual(indexStatus.valid, 1); assert.strictEqual(indexStatus.rejected['legacy-unverified'], 1);
+    assert.match(rag.describeIndexStatus(indexStatus), /旧索引/);
     rag.getEmbedding = async () => [1, 0, 0]; assert.strictEqual((await rag.findMostRelevant('query', config, 10, minimal)).length, 0); assert.strictEqual(rag.lastSearchStatus.code, 'query-dimension-mismatch');
     rag.getEmbedding = async () => { throw new Error('service failure'); }; await rag.findMostRelevant('query', config, 10, minimal); assert.strictEqual(rag.lastSearchStatus.code, 'service-unavailable');
     const candidates = api.rows(minimal).slice(0, 2);
@@ -95,7 +119,7 @@ async function run() {
     rag.db = { transaction() { return { objectStore() { return { put(row) { stored.push(row); const req = {}; setTimeout(() => req.onsuccess(), 0); return req; } }; } }; } };
     rag.getEmbedding = async text => { assert.match(text, /Original extension/); return [1, 0]; };
     const summary = await rag.buildIndex({ GCC: { data: { '50': minimal.GCC.data['50'] } }, SCC: { data: { '2': minimal.SCC.data['2'] } } }, config);
-    assert.strictEqual(summary.count, 1); assert.strictEqual(stored[0].sourceHash, record.sourceHash);
+    assert.strictEqual(summary.count, 1); assert.strictEqual(stored[0].sourceHash, record.sourceHash); assert.strictEqual(stored[0].schemaVersion, rag.INDEX_SCHEMA_VERSION);
     const edited = JSON.parse(JSON.stringify(minimal)); edited.GCC.data['50'].content += ' Changed.';
     assert.strictEqual(rag.validateRecord(stored[0], config, edited), 'source-stale');
     const budgetEvidence = await api.retrieve('SCC Clause 34', minimal, { retrievalCharacterBudget: 2000 }); assert.ok(budgetEvidence.diagnostic.characters <= 2000);

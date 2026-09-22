@@ -591,47 +591,46 @@ function toggleKnowledgeBaseMode() {
 
 async function checkRAGIndexStatus() {
     try {
-        const isEmpty = await RAG.isIndexEmpty();
-        if (!isEmpty || !isKnowledgeBaseMode) return;
-
-        // Step 1: 尝试加载预构建向量数据并导入 IndexedDB
-        showStatus('loading', '正在加载预构建向量数据...', '📦', 0);
-        const loaded = await RAG.ensurePrebuiltVectorsLoaded();
-
-        if (loaded) {
-            const count = await RAG.importPrebuiltVectors(
-                (current, total) => {
-                    showStatus('loading',
-                        `正在导入向量索引 ${current}/${total}...`, '📥', 0);
-                }
-            );
-            if (count > 0) {
-                showStatus('success',
-                    `已导入 ${count} 条向量；旧数据缺少正文指纹时使用本地检索，请主动更新索引`, '📥', 5000);
-                return; // 导入成功，无需弹窗
-            }
+        const status = await RAG.getIndexStatus(AI_CONFIG, contracts);
+        window.assistantRAGIndexStatus = status;
+        const updateButton = document.getElementById('btnUpdateIndex');
+        if (updateButton) {
+            updateButton.title = status.corpus
+                ? `更新知识库索引：有效语义向量 ${status.valid}/${status.corpus}`
+                : '更新知识库索引：尚未加载合同正文';
+            updateButton.setAttribute('aria-label', updateButton.title);
         }
-
-        // Step 2: 预构建数据不可用，回退到在线构建流程
-        showStatus('warning',
-            '预构建向量数据不可用，需要在线构建索引', '⚠️', 4000);
-        const isBuild = await CustomDialog.confirm(
-            '知识库索引尚未构建，是否立即构建？（需要配置嵌入模型 API）',
-            '构建提示'
-        );
-        if (isBuild) buildKnowledgeBaseIndex();
+        if (!isKnowledgeBaseMode) return status;
+        if (!status.corpus) {
+            showStatus('warning', '尚未加载可检索的合同正文，请先导入或恢复 GCC/SCC。', '📂', 6500);
+            return status;
+        }
+        const indexDetail = RAG.describeIndexStatus(status);
+        if (status.valid) {
+            showStatus('success', `已加载 ${status.corpus} 条合同正文；有效语义向量 ${status.valid}/${status.corpus}，正在使用混合检索。`, '📚', 6500);
+        } else {
+            const nextStep = isEmbeddingConfigured()
+                ? '当前使用本地检索；如需语义检索，请点击“更新知识库索引”。'
+                : '当前使用本地检索；如需语义检索，请先在设置中配置嵌入模型。';
+            showStatus('warning', `已加载 ${status.corpus} 条合同正文；有效语义向量 0/${status.corpus}。${indexDetail ? indexDetail + '；' : ''}${nextStep}`, '📚', 9000);
+        }
+        return status;
     } catch (e) {
         console.error('[知识库] 索引状态检查出错:', e);
+        showStatus('warning', '无法读取语义索引状态，正在使用本地合同检索。', '📂', 6500);
+        return null;
     }
 }
 
 async function buildKnowledgeBaseIndex() {
     if (!isEmbeddingConfigured()) { await CustomDialog.alert('🔗 嵌入模型尚未配置\n请点击设置按钮配置。', '未配置'); openSettings(); return; }
+    const initialStatus = await RAG.getIndexStatus(AI_CONFIG, contracts);
+    if (!initialStatus.corpus) { await CustomDialog.alert('尚未加载可检索的合同正文，无法建立知识库索引。', '没有合同正文'); return; }
     const btn = document.getElementById('btnUpdateIndex'); const orig = btn.innerHTML; btn.innerHTML = '⏳'; btn.disabled = true;
     try {
         const summary = await RAG.buildIndex(contracts, AI_CONFIG, (c, t, s) => { });
-        const count = await RAG.exportVectorsAsJS(AI_CONFIG.embeddingModel);
-        await CustomDialog.alert('本次成功更新 ' + (summary?.count || 0) + '/' + (summary?.total || 0) + ' 条；失败 ' + (summary?.failed || 0) + ' 条。导出含保留记录共 ' + count + ' 条，仅一致性检查通过的记录参与语义检索。', summary?.failed ? '部分构建失败' : '构建完成');
+        const status = await checkRAGIndexStatus();
+        await CustomDialog.alert('本次成功更新 ' + (summary?.count || 0) + '/' + (summary?.total || 0) + ' 条；失败 ' + (summary?.failed || 0) + ' 条。当前有效语义向量 ' + (status?.valid || 0) + '/' + (status?.corpus || 0) + ' 条。', summary?.failed ? '部分构建失败' : '构建完成');
     } catch (e) { await CustomDialog.alert('构建索引失败: ' + e.message, '构建失败'); }
     finally { btn.innerHTML = orig; btn.disabled = false; }
 }

@@ -6,6 +6,7 @@
 const RAG_DB_NAME = 'ContractVectorStore';
 const RAG_DB_VERSION = 1;
 const RAG_STORE_NAME = 'vectors';
+const RAG_INDEX_SCHEMA_VERSION = 2;
 
 const RAG = {
     db: null,
@@ -76,6 +77,7 @@ const RAG = {
 
     validateRecord(item, config, contractsData) {
         if (!item.embeddingModel || !item.sourceHash || !item.titleHash || !item.embeddingSpace) return 'legacy-unverified';
+        if (item.schemaVersion !== undefined && item.schemaVersion !== RAG_INDEX_SCHEMA_VERSION) return 'schema-mismatch';
         if (item.embeddingModel !== config.embeddingModel) return 'model-mismatch';
         if (item.embeddingSpace !== this.embeddingSpace(config.embeddingEndpoint, config.embeddingModel)) return 'space-mismatch';
         if (!Array.isArray(item.vector) || item.dimension !== item.vector.length || !item.vector.length || !item.vector.every(Number.isFinite) || !item.vector.some(value => value !== 0)) return 'dimension-invalid';
@@ -85,6 +87,43 @@ const RAG = {
         if (item.sourceHash !== AIRetrieval.fingerprint(data[key].content)) return 'source-stale';
         if (item.titleHash !== AIRetrieval.fingerprint(data[key].title)) return 'source-stale';
         return 'ready';
+    },
+
+    async getIndexStatus(config, contractsData) {
+        const data = contractsData || (typeof contracts !== 'undefined' ? contracts : {});
+        const records = await this.readRecords();
+        const rejected = {}, validRecords = [];
+        for (const item of records) {
+            const code = this.validateRecord(item, config || {}, data);
+            if (code === 'ready') validRecords.push(item);
+            else rejected[code] = (rejected[code] || 0) + 1;
+        }
+        const sources = AIRetrieval.rows(data);
+        const indexedSources = new Set(validRecords.map(item => `${item.type}:${AIRetrieval.number(item.clauseId, item.type)}`));
+        return {
+            schemaVersion: RAG_INDEX_SCHEMA_VERSION,
+            corpus: sources.length,
+            records: records.length,
+            valid: validRecords.length,
+            uncovered: sources.filter(row => !indexedSources.has(AIRetrieval.identity(row))).length,
+            rejected,
+            validRecords
+        };
+    },
+
+    describeIndexStatus(status) {
+        const labels = {
+            'legacy-unverified': '旧索引缺少正文指纹/向量空间元数据，不能用于语义检索',
+            'schema-mismatch': '索引版本不兼容，不能用于语义检索',
+            'model-mismatch': '索引与当前嵌入模型不一致',
+            'space-mismatch': '索引与当前嵌入服务的向量空间不一致',
+            'source-stale': '部分条款原文已更新，相关向量失效',
+            'source-removed': '已删除条款向量已排除',
+            'dimension-invalid': '向量维度或内容无效'
+        };
+        const rejected = Object.keys(status?.rejected || {}).map(code => labels[code]).filter(Boolean);
+        if (status?.valid && status.uncovered) rejected.push(`当前有效向量尚未覆盖 ${status.uncovered} 条正文，本地检索参与补齐`);
+        return rejected.join('；');
     },
 
     embeddingSpace(endpoint, model) {
@@ -197,6 +236,7 @@ const RAG = {
                         title: task.title,
                         vector: vector,
                         embeddingModel: embeddingConfig.model,
+                        schemaVersion: RAG_INDEX_SCHEMA_VERSION,
                         sourceHash: AIRetrieval.fingerprint(task.text.slice(task.text.indexOf('\n') + 1)),
                         titleHash: AIRetrieval.fingerprint(task.title),
                         embeddingSpace: this.embeddingSpace(embeddingConfig.apiEndpoint, embeddingConfig.model),
@@ -225,38 +265,29 @@ const RAG = {
      */
     async findMostRelevant(query, config, topK = 5, contractsData, options = {}) {
         const data = contractsData || (typeof contracts !== 'undefined' ? contracts : {});
-        const records = await this.readRecords();
-        const rejected = {};
-        const valid = records.filter(item => {
-            const code = this.validateRecord(item, config, data);
-            if (code !== 'ready') rejected[code] = (rejected[code] || 0) + 1;
-            return code === 'ready';
-        });
-        const labels = { 'legacy-unverified': '旧索引缺少原文指纹/向量空间元数据，需主动更新索引', 'model-mismatch': '索引与当前嵌入模型不一致', 'space-mismatch': '索引与当前嵌入服务的向量空间不一致',
-            'source-stale': '部分条款原文已更新，相关向量失效', 'source-removed': '已删除条款向量已排除', 'dimension-invalid': '向量维度或内容无效' };
-        const indexedSources = new Set(valid.map(item => `${item.type}:${AIRetrieval.number(item.clauseId, item.type)}`));
-        const uncovered = AIRetrieval.rows(data).filter(row => !indexedSources.has(AIRetrieval.identity(row))).length;
-        const rejectedMessage = [...Object.keys(rejected).map(code => labels[code]), ...(valid.length && uncovered ? [`当前有效向量尚未覆盖 ${uncovered} 条正文，本地检索参与补齐`] : [])].join('；');
-        if (!valid.length) {
-            this.lastSearchStatus = { code: records.length ? 'index-invalid' : 'index-empty', embeddingCalls: 0,
-                rejected, message: rejectedMessage || '向量索引为空，已使用本地原文检索' };
+        const status = await this.getIndexStatus(config, data);
+        this.lastIndexStatus = status;
+        const rejectedMessage = this.describeIndexStatus(status);
+        if (!status.valid) {
+            this.lastSearchStatus = { code: status.records ? 'index-invalid' : 'index-empty', embeddingCalls: 0,
+                rejected: status.rejected, message: rejectedMessage || '尚未建立有效语义索引，已使用本地原文检索' };
             return [];
         }
         const embeddingConfig = this.getEmbeddingConfig(config);
         if (!embeddingConfig) {
-            this.lastSearchStatus = { code: 'configuration-missing', rejected, embeddingCalls: 0, message: '未配置嵌入模型，已使用本地原文检索' };
+            this.lastSearchStatus = { code: 'configuration-missing', rejected: status.rejected, embeddingCalls: 0, message: '未配置嵌入模型，已使用本地原文检索' };
             return [];
         }
-        this.lastSearchStatus = { code: 'querying', rejected, embeddingCalls: 1, message: rejectedMessage };
+        this.lastSearchStatus = { code: 'querying', rejected: status.rejected, embeddingCalls: 1, message: rejectedMessage };
         let queryVector;
         try { queryVector = await this.getEmbedding(query, embeddingConfig.apiKey, embeddingConfig.apiEndpoint, embeddingConfig.model, options.signal); }
         catch (error) {
-            this.lastSearchStatus = { code: 'service-unavailable', rejected, embeddingCalls: 1, message: '嵌入服务不可用，已使用本地原文检索' };
+            this.lastSearchStatus = { code: 'service-unavailable', rejected: status.rejected, embeddingCalls: 1, message: '嵌入服务不可用，已使用本地原文检索' };
             if (options.signal?.aborted) throw new DOMException('已停止生成', 'AbortError');
             return [];
         }
-        const results = valid.map(item => ({ ...item, score: this.cosineSimilarity(queryVector, item.vector) })).filter(item => item.score !== null);
-        this.lastSearchStatus = { code: results.length ? 'ready' : 'query-dimension-mismatch', rejected, embeddingCalls: 1,
+        const results = status.validRecords.map(item => ({ ...item, score: this.cosineSimilarity(queryVector, item.vector) })).filter(item => item.score !== null);
+        this.lastSearchStatus = { code: results.length ? 'ready' : 'query-dimension-mismatch', rejected: status.rejected, embeddingCalls: 1,
             message: results.length ? rejectedMessage : '查询向量与索引维度不一致，已使用本地原文检索' };
         return results.sort((a, b) => b.score - a.score).slice(0, topK);
     },
@@ -295,6 +326,7 @@ const RAG = {
                         clauseId: item.clauseId,
                         title: item.title,
                         vector: item.vector,
+                        schemaVersion: item.schemaVersion || null,
                         sourceHash: item.sourceHash || null,
                         titleHash: item.titleHash || null,
                         embeddingSpace: item.embeddingSpace || null,
@@ -402,8 +434,9 @@ window.PREBUILT_VECTORS = PREBUILT_VECTORS;
                         type: item.type,
                         clauseId: item.clauseId,
                         title: item.title,
-                         vector: item.vector,
-                         embeddingModel: item.embeddingModel || window.PREBUILT_VECTORS.embeddingModel || null,
+                          vector: item.vector,
+                          schemaVersion: item.schemaVersion || null,
+                          embeddingModel: item.embeddingModel || window.PREBUILT_VECTORS.embeddingModel || null,
                          sourceHash: item.sourceHash || null,
                          titleHash: item.titleHash || null,
                          embeddingSpace: item.embeddingSpace || null,
@@ -494,7 +527,9 @@ window.PREBUILT_VECTORS = PREBUILT_VECTORS;
             console.error('[RAG] 重排序失败:', error);
             return candidates.slice(0, topN);
         } finally { clearTimeout(timer); options.signal?.removeEventListener('abort', cancel); }
-    }
+    },
+
+    INDEX_SCHEMA_VERSION: RAG_INDEX_SCHEMA_VERSION
 };
 
 window.RAG = RAG;

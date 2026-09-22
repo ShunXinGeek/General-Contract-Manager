@@ -1,6 +1,6 @@
 // Service Worker for General Contract Shell
 const CACHE_PREFIX = 'general-contract-shell-';
-const CACHE_NAME = CACHE_PREFIX + 'v8';
+const CACHE_NAME = CACHE_PREFIX + 'v9';
 const urlsToCache = [
     './',
     './index.html',
