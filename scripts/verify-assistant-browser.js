@@ -236,8 +236,19 @@ async function run() {
         assert.ok(await page.locator('#assistantNotebookWorkspace').isVisible(), 'notebook workspace should open from the sidebar');
         assert.ok((await page.locator('#assistantNotebookContent').innerText()).includes('本次未取得有效正文') || (await page.locator('#assistantNotebookContent').innerText()).includes('GCC Clause'), 'saved notebook should display the collected reply');
         await page.locator('#btnNotebookEdit').click();
+        assert.ok(await page.locator('#assistantNotebookEditModes').isVisible(), 'editing must expose source, preview, and compare modes');
+        await page.locator('#btnNotebookModePreview').click();
+        assert.ok(await page.locator('#assistantNotebookPreview').isVisible(), 'preview mode must show the rendered note');
+        assert.ok(await page.locator('#assistantNotebookContentInput').isHidden(), 'preview mode must hide the Markdown source');
+        assert.ok(await page.locator('#assistantNotebookPreview').evaluate((preview, panes) => Math.abs(preview.getBoundingClientRect().width - panes.getBoundingClientRect().width) < 2, await page.locator('#assistantNotebookEditPanes').elementHandle()), 'preview mode must use the full editor width');
+        await page.locator('#btnNotebookModeCompare').click();
+        assert.ok(await page.locator('#assistantNotebookPreview').isVisible() && await page.locator('#assistantNotebookContentInput').isVisible(), 'compare mode must show source and preview together');
+        assert.ok(await page.locator('#assistantNotebookContentInput').evaluate((source, preview) => Math.abs(source.getBoundingClientRect().width - preview.getBoundingClientRect().width) < 2, await page.locator('#assistantNotebookPreview').elementHandle()), 'compare mode must split source and preview evenly');
         await page.locator('#assistantNotebookTitleInput').fill('已编辑笔记');
-        await page.locator('#assistantNotebookContentInput').fill('这是一条已保存的笔记正文。');
+        await page.locator('#assistantNotebookContentInput').fill(`# 已编辑笔记\n\n${Array.from({ length: 80 }, (_, index) => `这是一条已保存的笔记正文，第 ${index + 1} 行。`).join('\n\n')}`);
+        assert.ok((await page.locator('#assistantNotebookPreview').innerText()).includes('这是一条已保存的笔记正文，第 80 行。'), 'preview must update while source is edited');
+        await page.locator('#assistantNotebookContentInput').evaluate(source => { source.scrollTop = source.scrollHeight; source.dispatchEvent(new Event('scroll')); });
+        await page.waitForFunction(() => { const source = document.getElementById('assistantNotebookContentInput'); const preview = document.getElementById('assistantNotebookPreview'); return source.scrollTop > 0 && preview.scrollTop > 0; });
         await page.locator('#btnNotebookSave').click();
         await page.locator('#assistantTopicList .assistant-topic-title').getByText('已编辑笔记', { exact: true }).waitFor();
         assert.ok((await page.locator('#assistantNotebookContent').innerText()).includes('已保存的笔记正文'), 'edited notebook content should render after saving');
@@ -278,8 +289,13 @@ async function run() {
         await page.locator('#btnAssistantNotebook').click();
         await page.locator('#assistantTopicList .assistant-topic-title').getByText('已编辑笔记', { exact: true }).waitFor();
         assert.ok((await page.locator('#assistantNotebookContent').innerText()).includes('已保存的笔记正文'), 'saved notebook edits must survive a reload');
+        await page.locator('#assistantTopicList .assistant-topic-item.is-note-active .assistant-topic-more').click();
+        await page.getByRole('menuitem', { name: '取消收藏', exact: true }).click();
+        await page.locator('.modal-overlay:visible').getByRole('button', { name: '确定', exact: true }).click();
+        await page.waitForFunction(() => document.getElementById('assistantNotebookCount').textContent === '0');
+        assert.strictEqual(await page.locator('#assistantTopicList .assistant-topic-item').count(), 0, 'unfavoriting must remove the notebook entry');
         assert.deepStrictEqual(errors, []);
-        const report = { passed: true, scope: 'isolated localhost with mocked providers', checks: ['existing browser regression', 'thinking+knowledge flags', 'knowledge-base status distinguishes loaded corpus from invalid vectors', 'typed SCC evidence', 'Chinese response-deadline query retrieves GCC Clause 5 without semantic vectors', 'multi-file TXT/Markdown/PDF/DOCX local attachment parsing and request hydration', 'followup', 'clause link', 'assistant original/translation and Chinese-variant preference across links', 'regeneration history', 'context break', 'one repair', 'failed repair warning', 'legacy vector feedback', 'stop', 'reload', 'AI topic title with same-model request and length guard', 'assistant reply branching with numbering/truncation/source preservation/no provider call', 'assistant topics title-only rows/outside-click menu/full-row active state/create/rename/archive preview/restore/delete', 'favorite action, notebook rendering and editable persistence', 'send button inside input toolbar', 'native IndexedDB build/import/freshness/export'], providerRequests: 0 };
+        const report = { passed: true, scope: 'isolated localhost with mocked providers', checks: ['existing browser regression', 'thinking+knowledge flags', 'knowledge-base status distinguishes loaded corpus from invalid vectors', 'typed SCC evidence', 'Chinese response-deadline query retrieves GCC Clause 5 without semantic vectors', 'multi-file TXT/Markdown/PDF/DOCX local attachment parsing and request hydration', 'followup', 'clause link', 'assistant original/translation and Chinese-variant preference across links', 'regeneration history', 'context break', 'one repair', 'failed repair warning', 'legacy vector feedback', 'stop', 'reload', 'AI topic title with same-model request and length guard', 'assistant reply branching with numbering/truncation/source preservation/no provider call', 'assistant topics title-only rows/outside-click menu/full-row active state/create/rename/archive preview/restore/delete', 'favorite action, notebook source/preview/compare modes, live rendering, scroll sync, editable persistence, and unfavorite deletion', 'send button inside input toolbar', 'native IndexedDB build/import/freshness/export'], providerRequests: 0 };
         fs.writeFileSync(path.join(output, 'assistant-browser-report.json'), JSON.stringify(report, null, 2));
         console.log(JSON.stringify(report)); await context.close();
     } finally { if (browser) await browser.close(); await new Promise(resolve => server.close(resolve)); }

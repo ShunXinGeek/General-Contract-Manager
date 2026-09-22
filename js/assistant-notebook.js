@@ -4,7 +4,7 @@
 
     const INDEX_KEY = 'assistant_notebook_v1';
     const OUTBOX_KEY = 'assistant_notebook_outbox_v1';
-    const state = { notes: [], selectedId: null, open: false, editing: false, draft: null, outbox: [], ready: false, initializedDom: false, flushTimer: null };
+    const state = { notes: [], selectedId: null, open: false, editing: false, editMode: 'source', draft: null, outbox: [], ready: false, initializedDom: false, flushTimer: null };
     const now = () => Date.now();
     const uid = () => globalThis.crypto?.randomUUID?.() || `note-${now().toString(36)}-${Math.random().toString(36).slice(2)}`;
     const clone = value => JSON.parse(JSON.stringify(value));
@@ -77,6 +77,47 @@
         const workspace = document.getElementById('assistantNotebookWorkspace');
         if (workspace) workspace.hidden = !open;
     }
+    function renderMarkdown(content) {
+        return typeof window.renderMarkdown === 'function' ? window.renderMarkdown(content || '') : `<pre>${escape(content || '')}</pre>`;
+    }
+    function syncPreviewScroll() {
+        const source = document.getElementById('assistantNotebookContentInput');
+        const preview = document.getElementById('assistantNotebookPreview');
+        if (!state.editing || state.editMode !== 'compare' || !source || !preview) return;
+        const sourceRange = Math.max(0, source.scrollHeight - source.clientHeight);
+        const previewRange = Math.max(0, preview.scrollHeight - preview.clientHeight);
+        preview.scrollTop = sourceRange ? (source.scrollTop / sourceRange) * previewRange : 0;
+    }
+    function renderDraftPreview() {
+        const preview = document.getElementById('assistantNotebookPreview');
+        if (!preview || !state.editing) return;
+        preview.innerHTML = renderMarkdown(state.draft?.content || '');
+        syncPreviewScroll();
+    }
+    function closeNoteMenus(returnFocus = false) {
+        document.querySelectorAll('.assistant-notebook-menu').forEach(menu => {
+            const opener = menu.parentElement?.querySelector('.assistant-topic-more');
+            menu.remove(); opener?.setAttribute('aria-expanded', 'false');
+            if (returnFocus) opener?.focus();
+        });
+    }
+    async function unfavoriteNote(noteId) {
+        const note = getNote(noteId); if (!note) return;
+        if (!await CustomDialog.confirm(`确定取消收藏“${note.title || '未命名笔记'}”？此操作会删除该笔记。`, '取消收藏')) return;
+        note.status = 'deleted'; note.deletedAt = now(); note.updatedAt = now(); note.schemaVersion = 1;
+        if (state.selectedId === note.id) state.selectedId = activeNotes()[0]?.id || null;
+        state.editing = false; state.draft = null;
+        enqueue({ kind: 'note-delete', noteId: note.id }); await persist(); render();
+    }
+    function renderNoteMenu(host, note, opener) {
+        const wasOpen = !!host.querySelector('.assistant-notebook-menu');
+        closeNoteMenus();
+        if (wasOpen) return;
+        const menu = document.createElement('div'); menu.className = 'assistant-topic-menu assistant-notebook-menu'; menu.setAttribute('role', 'menu');
+        const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'danger'; remove.textContent = '取消收藏'; remove.setAttribute('role', 'menuitem');
+        remove.onclick = event => { event.stopPropagation(); closeNoteMenus(); unfavoriteNote(note.id).catch(error => status(error.message, 'error')); };
+        opener.setAttribute('aria-expanded', 'true'); menu.appendChild(remove); host.appendChild(menu);
+    }
     function renderSidebar() {
         const list = document.getElementById('assistantTopicList');
         if (!list || !state.open) return;
@@ -88,7 +129,9 @@
         notes.forEach(note => {
             const row = document.createElement('div'); row.className = `assistant-topic-item${note.id === state.selectedId ? ' is-note-active' : ''}`;
             const button = document.createElement('button'); button.type = 'button'; button.className = 'assistant-topic-select'; button.setAttribute('aria-current', note.id === state.selectedId ? 'page' : 'false'); button.innerHTML = `<span class="assistant-topic-title">${escape(note.title || '未命名笔记')}</span>`;
-            button.onclick = () => selectNote(note.id); row.appendChild(button); list.appendChild(row);
+            button.onclick = () => selectNote(note.id);
+            const menuButton = document.createElement('button'); menuButton.type = 'button'; menuButton.className = 'assistant-topic-more'; menuButton.textContent = '⋯'; menuButton.title = '笔记操作'; menuButton.setAttribute('aria-label', `操作：${note.title || '未命名笔记'}`); menuButton.setAttribute('aria-haspopup', 'menu'); menuButton.setAttribute('aria-expanded', 'false'); menuButton.onclick = event => { event.stopPropagation(); renderNoteMenu(row, note, menuButton); };
+            row.append(button, menuButton); list.appendChild(row);
         });
     }
     function render() {
@@ -96,23 +139,34 @@
         if (!state.open) return;
         renderSidebar();
         const note = getNote();
-        const content = document.getElementById('assistantNotebookContent'); const title = document.getElementById('assistantNotebookTitleInput'); const input = document.getElementById('assistantNotebookContentInput');
+        const content = document.getElementById('assistantNotebookContent'); const title = document.getElementById('assistantNotebookTitleInput'); const input = document.getElementById('assistantNotebookContentInput'); const preview = document.getElementById('assistantNotebookPreview'); const panes = document.getElementById('assistantNotebookEditPanes'); const body = document.querySelector('.assistant-notebook-body'); const modes = document.getElementById('assistantNotebookEditModes');
         const edit = document.getElementById('btnNotebookEdit'); const save = document.getElementById('btnNotebookSave'); const cancel = document.getElementById('btnNotebookCancel');
+        body?.classList.toggle('is-editing', state.editing); if (body) body.dataset.editMode = state.editMode;
         if (!note) {
             if (content) content.innerHTML = '<div class="assistant-notebook-empty">还没有收藏内容。<br>在任意模型回复右下角点击“收藏”，即可把回复保存到这里。</div>';
-            if (title) title.hidden = true; if (input) input.hidden = true; if (edit) edit.hidden = true; if (save) save.hidden = true; if (cancel) cancel.hidden = true;
+            if (title) title.hidden = true; if (panes) panes.hidden = true; if (edit) edit.hidden = true; if (modes) modes.hidden = true; if (save) save.hidden = true; if (cancel) cancel.hidden = true;
             status(''); return;
         }
         const draft = state.editing ? state.draft : note;
         if (title) { title.value = draft.title || ''; title.hidden = !state.editing; }
-        if (input) { input.value = draft.content || ''; input.hidden = !state.editing; }
+        if (input) { input.value = draft.content || ''; input.hidden = !state.editing || state.editMode === 'preview'; }
+        if (preview) preview.hidden = !state.editing || state.editMode === 'source';
+        if (panes) panes.hidden = !state.editing;
         if (content) {
             content.hidden = state.editing;
             if (!state.editing) {
                 const date = new Date(note.updatedAt || note.createdAt || now()).toLocaleString('zh-CN', { hour12: false });
-                const rendered = typeof window.renderMarkdown === 'function' ? window.renderMarkdown(note.content || '') : `<pre>${escape(note.content || '')}</pre>`;
+                const rendered = renderMarkdown(note.content);
                 content.innerHTML = `<p class="assistant-notebook-meta">收藏于 ${escape(date)}${note.sourceTopicTitle ? ` · 来源：${escape(note.sourceTopicTitle)}` : ''}</p>${rendered}`;
             }
+        }
+        if (state.editing) renderDraftPreview();
+        if (modes) {
+            modes.hidden = !state.editing;
+            [['source', 'btnNotebookModeSource'], ['preview', 'btnNotebookModePreview'], ['compare', 'btnNotebookModeCompare']].forEach(([mode, id]) => {
+                const button = document.getElementById(id); if (!button) return;
+                const active = state.editMode === mode; button.classList.toggle('is-active', active); button.setAttribute('aria-pressed', String(active));
+            });
         }
         if (edit) edit.hidden = state.editing; if (save) save.hidden = !state.editing; if (cancel) cancel.hidden = !state.editing;
         status(state.editing ? '正在编辑，尚未保存的内容不会自动提交。' : '');
@@ -128,7 +182,7 @@
     }
     function beginEdit() {
         const note = getNote(); if (!note) return;
-        state.editing = true; state.draft = { id: note.id, title: note.title || '', content: note.content || '', dirty: false }; render(); document.getElementById('assistantNotebookTitleInput')?.focus();
+        state.editing = true; state.editMode = 'source'; state.draft = { id: note.id, title: note.title || '', content: note.content || '', dirty: false }; render(); document.getElementById('assistantNotebookTitleInput')?.focus();
     }
     async function saveEdit() {
         const note = getNote(); if (!note || !state.editing) return;
@@ -138,11 +192,16 @@
         state.editing = false; state.draft = null; enqueue({ kind: 'note', noteId: note.id }); await persist(); render();
     }
     async function cancelEdit() { if (!await discardDraftIfNeeded()) return; state.editing = false; state.draft = null; render(); }
+    function setEditMode(mode) {
+        if (!state.editing || !['source', 'preview', 'compare'].includes(mode)) return;
+        state.editMode = mode; render();
+        if (mode !== 'preview') document.getElementById('assistantNotebookContentInput')?.focus();
+    }
     function onDraftInput() {
         if (!state.editing || !state.draft) return;
         state.draft.title = document.getElementById('assistantNotebookTitleInput')?.value || '';
         state.draft.content = document.getElementById('assistantNotebookContentInput')?.value || '';
-        state.draft.dirty = true; status('正在编辑，尚未保存的内容不会自动提交。');
+        state.draft.dirty = true; renderDraftPreview(); status('正在编辑，尚未保存的内容不会自动提交。');
     }
     async function addFromAssistant(data) {
         await ready;
@@ -161,8 +220,12 @@
         document.getElementById('btnNotebookEdit')?.addEventListener('click', beginEdit);
         document.getElementById('btnNotebookSave')?.addEventListener('click', () => saveEdit().catch(error => status(error.message, 'error')));
         document.getElementById('btnNotebookCancel')?.addEventListener('click', () => cancelEdit().catch(() => {}));
+        document.getElementById('btnNotebookModeSource')?.addEventListener('click', () => setEditMode('source'));
+        document.getElementById('btnNotebookModePreview')?.addEventListener('click', () => setEditMode('preview'));
+        document.getElementById('btnNotebookModeCompare')?.addEventListener('click', () => setEditMode('compare'));
         document.getElementById('assistantNotebookTitleInput')?.addEventListener('input', onDraftInput);
         document.getElementById('assistantNotebookContentInput')?.addEventListener('input', onDraftInput);
+        document.getElementById('assistantNotebookContentInput')?.addEventListener('scroll', syncPreviewScroll, { passive: true });
         window.addEventListener('online', () => syncWithCloud().catch(() => {}));
     }
     async function initialize() {

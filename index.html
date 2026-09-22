@@ -270,6 +270,11 @@
                         </div>
                         <div class="assistant-notebook-actions">
                             <button class="assistant-btn" id="btnNotebookEdit" type="button">编辑</button>
+                            <div class="assistant-notebook-edit-modes" id="assistantNotebookEditModes" role="group" aria-label="编辑视图" hidden>
+                                <button class="assistant-notebook-mode is-active" id="btnNotebookModeSource" type="button" aria-pressed="true" aria-controls="assistantNotebookContentInput">源码</button>
+                                <button class="assistant-notebook-mode" id="btnNotebookModePreview" type="button" aria-pressed="false" aria-controls="assistantNotebookPreview">预览</button>
+                                <button class="assistant-notebook-mode" id="btnNotebookModeCompare" type="button" aria-pressed="false" aria-controls="assistantNotebookContentInput assistantNotebookPreview">对比</button>
+                            </div>
                             <button class="assistant-btn" id="btnNotebookSave" type="button" hidden>保存</button>
                             <button class="assistant-btn" id="btnNotebookCancel" type="button" hidden>取消</button>
                         </div>
@@ -277,7 +282,10 @@
                     <div class="assistant-notebook-body">
                         <input class="assistant-notebook-title-input" id="assistantNotebookTitleInput" type="text" maxlength="80" hidden aria-label="笔记标题">
                         <article class="assistant-notebook-content" id="assistantNotebookContent"></article>
-                        <textarea class="assistant-notebook-editor" id="assistantNotebookContentInput" hidden aria-label="笔记内容"></textarea>
+                        <div class="assistant-notebook-edit-panes" id="assistantNotebookEditPanes" hidden>
+                            <textarea class="assistant-notebook-editor" id="assistantNotebookContentInput" aria-label="笔记 Markdown 源码"></textarea>
+                            <article class="assistant-notebook-preview" id="assistantNotebookPreview" aria-label="笔记预览"></article>
+                        </div>
                     </div>
                 </section>
 
