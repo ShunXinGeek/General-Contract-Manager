@@ -15,7 +15,8 @@ playwright-cli -s=contract-repair eval "() => window.browserSmokeResult"
 
 The smoke function is intended for Playwright CLI, not `node` directly. It clears
 only the isolated localhost test profile, imports `fixtures/recovery-contract.txt`
-through the real file input/FileReader, edits/reloads/compares/reverts, checks search and
+through the real file input/FileReader, verifies cloud and same-tab panel-state recovery
+for existing and arbitrary contract labels, edits/reloads/compares/reverts, checks search and
 translation, restores cloud AI settings in a second clean browser context, sends
 a mocked SSE chat response, then creates a third clean profile and reloads with
 the network disabled after only one completed online installation. An uncached

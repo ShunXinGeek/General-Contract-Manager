@@ -23,6 +23,44 @@ async (page) => {
     assert(await page.locator('#btnLangMode').isVisible(), 'Original/translation toggle must appear on every contract tab');
     assert(await page.locator('#btnLangToggle').isVisible(), 'Simplified/traditional toggle must appear on every contract tab');
     assert(await page.locator('.btn-modified').count() === 0, 'Imported contract must start unmodified');
+    const panelStateChecks = await page.evaluate(() => {
+        hydrateMissingCloudContracts({
+            contract_data: {
+                SCC: { title: 'SCC', data: { '1': { title: 'SCC Clause 1', content: 'SCC body' } } },
+                CUSTOM: { title: 'Custom Contract', data: { '1': { title: 'Custom Clause 1', content: 'Custom body' } } }
+            }
+        });
+        return ['RECOVERY', 'SCC', 'CUSTOM'].map(key => {
+            activeContractKey = null;
+            document.getElementById('panelNav').classList.add('collapsed');
+            document.getElementById('panelRef').classList.add('collapsed');
+            refreshContractsAfterCloud(key);
+            const cloudRefreshExpanded = !document.getElementById('panelNav').classList.contains('collapsed') &&
+                !document.getElementById('panelRef').classList.contains('collapsed');
+
+            document.getElementById('panelNav').classList.add('collapsed');
+            document.getElementById('panelRef').classList.add('collapsed');
+            switchContract(key);
+            const sameTabExpanded = !document.getElementById('panelNav').classList.contains('collapsed') &&
+                !document.getElementById('panelRef').classList.contains('collapsed');
+
+            navViewStatePerContract[key] = true;
+            refViewStatePerContract[key] = true;
+            restoreContractPanelState(key);
+            refreshContractsAfterCloud(key);
+            const manualCollapsePreserved = document.getElementById('panelNav').classList.contains('collapsed') &&
+                document.getElementById('panelRef').classList.contains('collapsed');
+
+            navViewStatePerContract[key] = false;
+            refViewStatePerContract[key] = false;
+            restoreContractPanelState(key);
+            return { key, cloudRefreshExpanded, sameTabExpanded, manualCollapsePreserved };
+        });
+    });
+    assert(panelStateChecks.every(result => result.cloudRefreshExpanded), 'Cloud refresh auto-collapsed a contract tab');
+    assert(panelStateChecks.every(result => result.sameTabExpanded), 'Same-tab refresh failed to restore expanded panels');
+    assert(panelStateChecks.every(result => result.manualCollapsePreserved), 'Cloud refresh overwrote a user-collapsed panel state');
+    await page.evaluate(() => switchContract('RECOVERY'));
     await page.locator('#btnEditMode').click();
     await page.getByRole('button', { name: '确定', exact: true }).click();
     await page.locator('#clause-1 .clause-text').fill('Edited browser test text.');
@@ -163,7 +201,7 @@ async (page) => {
         await coldContext.close();
     }
     assert(errors.length === 0, `Uncaught browser errors: ${errors.join('; ')}`);
-    const summary = 'Browser smoke passed: UI import/edit/compare/revert/search/translation, new-device cloud AI restore + mock chat, offline cold reload; no uncaught JS errors.';
+    const summary = 'Browser smoke passed: UI import/edit/compare/revert/search/translation, all-tab panel state recovery, new-device cloud AI restore + mock chat, offline cold reload; no uncaught JS errors.';
     await page.evaluate(value => { window.browserSmokeResult = value; }, summary);
     return summary;
 }

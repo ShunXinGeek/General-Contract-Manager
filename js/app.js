@@ -331,6 +331,37 @@ function setDocumentPanelToggleAvailability(enabled) {
     document.getElementById('btnToggleReferenceView')?.toggleAttribute('disabled', !enabled);
 }
 
+function ensureContractPanelState(key) {
+    if (!key) return;
+    if (!Object.prototype.hasOwnProperty.call(refViewStatePerContract, key)) {
+        refViewStatePerContract[key] = false;
+    }
+    if (!Object.prototype.hasOwnProperty.call(navViewStatePerContract, key)) {
+        navViewStatePerContract[key] = false;
+    }
+}
+
+function restoreContractPanelState(key) {
+    if (!key) return;
+    ensureContractPanelState(key);
+
+    const panelRef = document.getElementById('panelRef');
+    const resizer2 = document.getElementById('resizer2');
+    if (panelRef && resizer2) {
+        const isRefCollapsed = refViewStatePerContract[key] === true;
+        panelRef.classList.toggle('collapsed', isRefCollapsed);
+        resizer2.classList.toggle('hidden', isRefCollapsed);
+    }
+
+    const panelNav = document.getElementById('panelNav');
+    const resizer1 = document.getElementById('resizer1');
+    if (panelNav && resizer1) {
+        const isNavCollapsed = navViewStatePerContract[key] === true;
+        panelNav.classList.toggle('collapsed', isNavCollapsed);
+        resizer1.classList.toggle('hidden', isNavCollapsed);
+    }
+}
+
 function showWelcomePage() {
     // 强制清理活动全局变量
     if (activeContractKey) {
@@ -640,7 +671,10 @@ function switchContract(key) {
     const tabEl = document.getElementById(`tab-${key}`);
     if (tabEl) tabEl.classList.add('active');
 
-    if (activeContractKey === key) return;
+    if (activeContractKey === key) {
+        restoreContractPanelState(key);
+        return;
+    }
     Logger.info('app', `切换合同: ${activeContractKey} → ${key}`);
 
     // 保存当前合同状态
@@ -749,33 +783,7 @@ function switchContract(key) {
         if (refHeader) refHeader.style.display = 'none';
     }
 
-    // 恢复右侧面板的折叠状态
-    const isRefCollapsed = refViewStatePerContract[key] || false;
-    const pRef = document.getElementById('panelRef');
-    const resizer2 = document.getElementById('resizer2');
-    if (pRef && resizer2) {
-        if (isRefCollapsed) {
-            pRef.classList.add('collapsed');
-            resizer2.classList.add('hidden');
-        } else {
-            pRef.classList.remove('collapsed');
-            resizer2.classList.remove('hidden');
-        }
-    }
-
-    // 恢复左侧面板的折叠状态
-    const isNavCollapsed = navViewStatePerContract[key] || false;
-    const pNav = document.getElementById('panelNav');
-    const resizer1 = document.getElementById('resizer1');
-    if (pNav && resizer1) {
-        if (isNavCollapsed) {
-            pNav.classList.add('collapsed');
-            resizer1.classList.add('hidden');
-        } else {
-            pNav.classList.remove('collapsed');
-            resizer1.classList.remove('hidden');
-        }
-    }
+    restoreContractPanelState(key);
 
     // 恢复搜索状态
     const targetSearchInput = document.querySelector('.search-input');

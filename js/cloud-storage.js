@@ -598,6 +598,7 @@ function hydrateMissingCloudContracts(cloudData) {
     if (typeof contracts === 'undefined') return;
 
     Object.keys(cloudData?.contract_data || {}).forEach(contractKey => {
+        if (typeof ensureContractPanelState === 'function') ensureContractPanelState(contractKey);
         const cloudContract = cloudData.contract_data[contractKey] || {};
         if (!contracts[contractKey]) {
             contracts[contractKey] = {
@@ -649,10 +650,12 @@ function refreshContractsAfterCloud(preferredContractKey = null) {
     activeContractKey = currentKey;
     fullClauseDatabase = contracts[currentKey].data || {};
     savedBookmarks = contracts[currentKey].bookmarks || null;
+    if (typeof ensureContractPanelState === 'function') ensureContractPanelState(currentKey);
     if (typeof renderTabs === 'function') renderTabs();
     if (typeof renderMainDocument === 'function') renderMainDocument();
     if (typeof initBookmarks === 'function') initBookmarks();
     if (typeof buildReverseIndex === 'function') buildReverseIndex();
+    if (typeof restoreContractPanelState === 'function') restoreContractPanelState(currentKey);
 }
 
 /**
