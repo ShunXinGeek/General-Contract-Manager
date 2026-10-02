@@ -36,10 +36,12 @@ async function run() {
     assert.ok(evidence.clauses.some(row => api.identity(row) === 'SCC:34')); assert.ok(!evidence.clauses.some(row => api.identity(row) === 'GCC:34'));
     const wrongVersion = { GCC: { data: { '1': { title: 'Other definition', content: 'This is another contract entirely.' } } },
         SCC: { data: { '3A': { title: 'Other clause', content: 'No amendment relationship stated.' } } } };
-    assert.strictEqual(api.relationships(api.rows(wrongVersion)).length, 0, 'unknown versions cannot inherit static mapping');
+    assert.strictEqual(api.relationships(api.rows(wrongVersion), wrongVersion).length, 0, 'unknown versions cannot inherit static mapping');
     wrongVersion.SCC.data['3A'].content = 'General Conditions of Contract Clause 1 is amended by adding this definition.';
-    assert.strictEqual(api.relationships(api.rows(wrongVersion))[0].origin, 'current-original');
-    const corpusEdges = api.relationships(api.rows(source));
+    wrongVersion.GCC.title = 'General Conditions of Contract';
+    wrongVersion.SCC.title = 'Special Conditions of Contract';
+    assert.strictEqual(api.relationships(api.rows(wrongVersion), wrongVersion)[0].origin, 'current-original');
+    const corpusEdges = api.relationships(api.rows(source), source);
     for (const pair of [['1', '3A'], ['4', '6'], ['50', '84'], ['50', '111'], ['52', '45'], ['86', '59']]) assert.ok(corpusEdges.some(edge => edge.base === 'GCC:' + pair[0] && edge.modifier === 'SCC:' + pair[1]), `Source relation missing ${pair}`);
 
     // A natural Chinese paraphrase must still find the English source when semantic
@@ -78,7 +80,7 @@ async function run() {
     // Real RAG methods with controlled DB/API boundaries.
     vm.runInContext(fs.readFileSync(path.join(root, 'js/rag.js'), 'utf8'), ctx);
     const rag = ctx.RAG, config = { embeddingModel: 'test-model', embeddingEndpoint: 'https://example.test/v1', embeddingApiKey: 'test-key' };
-    const record = { type: 'GCC', clauseId: '50', title: 'Extension', embeddingModel: 'test-model', schemaVersion: rag.INDEX_SCHEMA_VERSION, sourceHash: api.fingerprint(minimal.GCC.data['50'].content), dimension: 2, vector: [1, 0] };
+    const record = { sourceId: minimal.GCC.sourceId, type: 'GCC', clauseId: '50', title: 'Extension', embeddingModel: 'test-model', schemaVersion: rag.INDEX_SCHEMA_VERSION, sourceHash: api.fingerprint(minimal.GCC.data['50'].content), dimension: 2, vector: [1, 0] };
     record.titleHash = api.fingerprint('Extension'); record.embeddingSpace = rag.embeddingSpace(config.embeddingEndpoint, config.embeddingModel);
     assert.strictEqual(rag.validateRecord(record, config, minimal), 'ready');
     assert.strictEqual(rag.validateRecord({ ...record, sourceHash: null }, config, minimal), 'legacy-unverified');
@@ -118,11 +120,64 @@ async function run() {
     const stored = [];
     rag.db = { transaction() { return { objectStore() { return { put(row) { stored.push(row); const req = {}; setTimeout(() => req.onsuccess(), 0); return req; } }; } }; } };
     rag.getEmbedding = async text => { assert.match(text, /Original extension/); return [1, 0]; };
-    const summary = await rag.buildIndex({ GCC: { data: { '50': minimal.GCC.data['50'] } }, SCC: { data: { '2': minimal.SCC.data['2'] } } }, config);
+    const summary = await rag.buildIndex({ GCC: { sourceId: minimal.GCC.sourceId, data: { '50': minimal.GCC.data['50'] } }, SCC: { sourceId: minimal.SCC.sourceId, data: { '2': minimal.SCC.data['2'] } } }, config);
     assert.strictEqual(summary.count, 1); assert.strictEqual(stored[0].sourceHash, record.sourceHash); assert.strictEqual(stored[0].schemaVersion, rag.INDEX_SCHEMA_VERSION);
     const edited = JSON.parse(JSON.stringify(minimal)); edited.GCC.data['50'].content += ' Changed.';
     assert.strictEqual(rag.validateRecord(stored[0], config, edited), 'source-stale');
     const budgetEvidence = await api.retrieve('SCC Clause 34', minimal, { retrievalCharacterBudget: 2000 }); assert.ok(budgetEvidence.diagnostic.characters <= 2000);
+
+    // Name-agnostic settings: special labels, strict scope and three relation types.
+    const generic = {
+        '资料 A+B': { title: '基础文件', data: { '7': { title: 'Notice', content: 'Notice must be issued within seven days.' } } },
+        '条件(2027)': { title: '项目条件', data: { '9': { title: 'Amendment', content: '基础文件 Clause 7 is amended by requiring three days.' } } },
+        '附录/甲': { title: '技术附录', data: { '2': { title: 'Material', content: 'A unique zircon requirement applies.' } } }
+    };
+    assert.strictEqual(
+        ctx.RetrievalSettings.createSourceId({ data: { '1': { content: 'device A edit' } } }, 'COMMON'),
+        ctx.RetrievalSettings.createSourceId({ data: { '1': { content: 'device B edit' } } }, 'COMMON'),
+        'legacy source ids must converge across devices even when local clause text differs'
+    );
+    ctx.RetrievalSettings.ensureSourceIds(generic);
+    assert.strictEqual(api.parseRefs('请比较 资料 A+B Clause 7 与 条件(2027) Clause 9', generic).length, 2);
+    assert.strictEqual(api.relationships(api.rows(generic), generic)[0].base, '资料 A+B:7');
+    const genericSettings = ctx.RetrievalSettings.normalize(null, generic);
+    genericSettings.sources[generic['附录/甲'].sourceId].enabled = false;
+    ctx.RetrievalSettings.persist(genericSettings, generic, false);
+    let scoped = await api.retrieve('zircon requirement', generic, {});
+    assert.strictEqual(scoped.clauses.length, 0, 'disabled sources must not leak into local retrieval');
+    assert.strictEqual(scoped.diagnostic.scope.enabled, 2);
+    scoped = await api.retrieve('zircon requirement', generic, {});
+    assert.strictEqual(scoped.clauses.length, 0, 'repeated retrieval must not reset a disabled source through a filtered subset');
+    const crowded = { A: { title: 'Large source', data: {} }, B: { title: 'Small source', data: {
+        '1': { title: 'Shared requirement', content: 'sharedterm applies to the small source.' }
+    } } };
+    for (let index = 1; index <= 30; index++) crowded.A.data[String(index)] = {
+        title: `Shared requirement ${index}`, content: `sharedterm applies to large-source item ${index}.`
+    };
+    ctx.RetrievalSettings.ensureSourceIds(crowded);
+    const crowdedEvidence = await api.retrieve('sharedterm', crowded, {}, {
+        retrievalSettings: ctx.RetrievalSettings.normalize({ profile: 'precise' }, crowded)
+    });
+    assert.ok(crowdedEvidence.clauses.some(row => row.type === 'B'), 'global candidate truncation must retain a relevant representative from every enabled source');
+    const ids = Object.values(generic).map(contract => contract.sourceId);
+    genericSettings.relations = [
+        { fromSourceId: ids[0], toSourceId: ids[1], type: 'higher' },
+        { fromSourceId: ids[1], toSourceId: ids[2], type: 'same' }
+    ];
+    assert.strictEqual(ctx.RetrievalSettings.validate(genericSettings, generic).valid, true);
+    const authorityEvidence = await api.retrieve('Notice days', generic, {}, { retrievalSettings: genericSettings });
+    const authorityPrompt = api.prompt(authorityEvidence, '');
+    assert.ok(authorityPrompt.includes('资料 A+B 高于 条件(2027)'), 'enabled source authority must reach the model prompt');
+    assert.ok(!authorityPrompt.includes('条件(2027) 与 附录/甲 同级'), 'disabled source relationships must not enter the model prompt');
+    genericSettings.relations = [
+        { fromSourceId: ids[0], toSourceId: ids[1], type: 'higher' },
+        { fromSourceId: ids[1], toSourceId: ids[2], type: 'higher' },
+        { fromSourceId: ids[2], toSourceId: ids[0], type: 'higher' }
+    ];
+    assert.strictEqual(ctx.RetrievalSettings.validate(genericSettings, generic).valid, false, 'cyclic higher relations must be rejected');
+    const stableId = generic['资料 A+B'].sourceId;
+    generic['基础条件（重命名）'] = generic['资料 A+B']; delete generic['资料 A+B'];
+    assert.strictEqual(ctx.RetrievalSettings.sourceEntries(generic).find(entry => entry.label === '基础条件（重命名）').sourceId, stableId);
 
     // Context break and regeneration must not retrieve older/future turns.
     ctx.RAG.findMostRelevant = async () => [];

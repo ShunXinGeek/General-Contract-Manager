@@ -32,11 +32,12 @@ function context(options = {}) {
     const ctx = { console: { log() {}, warn() {}, error() {} }, URL, DOMException, AbortController, TextDecoder, setTimeout, clearTimeout,
         contracts: options.contracts || readContracts(), chatMessages: options.history || [], isKnowledgeBaseMode: true,
         hasContextBreak: false, contextBreakIndex: 0, isThinkingMode: false, switchContract() {}, showWelcomePage() {},
+        localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
         document: { getElementById() { return null; } }, escapeHtml: value => value,
         AIClient: { needsReasoningHistory: () => false, request: async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: '[]' } }] }) }) }
     };
     ctx.window = ctx; vm.createContext(ctx);
-    const files = options.baseline ? ['config', 'cross-ref-data', 'cross-ref', 'ai-assistant'] : ['config', 'cross-ref-data', 'retrieval-source', 'ai-retrieval', 'cross-ref', 'ai-assistant'];
+    const files = options.baseline ? ['config', 'cross-ref-data', 'cross-ref', 'ai-assistant'] : ['config', 'cross-ref-data', 'retrieval-source', 'retrieval-settings', 'ai-retrieval', 'cross-ref', 'ai-assistant'];
     files.forEach(file => {
         const name = `js/${file}.js`;
         const code = options.baseline ? execFileSync('git', ['show', `${baselineRevision}:${name}`], { cwd: root, encoding: 'utf8' }) : fs.readFileSync(path.join(root, name), 'utf8');

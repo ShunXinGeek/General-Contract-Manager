@@ -391,10 +391,10 @@
 
         <!-- 设置弹窗 -->
         <div id="settingsModal" class="modal-overlay">
-            <div class="modal-content" style="width:500px; max-height:85vh; display:flex; flex-direction:column;">
+            <div class="modal-content settings-modal-content">
                 <div class="modal-header">
                     <span style="font-size:18px; font-weight:bold;">⚙️ 设置</span>
-                    <span class="close-modal" onclick="closeSettings()">&times;</span>
+                    <button type="button" class="close-modal settings-close-button" onclick="closeSettings()" aria-label="关闭设置">&times;</button>
                 </div>
 
                 <!-- 标签页导航 -->
@@ -402,9 +402,9 @@
                     <button class="settings-tab active" id="tabAISettings" onclick="switchSettingsTab('AI')"
                         style="flex:1; padding:12px; background:none; border:none; border-bottom:3px solid #3498db; cursor:pointer; font-weight:bold; color:#3498db; font-size:14px;">AI
                         助手设置</button>
-                    <button class="settings-tab" id="tabFirebaseSettings" onclick="switchSettingsTab('Firebase')"
-                        style="flex:1; padding:12px; background:none; border:none; border-bottom:3px solid transparent; cursor:pointer; font-weight:normal; color:#666; font-size:14px;">Firebase
-                        配置设置</button>
+                    <button class="settings-tab" id="tabRetrievalSettings" onclick="switchSettingsTab('Retrieval')"
+                        style="flex:1; padding:12px; background:none; border:none; border-bottom:3px solid transparent; cursor:pointer; font-weight:normal; color:#666; font-size:14px;">🔎
+                        检索设置</button>
                     <button class="settings-tab" id="tabContractSettings" onclick="switchSettingsTab('Contract')"
                         style="flex:1; padding:12px; background:none; border:none; border-bottom:3px solid transparent; cursor:pointer; font-weight:normal; color:#666; font-size:14px;">📁
                         合同管理</button>
@@ -514,56 +514,100 @@
                         </div>
                     </div> <!-- 结束 aiSettingsContent -->
 
-                    <!-- Firebase 配置设置内容 -->
-                    <div id="firebaseSettingsContent" style="display:none;">
-                        <div style="margin-bottom:15px; color:#666; font-size:13px; line-height:1.5;">
-                            请在此填写您的 Firebase 项目的配置信息，用于云端数据备份和同步功能。配置保存在本地浏览器中。
+                    <!-- 通用检索设置内容 -->
+                    <div id="retrievalSettingsContent" class="retrieval-settings" style="display:none;">
+                        <div class="retrieval-intro">
+                            <div>
+                                <div class="retrieval-intro-title">通用交叉检索</div>
+                                <div class="retrieval-intro-copy">所有当前及未来标签页使用同一套规则。名称只用于显示，不会自动决定范围、角色或优先级。</div>
+                            </div>
+                            <div id="retrievalSummary" class="retrieval-summary" aria-live="polite"></div>
                         </div>
-                        <div style="margin-bottom:15px;">
-                            <label
-                                style="display:block; margin-bottom:6px; font-weight:bold; color:#333; font-size:13px;">API
-                                Key</label>
-                            <input type="text" id="settingFirebaseAuthKey" placeholder="例如：AIzaSyB..."
-                                style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; font-size:14px; box-sizing:border-box;">
-                        </div>
-                        <div style="margin-bottom:15px;">
-                            <label
-                                style="display:block; margin-bottom:6px; font-weight:bold; color:#333; font-size:13px;">Auth
-                                Domain</label>
-                            <input type="text" id="settingFirebaseAuthDomain"
-                                placeholder="例如：your-project.firebaseapp.com"
-                                style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; font-size:14px; box-sizing:border-box;">
-                        </div>
-                        <div style="margin-bottom:15px;">
-                            <label
-                                style="display:block; margin-bottom:6px; font-weight:bold; color:#333; font-size:13px;">Project
-                                ID</label>
-                            <input type="text" id="settingFirebaseProjectId" placeholder="例如：your-project-id"
-                                style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; font-size:14px; box-sizing:border-box;">
-                        </div>
-                        <div style="margin-bottom:15px;">
-                            <label
-                                style="display:block; margin-bottom:6px; font-weight:bold; color:#333; font-size:13px;">Storage
-                                Bucket</label>
-                            <input type="text" id="settingFirebaseStorageBucket"
-                                placeholder="例如：your-project.appspot.com"
-                                style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; font-size:14px; box-sizing:border-box;">
-                        </div>
-                        <div style="margin-bottom:15px;">
-                            <label
-                                style="display:block; margin-bottom:6px; font-weight:bold; color:#333; font-size:13px;">Messaging
-                                Sender ID</label>
-                            <input type="text" id="settingFirebaseMessagingSenderId" placeholder=""
-                                style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; font-size:14px; box-sizing:border-box;">
-                        </div>
-                        <div style="margin-bottom:20px;">
-                            <label
-                                style="display:block; margin-bottom:6px; font-weight:bold; color:#333; font-size:13px;">App
-                                ID</label>
-                            <input type="text" id="settingFirebaseAppId" placeholder=""
-                                style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; font-size:14px; box-sizing:border-box;">
-                        </div>
-                    </div> <!-- 结束 firebaseSettingsContent -->
+
+                        <section class="retrieval-panel" aria-labelledby="retrievalDefaultsTitle">
+                            <div class="retrieval-panel-heading">
+                                <div><h3 id="retrievalDefaultsTitle">默认行为</h3><p>控制新增来源和冲突分析方式。</p></div>
+                            </div>
+                            <div class="retrieval-form-grid">
+                                <label class="retrieval-field">新增来源
+                                    <select id="retrievalNewSourcePolicy">
+                                        <option value="enabled">自动启用，层级未设置（推荐）</option>
+                                        <option value="review">加入列表，等待确认</option>
+                                        <option value="disabled">默认关闭</option>
+                                    </select>
+                                </label>
+                                <label class="retrieval-field">冲突处理
+                                    <select id="retrievalConflictPolicy">
+                                        <option value="evidence-first">证据优先、层级裁决（推荐）</option>
+                                        <option value="compare-only">只比较，不自动裁决</option>
+                                        <option value="strict-hierarchy">同一事项严格按层级</option>
+                                    </select>
+                                </label>
+                                <label class="retrieval-field">检索深度
+                                    <select id="retrievalProfile">
+                                        <option value="precise">精准</option>
+                                        <option value="balanced">均衡（推荐）</option>
+                                        <option value="comprehensive">全面</option>
+                                    </select>
+                                </label>
+                            </div>
+                        </section>
+
+                        <section class="retrieval-panel" aria-labelledby="retrievalSourcesTitle">
+                            <div class="retrieval-panel-heading">
+                                <div><h3 id="retrievalSourcesTitle">检索来源与等级</h3><p>相关度决定是否命中；等级只在同一事项真实冲突时使用。</p></div>
+                            </div>
+                            <div id="retrievalSourceList" class="retrieval-source-list"></div>
+                        </section>
+
+                        <section class="retrieval-panel" aria-labelledby="retrievalRelationsTitle">
+                            <div class="retrieval-panel-heading">
+                                <div><h3 id="retrievalRelationsTitle">来源关系</h3><p>只允许高于、同级和无推定关系；每对来源最多一条规则。</p></div>
+                            </div>
+                            <div class="retrieval-relation-builder">
+                                <label class="retrieval-field">来源 A<select id="retrievalRelationFrom"></select></label>
+                                <label class="retrieval-field">关系
+                                    <select id="retrievalRelationType">
+                                        <option value="higher">高于</option>
+                                        <option value="same">同级</option>
+                                        <option value="none">无推定关系</option>
+                                    </select>
+                                </label>
+                                <label class="retrieval-field">来源 B<select id="retrievalRelationTo"></select></label>
+                                <button type="button" id="retrievalAddRelation" class="retrieval-secondary-button">添加关系</button>
+                            </div>
+                            <div id="retrievalRelationError" class="retrieval-inline-error" role="alert"></div>
+                            <div id="retrievalRelationList" class="retrieval-relation-list"></div>
+                        </section>
+
+                        <section class="retrieval-panel" aria-labelledby="retrievalLogicTitle">
+                            <div class="retrieval-panel-heading">
+                                <div><h3 id="retrievalLogicTitle">当前检索逻辑</h3><p>该说明会随设置变化，但安全边界不能关闭。</p></div>
+                            </div>
+                            <ol class="retrieval-logic-list">
+                                <li>严格限定已启用来源，禁用内容不会进入向量、重排或回答。</li>
+                                <li>分别执行精确条款、本地关键词和有效语义召回，并保留相关来源代表证据。</li>
+                                <li>先判断是否属于同一事项及真实冲突，再使用“高于/同级/无推定关系”。</li>
+                                <li>原文明示修改关系作为证据；若与设置矛盾，展示双方并提示，不静默裁决。</li>
+                                <li>回答必须使用当前来源名称和条款号引用；未检出不等于不存在。</li>
+                            </ol>
+                        </section>
+
+                        <section class="retrieval-panel" aria-labelledby="retrievalPreviewTitle">
+                            <div class="retrieval-panel-heading">
+                                <div><h3 id="retrievalPreviewTitle">检索预览</h3><p>只查看命中依据，不调用对话模型。</p></div>
+                            </div>
+                            <div class="retrieval-preview-controls">
+                                <label class="retrieval-field retrieval-preview-input">测试问题
+                                    <input type="text" id="retrievalPreviewQuery" placeholder="例如：关于延期通知，不同来源有哪些规定？">
+                                </label>
+                                <button type="button" id="retrievalPreviewButton" class="retrieval-secondary-button">运行预览</button>
+                            </div>
+                            <div id="retrievalPreviewResult" class="retrieval-preview-result" aria-live="polite"></div>
+                        </section>
+
+                        <button type="button" id="retrievalResetButton" class="retrieval-reset-button">恢复推荐设置</button>
+                    </div> <!-- 结束 retrievalSettingsContent -->
 
                     <!-- 合同管理内容 -->
                     <div id="contractSettingsContent" style="display:none;">
@@ -571,14 +615,14 @@
                     </div> <!-- 结束 contractSettingsContent -->
 
                     <!-- 底部按钮 -->
-                    <div style="display:flex; gap:10px; margin-top:20px; padding-top:10px; border-top:1px solid #ddd;">
+                    <div class="settings-footer" style="display:flex; gap:10px; margin-top:20px; padding-top:10px; border-top:1px solid #ddd;">
                         <button onclick="saveAISettings()"
                             style="flex:1; padding:12px; background:#3498db; color:white; border:none; border-radius:6px; cursor:pointer; font-size:14px; font-weight:bold;">💾
                             保存设置</button>
                         <button onclick="closeSettings()"
                             style="flex:1; padding:12px; background:#eee; color:#333; border:none; border-radius:6px; cursor:pointer; font-size:14px;">取消</button>
                     </div>
-                    <div id="settingsStatus" style="margin-top:15px; padding:10px; border-radius:6px; display:none;">
+                    <div id="settingsStatus" role="status" aria-live="polite" style="margin-top:15px; padding:10px; border-radius:6px; display:none;">
                     </div>
                 </div>
             </div>
@@ -686,6 +730,7 @@
         <script src="js/app.js"></script>
         <script src="js/cross-ref-data.js"></script>
         <script src="js/retrieval-source.js"></script>
+        <script src="js/retrieval-settings.js"></script>
         <script src="js/ai-retrieval.js"></script>
         <script src="js/cross-ref.js"></script>
         <script src="js/ai-settings.js"></script>

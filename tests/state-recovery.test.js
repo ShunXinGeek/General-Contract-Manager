@@ -22,7 +22,7 @@ function createAppContext(storage = new Map(), database = new Map()) {
     };
     context.window = context;
     vm.createContext(context);
-    for (const file of ['config', 'ai-providers', 'comparison', 'app', 'ai-settings', 'editor', 'import', 'cloud-storage']) {
+    for (const file of ['config', 'ai-providers', 'comparison', 'app', 'retrieval-settings', 'ai-settings', 'editor', 'import', 'cloud-storage']) {
         vm.runInContext(fs.readFileSync(path.join(root, 'js', `${file}.js`), 'utf8'), context, { filename: `${file}.js` });
     }
     // DOM interactions are tested separately in a real browser. Keep persistence/merge code real here.
@@ -48,18 +48,30 @@ async function run() {
     const storage = new Map(), database = new Map();
     const app = createAppContext(storage, database);
     evaluate(app, `registerContract('TEST', 'Test', { '1': { title: 'One', content: 'original' } });`);
+    const originalSourceId = evaluate(app, `contracts.TEST.sourceId`);
+    assert.match(originalSourceId, /^src_/, 'new contracts receive a stable retrieval source id');
+    evaluate(app, `
+        const retrieval = RetrievalSettings.get(contracts);
+        retrieval.sources[contracts.TEST.sourceId].authorityLevel = 2;
+        retrieval.sources[contracts.TEST.sourceId].role = 'base';
+        RetrievalSettings.persist(retrieval, contracts, true);
+    `);
     assert.strictEqual(evaluate(app, `checkClauseModified('1')`), false);
     evaluate(app, `fullClauseDatabase['1'].content = 'edited'; fullClauseDatabase['1'].modifiedAt = 10;`);
     assert.strictEqual(evaluate(app, `checkClauseModified('1')`), true, 'nested baseline must detect edits');
     await evaluate(app, 'autoSave()');
     const refreshed = createAppContext(storage, database);
     await evaluate(refreshed, 'loadContractsFromStorage()');
+    assert.strictEqual(evaluate(refreshed, `contracts.TEST.sourceId`), originalSourceId, 'source id survives local reload');
+    assert.strictEqual(evaluate(refreshed, `RetrievalSettings.get(contracts).sources[contracts.TEST.sourceId].authorityLevel`), 2);
     assert.strictEqual(evaluate(refreshed, `fullClauseDatabase['1'].content`), 'edited');
     assert.strictEqual(evaluate(refreshed, `getOriginalClause('TEST', '1').content`), 'original');
     assert.strictEqual(evaluate(refreshed, `checkClauseModified('1')`), true, 'baseline survives refresh');
 
     const cloudContract = json(refreshed, 'collectAllContractData()');
     assert.strictEqual(cloudContract.TEST.data['1'].originalContent, 'original', 'cloud snapshot includes baseline');
+    assert.strictEqual(cloudContract.TEST.sourceId, originalSourceId, 'cloud snapshot preserves the stable source id');
+    const retrievalCloud = json(refreshed, 'RetrievalSettings.getForCloud(contracts)');
     const batchWrites = [];
     app.testBatch = { set: (ref, data) => batchWrites.push({ ref, data }) };
     const ref = key => ({ key, collection: name => ({ doc: id => ref(`${key}/${name}/${id}`) }) });
@@ -71,9 +83,11 @@ async function run() {
     assert.strictEqual(batchWrites[1].data.data['1'].originalContent.length, 300000, 'batch writes retain baseline');
     assert.strictEqual(batchWrites[2].data.data['2'].originalContent.length, 300000);
     const newDevice = createAppContext();
-    newDevice.snapshot = { contract_data: cloudContract, active_contract_key: 'TEST', bookmarks: {}, modifications: {} };
+    newDevice.snapshot = { contract_data: cloudContract, active_contract_key: 'TEST', bookmarks: {}, modifications: {}, retrieval_settings: retrievalCloud };
     await evaluate(newDevice, 'applyCloudDataToLocal(snapshot)');
     assert.strictEqual(evaluate(newDevice, `getOriginalClause('TEST', '1').content`), 'original');
+    assert.strictEqual(evaluate(newDevice, `contracts.TEST.sourceId`), originalSourceId);
+    assert.strictEqual(evaluate(newDevice, `RetrievalSettings.get(contracts).sources[contracts.TEST.sourceId].authorityLevel`), 2, 'retrieval settings survive cloud restore');
     assert.strictEqual(evaluate(newDevice, `checkClauseModified('1')`), true, 'new device preserves baseline');
     await evaluate(newDevice, `revertToOriginal('1')`);
     assert.strictEqual(evaluate(newDevice, `fullClauseDatabase['1'].content`), 'original');
@@ -96,21 +110,18 @@ async function run() {
     evaluate(migrated, 'hydrateMissingCloudContracts(trueBaselineSnapshot)');
     assert.strictEqual(evaluate(migrated, `getOriginalClause('OLD', '1').content`), '', 'real cloud baseline supersedes migration fallback, even if empty');
 
-    const firebaseOnly = createAppContext();
-    evaluate(firebaseOnly, `
+    const nonAIOnly = createAppContext();
+    evaluate(nonAIOnly, `
         const settingsInputs = {};
         const fields = ['EmbeddingEndpoint', 'EmbeddingApiKey', 'EmbeddingModel', 'RerankEndpoint', 'RerankApiKey', 'RerankModel', 'SystemPrompt'];
         fields.forEach(field => { const key = field[0].toLowerCase() + field.slice(1); settingsInputs['setting' + field] = { value: AI_CONFIG[key] }; });
         settingsInputs.settingRerankEnabled = { checked: false };
-        ['AuthKey', 'AuthDomain', 'ProjectId', 'StorageBucket', 'MessagingSenderId', 'AppId'].forEach(field => {
-            settingsInputs['settingFirebase' + field] = { value: 'test-public-firebase-config' };
-        });
         document.getElementById = id => settingsInputs[id];
         showSettingsStatus = function () {};
         setTimeout = function () {};
     `);
-    await evaluate(firebaseOnly, 'saveAISettings()');
-    assert.strictEqual(evaluate(firebaseOnly, 'getAISettingsForCloud().modifiedAt'), 0, 'Firebase-only save cannot mark blank AI configuration newer');
+    await evaluate(nonAIOnly, 'saveAISettings()');
+    assert.strictEqual(evaluate(nonAIOnly, 'getAISettingsForCloud().modifiedAt'), 0, 'retrieval-only save cannot mark blank AI configuration newer');
 
     app.sample = fs.readFileSync(path.join(root, 'sample', 'SAMPLE_CONTRACT.txt'), 'utf8');
     const parsed = json(app, 'parseContractText(sample)');
@@ -169,6 +180,6 @@ async function run() {
     assert.strictEqual(evaluate(fresh, 'currentSelectedModelId'), null);
     assert.strictEqual(freshStorage.has('ai_selected_model_id'), false);
 
-    console.log('state recovery regression tests passed (baseline, import, cloud AI sync, reload, merge, deletion)');
+    console.log('state recovery regression tests passed (baseline, import, cloud AI/retrieval sync, reload, merge, deletion)');
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });

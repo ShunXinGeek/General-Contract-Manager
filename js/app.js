@@ -108,11 +108,18 @@ function registerContract(key, title, data) {
         clause.originalBaselineMigrated = false;
     });
 
+    const existingSourceId = contracts[key]?.sourceId || null;
     contracts[key] = {
+        sourceId: existingSourceId,
         title: title,
         data: data,
         bookmarks: null
     };
+
+    if (window.RetrievalSettings) {
+        window.RetrievalSettings.ensureSourceIds(contracts);
+        window.RetrievalSettings.persist(window.RetrievalSettings.get(contracts), contracts, false);
+    }
 
     restoreContractOriginals(key);
 
@@ -140,6 +147,14 @@ function registerContract(key, title, data) {
     saveContractsToStorage();
 
     Logger.info('app', `已注册合同: ${key} (${title}), ${Object.keys(data).length} 条条款`);
+}
+
+function getContractDomId(key) {
+    return contracts[key]?.sourceId || `legacy_${encodeURIComponent(String(key || ''))}`;
+}
+
+function encodeInlineArgument(value) {
+    return encodeURIComponent(String(value ?? '')).replace(/'/g, '%27');
 }
 
 /**
@@ -170,7 +185,7 @@ function renderTabs() {
     keys.forEach(key => {
         const btn = document.createElement('button');
         btn.className = 'header-tab contract-tab';
-        btn.id = `tab-${key}`;
+        btn.id = `tab-${getContractDomId(key)}`;
         btn.setAttribute('data-key', key);
         btn.innerText = key;
         btn.onclick = () => switchContract(key);
@@ -218,6 +233,10 @@ function removeContract(key) {
     // 从原始数据记录中也删除
     if (typeof ORIGINAL_CONTRACTS !== 'undefined' && ORIGINAL_CONTRACTS[key]) {
         delete ORIGINAL_CONTRACTS[key];
+    }
+
+    if (window.RetrievalSettings) {
+        window.RetrievalSettings.persist(window.RetrievalSettings.get(contracts), contracts, false);
     }
 
     renderTabs();
@@ -289,6 +308,18 @@ async function loadContractsFromStorage() {
 
             if (Object.keys(storedContracts).length > 0) {
                 contracts = storedContracts;
+                if (window.RetrievalSettings) {
+                    const sourceIdsAdded = window.RetrievalSettings.ensureSourceIds(contracts);
+                    window.RetrievalSettings.persist(window.RetrievalSettings.get(contracts), contracts, false);
+                    if (sourceIdsAdded) {
+                        await localforage.setItem(CONTRACTS_DB_KEY, JSON.stringify({
+                            version: 2,
+                            contracts,
+                            activeContractKey: storedActiveContractKey,
+                            savedAt: Date.now()
+                        }));
+                    }
+                }
                 // 从持久化基线重建运行时视图，不把已编辑正文当成原文。
                 if (typeof ORIGINAL_CONTRACTS === 'undefined') window.ORIGINAL_CONTRACTS = {};
                 Object.keys(contracts).forEach(key => {
@@ -392,20 +423,20 @@ function showWelcomePage() {
             const clauseCount = Object.keys(cInfo.data).length;
             listHtml += `
                 <div class="contract-card">
-                    <button class="btn-delete-hover" onclick="handleDeleteContract('${key}')" title="删除当前合同">
+                    <button class="btn-delete-hover" onclick="handleDeleteContract(decodeURIComponent('${encodeInlineArgument(key)}'))" title="删除当前合同">
                         <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
                     </button>
                     <div class="card-content">
                         <div class="input-group">
                             <label>短名 (标签):</label>
                             <input type="text" class="edit-input key-input" value="${escapeHtml(key)}" 
-                                onblur="handleAutoRenameContract('${key}', 'key', this)"
+                                onblur="handleAutoRenameContract(decodeURIComponent('${encodeInlineArgument(key)}'), 'key', this)"
                                 onkeydown="if(event.key==='Enter') this.blur();" />
                         </div>
                         <div class="input-group">
                             <label>完整名称:</label>
                             <input type="text" class="edit-input title-input" value="${escapeHtml(cInfo.title)}" 
-                                onblur="handleAutoRenameContract('${key}', 'title', this)"
+                                onblur="handleAutoRenameContract(decodeURIComponent('${encodeInlineArgument(key)}'), 'title', this)"
                                 onkeydown="if(event.key==='Enter') this.blur();" />
                         </div>
                         <div class="clause-count">
@@ -533,6 +564,9 @@ function handleAutoRenameContract(oldKey, type, inputElement) {
         const dataRef = contracts[oldKey];
         contracts[newValue] = dataRef;
         delete contracts[oldKey];
+        if (window.RetrievalSettings) {
+            window.RetrievalSettings.persist(window.RetrievalSettings.get(contracts), contracts, false);
+        }
         delete searchStatePerContract[oldKey];
         delete refViewStatePerContract[oldKey];
         refLanguageModePerContract[newValue] = refLanguageModePerContract[oldKey] || 'ref';
@@ -668,7 +702,7 @@ function switchContract(key) {
 
     // 更新标签高亮
     document.querySelectorAll('.header-tab').forEach(btn => btn.classList.remove('active'));
-    const tabEl = document.getElementById(`tab-${key}`);
+    const tabEl = document.getElementById(`tab-${getContractDomId(key)}`);
     if (tabEl) tabEl.classList.add('active');
 
     if (activeContractKey === key) {
@@ -861,10 +895,10 @@ function autoLinkClauses() {
         Object.keys(contracts).forEach(contractKey => {
             if (contractKey !== activeContractKey) {
                 // 匹配 "ContractKey Clause X" 格式
-                const regex = new RegExp(contractKey + '\\s+[Cc]lause\\s+(\\d+[A-Za-z]?)', 'gi');
+                const regex = new RegExp(contractKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s+[Cc]lause\\s+(\\d+[A-Za-z]?)', 'gi');
                 html = html.replace(regex, (match, num) => {
                     if (contracts[contractKey].data[num]) {
-                        return "<span class=\"clause-ref\" contenteditable=\"false\" onclick=\"showCrossContractRef('" + contractKey + "', '" + num + "')\">" + match + "</span>";
+                        return "<span class=\"clause-ref\" contenteditable=\"false\" onclick=\"showCrossContractRef(decodeURIComponent('" + encodeInlineArgument(contractKey) + "'), '" + num + "')\">" + match + "</span>";
                     }
                     return match;
                 });
@@ -880,7 +914,7 @@ function autoLinkClauses() {
             const gccRegex = /General\s+Conditions\s+of\s+Contract\s+Clause\s+(\d+)/gi;
             html = html.replace(gccRegex, (match, num) => {
                 if (contracts[gccKey].data[num]) {
-                    return "<span class=\"clause-ref\" contenteditable=\"false\" onclick=\"showCrossContractRef('" + gccKey + "', '" + num + "')\">" + match + "</span>";
+                    return "<span class=\"clause-ref\" contenteditable=\"false\" onclick=\"showCrossContractRef(decodeURIComponent('" + encodeInlineArgument(gccKey) + "'), '" + num + "')\">" + match + "</span>";
                 }
                 return match;
             });

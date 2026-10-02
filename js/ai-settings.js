@@ -93,21 +93,21 @@ function applyCloudAISettings(settings) {
 
 function switchSettingsTab(tabName) {
     const tabAI = document.getElementById('tabAISettings');
-    const tabFirebase = document.getElementById('tabFirebaseSettings');
+    const tabRetrieval = document.getElementById('tabRetrievalSettings');
     const tabContract = document.getElementById('tabContractSettings');
     const contentAI = document.getElementById('aiSettingsContent');
-    const contentFirebase = document.getElementById('firebaseSettingsContent');
+    const contentRetrieval = document.getElementById('retrievalSettingsContent');
     const contentContract = document.getElementById('contractSettingsContent');
 
     // Reset all tabs
-    [tabAI, tabFirebase, tabContract].forEach(t => {
+    [tabAI, tabRetrieval, tabContract].forEach(t => {
         if (!t) return;
         t.classList.remove('active');
         t.style.borderBottom = '3px solid transparent';
         t.style.color = '#666';
         t.style.fontWeight = 'normal';
     });
-    [contentAI, contentFirebase, contentContract].forEach(c => { if (c) c.style.display = 'none'; });
+    [contentAI, contentRetrieval, contentContract].forEach(c => { if (c) c.style.display = 'none'; });
 
     if (tabName === 'AI') {
         tabAI.classList.add('active');
@@ -115,12 +115,13 @@ function switchSettingsTab(tabName) {
         tabAI.style.color = '#3498db';
         tabAI.style.fontWeight = 'bold';
         contentAI.style.display = 'block';
-    } else if (tabName === 'Firebase') {
-        tabFirebase.classList.add('active');
-        tabFirebase.style.borderBottom = '3px solid #3498db';
-        tabFirebase.style.color = '#3498db';
-        tabFirebase.style.fontWeight = 'bold';
-        contentFirebase.style.display = 'block';
+    } else if (tabName === 'Retrieval') {
+        tabRetrieval.classList.add('active');
+        tabRetrieval.style.borderBottom = '3px solid #3498db';
+        tabRetrieval.style.color = '#3498db';
+        tabRetrieval.style.fontWeight = 'bold';
+        contentRetrieval.style.display = 'block';
+        renderRetrievalSettingsTab();
     } else if (tabName === 'Contract') {
         tabContract.classList.add('active');
         tabContract.style.borderBottom = '3px solid #3498db';
@@ -146,25 +147,8 @@ function openSettings() {
     document.getElementById('settingRerankModel').value = AI_CONFIG.rerankModel || '';
     document.getElementById('settingSystemPrompt').value = AI_CONFIG.systemPrompt || '';
 
-    // Load Firebase configs if they exist in window.FIREBASE_CONFIG or localStorage
-    let currentFirebaseConfig = {};
-    const storedConfig = localStorage.getItem('HK_Firebase_Config');
-    if (storedConfig) {
-        try {
-            currentFirebaseConfig = JSON.parse(storedConfig);
-        } catch (e) {
-            console.error('Failed to parse Firebase config', e);
-        }
-    } else if (window.FIREBASE_CONFIG) {
-        currentFirebaseConfig = window.FIREBASE_CONFIG;
-    }
-
-    document.getElementById('settingFirebaseAuthKey').value = currentFirebaseConfig.apiKey === 'YOUR_API_KEY' ? '' : (currentFirebaseConfig.apiKey || '');
-    document.getElementById('settingFirebaseAuthDomain').value = currentFirebaseConfig.authDomain === 'YOUR_PROJECT.firebaseapp.com' ? '' : (currentFirebaseConfig.authDomain || '');
-    document.getElementById('settingFirebaseProjectId').value = currentFirebaseConfig.projectId === 'YOUR_PROJECT_ID' ? '' : (currentFirebaseConfig.projectId || '');
-    document.getElementById('settingFirebaseStorageBucket').value = currentFirebaseConfig.storageBucket === 'YOUR_PROJECT.appspot.com' ? '' : (currentFirebaseConfig.storageBucket || '');
-    document.getElementById('settingFirebaseMessagingSenderId').value = currentFirebaseConfig.messagingSenderId === 'YOUR_SENDER_ID' ? '' : (currentFirebaseConfig.messagingSenderId || '');
-    document.getElementById('settingFirebaseAppId').value = currentFirebaseConfig.appId === 'YOUR_APP_ID' ? '' : (currentFirebaseConfig.appId || '');
+    if (window.RetrievalSettings) window.RetrievalSettings.beginDraft(contracts);
+    bindRetrievalSettingsEvents();
 
     // Default to AI tab
     switchSettingsTab('AI');
@@ -176,7 +160,9 @@ function openSettings() {
     document.getElementById('settingsStatus').style.display = 'none';
 }
 
-function closeSettings() {
+function closeSettings(force = false) {
+    if (!force && window.RetrievalSettings?.isDraftDirty() && !confirm('检索设置尚未保存，确定关闭吗？')) return;
+    window.RetrievalSettings?.discardDraft();
     document.getElementById('settingsModal').style.display = 'none';
 }
 
@@ -197,6 +183,12 @@ function resetSystemPrompt() {
 
 async function saveAISettings() {
     const previousAISettings = JSON.stringify(getAISettingsForCloud());
+    const retrievalResult = window.RetrievalSettings?.saveDraft(contracts);
+    if (retrievalResult && !retrievalResult.valid) {
+        switchSettingsTab('Retrieval');
+        showSettingsStatus('请修正检索设置：' + retrievalResult.errors.join('；'), 'error');
+        return;
+    }
     const fields = {
         embeddingEndpoint: 'settingEmbeddingEndpoint',
         embeddingApiKey: 'settingEmbeddingApiKey',
@@ -218,37 +210,14 @@ async function saveAISettings() {
     AI_CONFIG.systemPrompt = document.getElementById('settingSystemPrompt').value.trim() || getDefaultSystemPrompt();
     localStorage.setItem(AI_SETTINGS_KEYS.systemPrompt, AI_CONFIG.systemPrompt);
 
-    // Save Firebase Settings
-    const firebaseConfig = {
-        apiKey: document.getElementById('settingFirebaseAuthKey').value.trim(),
-        authDomain: document.getElementById('settingFirebaseAuthDomain').value.trim(),
-        projectId: document.getElementById('settingFirebaseProjectId').value.trim(),
-        storageBucket: document.getElementById('settingFirebaseStorageBucket').value.trim(),
-        messagingSenderId: document.getElementById('settingFirebaseMessagingSenderId').value.trim(),
-        appId: document.getElementById('settingFirebaseAppId').value.trim()
-    };
-
-    const previousConfigStr = localStorage.getItem('HK_Firebase_Config');
-    const newConfigStr = JSON.stringify(firebaseConfig);
-    let firebaseChanged = false;
-
-    if (firebaseConfig.apiKey && firebaseConfig.projectId) {
-        if (previousConfigStr !== newConfigStr) {
-            localStorage.setItem('HK_Firebase_Config', newConfigStr);
-            firebaseChanged = true;
-        }
-    }
-
-    // Firebase-only saves must not turn fresh-device defaults into a newer AI snapshot.
+    // 非 AI 设置的保存不能把新设备默认 AI 配置标记为较新快照。
     if (JSON.stringify(getAISettingsForCloud()) !== previousAISettings) touchAISettings();
-
-    if (firebaseChanged) {
-        showSettingsStatus('✅ 设置已保存，Firebase 配置已更新，页面即将刷新以应用更改', 'success');
-        setTimeout(() => window.location.reload(), 1500);
-    } else {
-        showSettingsStatus('✅ 设置已保存', 'success');
-        setTimeout(() => closeSettings(), 1500);
+    if (typeof saveContractsToStorage === 'function') await saveContractsToStorage();
+    if (typeof checkRAGIndexStatus === 'function' && typeof isKnowledgeBaseMode !== 'undefined' && isKnowledgeBaseMode) {
+        knowledgeBaseReady = checkRAGIndexStatus();
     }
+    showSettingsStatus('✅ 设置已保存', 'success');
+    setTimeout(() => closeSettings(true), 900);
 }
 
 function loadAISettings() {
@@ -270,6 +239,278 @@ function showSettingsStatus(message, type) {
     s.innerText = message;
     s.style.background = type === 'success' ? '#d4edda' : type === 'error' ? '#f8d7da' : '#fff3cd';
     s.style.color = type === 'success' ? '#155724' : type === 'error' ? '#721c24' : '#856404';
+}
+
+// =======================================================
+// 通用检索设置
+// =======================================================
+const RETRIEVAL_ROLE_LABELS = {
+    unspecified: '未指定',
+    base: '基准/主文件',
+    amendment: '修订/特别条件',
+    supplement: '补充资料',
+    reference: '参考资料',
+    independent: '独立文件'
+};
+
+function retrievalOption(value, text, selected) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = text;
+    option.selected = selected;
+    return option;
+}
+
+function retrievalEntries() {
+    return window.RetrievalSettings?.sourceEntries(contracts) || [];
+}
+
+function updateRetrievalSummary() {
+    const container = document.getElementById('retrievalSummary');
+    if (!container || !window.RetrievalSettings) return;
+    const draft = window.RetrievalSettings.getDraft(contracts);
+    const summary = window.RetrievalSettings.summary(contracts, draft);
+    container.textContent = `${summary.enabled}/${summary.total} 个来源已启用 · ${summary.unconfigured} 个层级未设置 · ${summary.relations} 条关系`;
+}
+
+function renderRetrievalSources() {
+    const container = document.getElementById('retrievalSourceList');
+    if (!container || !window.RetrievalSettings) return;
+    const draft = window.RetrievalSettings.getDraft(contracts);
+    const entries = retrievalEntries();
+    container.replaceChildren();
+
+    if (!entries.length) {
+        const empty = document.createElement('div');
+        empty.className = 'retrieval-empty-state';
+        empty.textContent = '尚未导入任何来源。导入新的标签页后，它会自动出现在这里。';
+        container.appendChild(empty);
+        return;
+    }
+
+    entries.forEach(entry => {
+        const source = draft.sources[entry.sourceId];
+        const card = document.createElement('div');
+        card.className = 'retrieval-source-card' + (source.enabled ? '' : ' is-disabled');
+        card.dataset.sourceId = entry.sourceId;
+
+        const main = document.createElement('label');
+        main.className = 'retrieval-source-main';
+        const enabled = document.createElement('input');
+        enabled.type = 'checkbox';
+        enabled.className = 'retrieval-source-toggle';
+        enabled.checked = source.enabled;
+        enabled.setAttribute('aria-label', `将 ${entry.label} 加入检索范围`);
+        const text = document.createElement('span');
+        const name = document.createElement('span');
+        name.className = 'retrieval-source-name';
+        name.textContent = entry.label;
+        name.title = entry.label;
+        const meta = document.createElement('span');
+        meta.className = 'retrieval-source-meta';
+        meta.textContent = `${entry.title} · ${entry.clauseCount} 条`;
+        text.append(name, meta);
+        main.append(enabled, text);
+
+        const controls = document.createElement('div');
+        controls.className = 'retrieval-source-controls';
+        const roleLabel = document.createElement('label');
+        roleLabel.className = 'retrieval-field';
+        roleLabel.append(document.createTextNode('角色'));
+        const role = document.createElement('select');
+        role.setAttribute('aria-label', `${entry.label} 的来源角色`);
+        Object.entries(RETRIEVAL_ROLE_LABELS).forEach(([value, label]) => role.appendChild(retrievalOption(value, label, source.role === value)));
+        roleLabel.appendChild(role);
+
+        const levelLabel = document.createElement('label');
+        levelLabel.className = 'retrieval-field';
+        levelLabel.append(document.createTextNode('等级'));
+        const level = document.createElement('select');
+        level.setAttribute('aria-label', `${entry.label} 的适用等级`);
+        level.appendChild(retrievalOption('', '未设置', source.authorityLevel === null));
+        for (let number = 1; number <= 9; number++) level.appendChild(retrievalOption(String(number), number === 1 ? '第 1 级（最高）' : `第 ${number} 级`, source.authorityLevel === number));
+        levelLabel.appendChild(level);
+        controls.append(roleLabel, levelLabel);
+
+        enabled.addEventListener('change', () => {
+            source.enabled = enabled.checked;
+            source.needsReview = false;
+            card.classList.toggle('is-disabled', !source.enabled);
+            window.RetrievalSettings.setDraft(draft, contracts);
+            updateRetrievalSummary();
+        });
+        role.addEventListener('change', () => {
+            source.role = role.value;
+            source.needsReview = false;
+            window.RetrievalSettings.setDraft(draft, contracts);
+        });
+        level.addEventListener('change', () => {
+            source.authorityLevel = level.value ? Number(level.value) : null;
+            source.needsReview = false;
+            window.RetrievalSettings.setDraft(draft, contracts);
+            updateRetrievalSummary();
+        });
+
+        card.append(main, controls);
+        container.appendChild(card);
+    });
+}
+
+function fillRetrievalRelationSelect(select, entries) {
+    if (!select) return;
+    const previous = select.value;
+    select.replaceChildren();
+    entries.forEach(entry => select.appendChild(retrievalOption(entry.sourceId, entry.label, entry.sourceId === previous)));
+}
+
+function renderRetrievalRelations() {
+    if (!window.RetrievalSettings) return;
+    const draft = window.RetrievalSettings.getDraft(contracts);
+    const entries = retrievalEntries();
+    const byId = new Map(entries.map(entry => [entry.sourceId, entry]));
+    fillRetrievalRelationSelect(document.getElementById('retrievalRelationFrom'), entries);
+    fillRetrievalRelationSelect(document.getElementById('retrievalRelationTo'), entries);
+
+    const list = document.getElementById('retrievalRelationList');
+    if (!list) return;
+    list.replaceChildren();
+    if (!draft.relations.length) {
+        const empty = document.createElement('div');
+        empty.className = 'retrieval-empty-state';
+        empty.textContent = '尚未配置来源关系。层级未设置时，系统不会自行推定高低。';
+        list.appendChild(empty);
+        return;
+    }
+
+    const labels = { higher: '高于', same: '同级', none: '无推定关系' };
+    draft.relations.forEach((relation, index) => {
+        const row = document.createElement('div');
+        row.className = 'retrieval-relation-row';
+        const text = document.createElement('span');
+        text.textContent = `${byId.get(relation.fromSourceId)?.label || '已删除来源'} ${labels[relation.type]} ${byId.get(relation.toSourceId)?.label || '已删除来源'}`;
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'retrieval-remove-relation';
+        remove.textContent = '删除';
+        remove.setAttribute('aria-label', `删除关系：${text.textContent}`);
+        remove.addEventListener('click', () => {
+            draft.relations.splice(index, 1);
+            window.RetrievalSettings.setDraft(draft, contracts);
+            renderRetrievalRelations();
+            updateRetrievalSummary();
+        });
+        row.append(text, remove);
+        list.appendChild(row);
+    });
+}
+
+function addRetrievalRelation() {
+    const from = document.getElementById('retrievalRelationFrom')?.value;
+    const to = document.getElementById('retrievalRelationTo')?.value;
+    const type = document.getElementById('retrievalRelationType')?.value;
+    const error = document.getElementById('retrievalRelationError');
+    if (error) error.textContent = '';
+    if (!from || !to || from === to) {
+        if (error) error.textContent = '请选择两个不同的来源。';
+        return;
+    }
+    const draft = window.RetrievalSettings.getDraft(contracts);
+    const previous = window.RetrievalSettings.clone(draft.relations);
+    const pair = new Set([from, to]);
+    draft.relations = draft.relations.filter(relation => !(pair.has(relation.fromSourceId) && pair.has(relation.toSourceId)));
+    draft.relations.push({ fromSourceId: from, toSourceId: to, type });
+    window.RetrievalSettings.setDraft(draft, contracts);
+    const validation = window.RetrievalSettings.validate(draft, contracts);
+    if (!validation.valid) {
+        draft.relations = previous;
+        window.RetrievalSettings.setDraft(draft, contracts);
+        if (error) error.textContent = validation.errors.join('；');
+        return;
+    }
+    renderRetrievalRelations();
+    updateRetrievalSummary();
+}
+
+async function runRetrievalPreview() {
+    const input = document.getElementById('retrievalPreviewQuery');
+    const output = document.getElementById('retrievalPreviewResult');
+    const button = document.getElementById('retrievalPreviewButton');
+    const query = input?.value.trim();
+    if (!output || !button) return;
+    output.classList.add('is-visible');
+    if (!query) {
+        output.textContent = '请输入一个测试问题。';
+        input?.focus();
+        return;
+    }
+    button.disabled = true;
+    output.textContent = '正在检索当前范围…';
+    try {
+        const evidence = await AIRetrieval.retrieve(query, contracts, AI_CONFIG, {
+            retrievalSettings: window.RetrievalSettings.getDraft(contracts)
+        });
+        output.replaceChildren();
+        const summary = document.createElement('div');
+        summary.textContent = `检索范围：${evidence.diagnostic.scope.labels.join('、') || '无'}；命中 ${evidence.clauses.length} 条；用时 ${evidence.diagnostic.elapsedMs} ms。`;
+        output.appendChild(summary);
+        evidence.clauses.forEach(clause => {
+            const hit = document.createElement('div');
+            hit.className = 'retrieval-preview-hit';
+            hit.textContent = `${clause.type} Clause ${AIRetrieval.number(clause.id, clause.type)} · ${clause.title || '无标题'} · ${clause.paths?.join(' / ') || '关系扩展'}`;
+            output.appendChild(hit);
+        });
+        const notices = [...evidence.diagnostic.warnings, ...evidence.diagnostic.missing];
+        if (notices.length) {
+            const note = document.createElement('div');
+            note.className = 'retrieval-preview-hit';
+            note.textContent = '提示：' + notices.join('；');
+            output.appendChild(note);
+        }
+    } catch (error) {
+        output.textContent = '预览失败：' + error.message;
+    } finally {
+        button.disabled = false;
+    }
+}
+
+function bindRetrievalSettingsEvents() {
+    const content = document.getElementById('retrievalSettingsContent');
+    if (!content || content.dataset.bound === 'true') return;
+    content.dataset.bound = 'true';
+    const bindSelect = (id, field) => document.getElementById(id)?.addEventListener('change', event => {
+        const draft = window.RetrievalSettings.getDraft(contracts);
+        draft[field] = event.target.value;
+        window.RetrievalSettings.setDraft(draft, contracts);
+        if (field === 'newSourcePolicy') renderRetrievalSources();
+    });
+    bindSelect('retrievalNewSourcePolicy', 'newSourcePolicy');
+    bindSelect('retrievalConflictPolicy', 'conflictPolicy');
+    bindSelect('retrievalProfile', 'profile');
+    document.getElementById('retrievalAddRelation')?.addEventListener('click', addRetrievalRelation);
+    document.getElementById('retrievalPreviewButton')?.addEventListener('click', runRetrievalPreview);
+    document.getElementById('retrievalPreviewQuery')?.addEventListener('keydown', event => {
+        if (event.key === 'Enter') { event.preventDefault(); runRetrievalPreview(); }
+    });
+    document.getElementById('retrievalResetButton')?.addEventListener('click', () => {
+        if (!confirm('恢复推荐检索设置？所有来源将启用，层级和来源关系将被清除。')) return;
+        window.RetrievalSettings.resetDraft(contracts);
+        renderRetrievalSettingsTab();
+    });
+}
+
+function renderRetrievalSettingsTab() {
+    if (!window.RetrievalSettings) return;
+    bindRetrievalSettingsEvents();
+    const draft = window.RetrievalSettings.getDraft(contracts);
+    const newSourcePolicy = document.getElementById('retrievalNewSourcePolicy');
+    const conflictPolicy = document.getElementById('retrievalConflictPolicy');
+    const profile = document.getElementById('retrievalProfile');
+    if (newSourcePolicy) newSourcePolicy.value = draft.newSourcePolicy;
+    if (conflictPolicy) conflictPolicy.value = draft.conflictPolicy;
+    if (profile) profile.value = draft.profile;
+    renderRetrievalSources();
+    renderRetrievalRelations();
+    updateRetrievalSummary();
 }
 
 function isAIConfigured() {
@@ -574,7 +815,7 @@ function renderContractManagementTab() {
                     <span class="cm-clause-badge">${clauseCount}</span>
                 </div>
                 <div class="cm-cell cm-cell-action">
-                    <button class="cm-delete-btn" onclick="handleContractDeleteFromModal('${escapeHtml(key)}')" title="删除合同 ${escapeHtml(key)}">
+                    <button class="cm-delete-btn" onclick="handleContractDeleteFromModal(decodeURIComponent('${encodeInlineArgument(key)}'))" title="删除合同 ${escapeHtml(key)}">
                         <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
                             <polyline points="3 6 5 6 21 6"></polyline>
                             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -621,6 +862,9 @@ function handleContractInlineEdit(el) {
         const dataRef = contracts[originalKey];
         contracts[newValue] = dataRef;
         delete contracts[originalKey];
+        if (window.RetrievalSettings) {
+            window.RetrievalSettings.persist(window.RetrievalSettings.get(contracts), contracts, false);
+        }
         if (typeof searchStatePerContract !== 'undefined') {
             searchStatePerContract[newValue] = searchStatePerContract[originalKey] || '';
             delete searchStatePerContract[originalKey];
@@ -638,7 +882,7 @@ function handleContractInlineEdit(el) {
         // Update delete button
         const deleteBtn = row.querySelector('.cm-delete-btn');
         if (deleteBtn) {
-            deleteBtn.setAttribute('onclick', `handleContractDeleteFromModal('${newValue}')`);
+            deleteBtn.setAttribute('onclick', `handleContractDeleteFromModal(decodeURIComponent('${encodeInlineArgument(newValue)}'))`);
             deleteBtn.title = `删除合同 ${newValue}`;
         }
         if (typeof saveContractsToStorage === 'function') saveContractsToStorage();

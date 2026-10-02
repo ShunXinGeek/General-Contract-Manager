@@ -1,6 +1,6 @@
 // Service Worker for General Contract Shell
 const CACHE_PREFIX = 'general-contract-shell-';
-const CACHE_NAME = CACHE_PREFIX + 'v9';
+const CACHE_NAME = CACHE_PREFIX + 'v10';
 const urlsToCache = [
     './',
     './index.html',
@@ -33,6 +33,7 @@ const urlsToCache = [
     './js/firebase-runtime-config.js',
     './js/cross-ref-data.js',
     './js/retrieval-source.js',
+    './js/retrieval-settings.js',
     './js/ai-retrieval.js',
     './js/cross-ref.js',
     './js/ai-settings.js',

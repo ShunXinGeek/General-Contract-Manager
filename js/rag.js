@@ -6,7 +6,7 @@
 const RAG_DB_NAME = 'ContractVectorStore';
 const RAG_DB_VERSION = 1;
 const RAG_STORE_NAME = 'vectors';
-const RAG_INDEX_SCHEMA_VERSION = 2;
+const RAG_INDEX_SCHEMA_VERSION = 3;
 
 const RAG = {
     db: null,
@@ -76,12 +76,13 @@ const RAG = {
     },
 
     validateRecord(item, config, contractsData) {
-        if (!item.embeddingModel || !item.sourceHash || !item.titleHash || !item.embeddingSpace) return 'legacy-unverified';
+        if (!item.sourceId || !item.embeddingModel || !item.sourceHash || !item.titleHash || !item.embeddingSpace) return 'legacy-unverified';
         if (item.schemaVersion !== undefined && item.schemaVersion !== RAG_INDEX_SCHEMA_VERSION) return 'schema-mismatch';
         if (item.embeddingModel !== config.embeddingModel) return 'model-mismatch';
         if (item.embeddingSpace !== this.embeddingSpace(config.embeddingEndpoint, config.embeddingModel)) return 'space-mismatch';
         if (!Array.isArray(item.vector) || item.dimension !== item.vector.length || !item.vector.length || !item.vector.every(Number.isFinite) || !item.vector.some(value => value !== 0)) return 'dimension-invalid';
-        const data = contractsData?.[item.type]?.data || {};
+        const contractEntry = Object.entries(contractsData || {}).find(([, contract]) => contract?.sourceId === item.sourceId);
+        const data = contractEntry?.[1]?.data || {};
         const key = Object.keys(data).find(id => AIRetrieval.number(id, item.type) === AIRetrieval.number(item.clauseId, item.type));
         if (key === undefined) return 'source-removed';
         if (item.sourceHash !== AIRetrieval.fingerprint(data[key].content)) return 'source-stale';
@@ -90,7 +91,8 @@ const RAG = {
     },
 
     async getIndexStatus(config, contractsData) {
-        const data = contractsData || (typeof contracts !== 'undefined' ? contracts : {});
+        const raw = contractsData || (typeof contracts !== 'undefined' ? contracts : {});
+        const data = typeof RetrievalSettings !== 'undefined' ? RetrievalSettings.getEnabledContracts(raw) : raw;
         const records = await this.readRecords();
         const rejected = {}, validRecords = [];
         for (const item of records) {
@@ -99,13 +101,13 @@ const RAG = {
             else rejected[code] = (rejected[code] || 0) + 1;
         }
         const sources = AIRetrieval.rows(data);
-        const indexedSources = new Set(validRecords.map(item => `${item.type}:${AIRetrieval.number(item.clauseId, item.type)}`));
+        const indexedSources = new Set(validRecords.map(item => `${item.sourceId}:${AIRetrieval.number(item.clauseId, item.type)}`));
         return {
             schemaVersion: RAG_INDEX_SCHEMA_VERSION,
             corpus: sources.length,
             records: records.length,
             valid: validRecords.length,
-            uncovered: sources.filter(row => !indexedSources.has(AIRetrieval.identity(row))).length,
+            uncovered: sources.filter(row => !indexedSources.has(AIRetrieval.stableIdentity(row))).length,
             rejected,
             validRecords
         };
@@ -179,17 +181,20 @@ const RAG = {
      */
     async buildIndex(contractsData, config, onProgress) {
         if (!this.db) await this.init();
+        const enabledContracts = typeof RetrievalSettings !== 'undefined'
+            ? RetrievalSettings.getEnabledContracts(contractsData || {}) : (contractsData || {});
 
         // 动态遍历所有合同类型（不再硬编码 GCC/SCC）
         let tasks = [];
-        Object.keys(contractsData).forEach(type => {
-            if (contractsData[type] && contractsData[type].data) {
-                Object.entries(contractsData[type].data).forEach(([id, clause]) => {
+        Object.keys(enabledContracts).forEach(type => {
+            if (enabledContracts[type] && enabledContracts[type].data) {
+                Object.entries(enabledContracts[type].data).forEach(([id, clause]) => {
                     if (/not\s+used|未使用/i.test(clause.title || '') || !AIRetrieval.plain(clause.content)) return;
                     const plainContent = clause.content.replace(/<[^>]*>/g, ' ');
                     const text = `${type} Clause ${id}: ${clause.title}\n${plainContent}`;
                     tasks.push({
-                        id: `${type}_${id}`,
+                        id: `${enabledContracts[type].sourceId || type}::${id}`,
+                        sourceId: enabledContracts[type].sourceId || type,
                         type: type,
                         clauseId: id,
                         text: text,
@@ -231,6 +236,7 @@ const RAG = {
                     const store = transaction.objectStore(RAG_STORE_NAME);
                     const req = store.put({
                         id: task.id,
+                        sourceId: task.sourceId,
                         type: task.type,
                         clauseId: task.clauseId,
                         title: task.title,
@@ -264,7 +270,8 @@ const RAG = {
      * 语义搜索
      */
     async findMostRelevant(query, config, topK = 5, contractsData, options = {}) {
-        const data = contractsData || (typeof contracts !== 'undefined' ? contracts : {});
+        const raw = contractsData || (typeof contracts !== 'undefined' ? contracts : {});
+        const data = typeof RetrievalSettings !== 'undefined' ? RetrievalSettings.getEnabledContracts(raw, options.retrievalSettings) : raw;
         const status = await this.getIndexStatus(config, data);
         this.lastIndexStatus = status;
         const rejectedMessage = this.describeIndexStatus(status);
@@ -322,6 +329,7 @@ const RAG = {
                 if (cursor) {
                     const item = cursor.value;
                     vectors[item.id] = {
+                        sourceId: item.sourceId || null,
                         type: item.type,
                         clauseId: item.clauseId,
                         title: item.title,

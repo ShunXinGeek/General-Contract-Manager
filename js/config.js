@@ -53,7 +53,10 @@ const AI_CONFIG = {
  * @returns {string} 动态生成的系统提示词
  */
 function generateDynamicSystemPrompt() {
-    const contractKeys = typeof contracts !== 'undefined' ? Object.keys(contracts) : [];
+    const availableContracts = typeof contracts !== 'undefined'
+        ? (window.RetrievalSettings ? window.RetrievalSettings.getEnabledContracts(contracts) : contracts)
+        : {};
+    const contractKeys = Object.keys(availableContracts);
 
     if (contractKeys.length === 0) {
         return AI_CONFIG.systemPrompt;
@@ -61,7 +64,7 @@ function generateDynamicSystemPrompt() {
 
     // 构建合同类型描述
     const contractDescriptions = contractKeys.map(key => {
-        const title = contracts[key].title || key;
+        const title = availableContracts[key].title || key;
         return `${key}（${title}）`;
     }).join('、');
 

@@ -397,37 +397,37 @@ function renderMarkdown(text) {
         marked.setOptions({ breaks: true, gfm: true, headerIds: false, mangle: false });
         let html = marked.parse(text);
         Object.keys(contracts).forEach(contractKey => {
-            // 第一轮：匹配 "ContractKey Clause X" 格式（如 GCC Clause 20）
-            const regex = new RegExp(contractKey + '\\s+[Cc]lause\\s+([0-9a-zA-Z]+)(?:,\\s*([0-9a-zA-Z]+))*', 'gi');
+            const escapedContractKey = contractKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const safeContractKey = escapeHtml(contractKey);
+            // 第一轮：匹配“当前来源名 Clause X”格式。
+            const regex = new RegExp(escapedContractKey + '\\s+[Cc]lause\\s+([0-9a-zA-Z]+)(?:,\\s*([0-9a-zA-Z]+))*', 'gi');
             html = html.replace(regex, (match) => {
-                const prefix = match.match(new RegExp(contractKey + '\\s+[Cc]lause', 'i'))[0];
+                const prefix = match.match(new RegExp(escapedContractKey + '\\s+[Cc]lause', 'i'))[0];
                 const parts = match.substring(prefix.length).replace(/<[^>]*>/g, '').split(',').map(s => s.trim()).filter(Boolean);
-                const links = parts.map(num => '<span class="chat-clause-link" onclick="jumpToContractClause(\'' + contractKey + '\', \'' + num + '\')">' + prefix + ' ' + num + '</span>');
+                const links = parts.map(num => `<span class="chat-clause-link" data-contract-key="${safeContractKey}" data-clause-id="${escapeHtml(num)}">${escapeHtml(prefix)} ${escapeHtml(num)}</span>`);
                 return links.join(', ');
             });
-            // 第二轮：直接匹配含合同前缀的条款键名（如 "SCC 9C"、"SCC 124"）
-            // 适用于 AI 直接生成 "SCC 9C" 格式（不含 Clause 关键词）的情况
-            // 同时修复含字母后缀的条款号（如 9C）可能被截断的问题
+            // 第二轮：直接匹配正文数据中已经带来源前缀的条款键名。
             const dataKeys = Object.keys(contracts[contractKey].data);
             const prefixedKeys = dataKeys.filter(k =>
                 k.length > contractKey.length &&
                 k.toUpperCase().startsWith(contractKey.toUpperCase())
             );
             if (prefixedKeys.length > 0) {
-                // 按长度降序排列：确保 "SCC 9C" 优先于 "SCC 9" 被匹配，避免短键吞噬长键
+                // 按长度降序，避免较短条款键先吞噬较长条款键。
                 const sortedKeys = [...prefixedKeys].sort((a, b) => b.length - a.length);
                 const escapedKeys = sortedKeys.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
                 const directRegex = new RegExp('\\b(' + escapedKeys.join('|') + ')\\b', 'gi');
                 html = html.replace(directRegex, (match) => {
                     const actualKey = dataKeys.find(k => k.toLowerCase() === match.toLowerCase()) || match;
-                    return '<span class="chat-clause-link" onclick="jumpToContractClause(\'' + contractKey + '\', \'' + actualKey + '\')">' + match + '</span>';
+                    return `<span class="chat-clause-link" data-contract-key="${safeContractKey}" data-clause-id="${escapeHtml(actualKey)}">${escapeHtml(match)}</span>`;
                 });
             }
         });
-        const existingPrefixes = Object.keys(contracts).join('|');
+        const existingPrefixes = Object.keys(contracts).map(key => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
         const lookbehindRegex = existingPrefixes ? new RegExp('(?<!(?:' + existingPrefixes + ')\\s+)Clause\\s+(\\d+[A-Z]?)\\b', 'gi') : /Clause\s+(\d+[A-Z]?)\b/gi;
         html = html.replace(lookbehindRegex, (match, num) => {
-            return '<span class="chat-clause-link" onclick="jumpToClause(\'' + num + '\')">' + match + '</span>';
+            return `<span class="chat-clause-link" data-clause-id="${escapeHtml(num)}">${escapeHtml(match)}</span>`;
         });
         return html;
     }
@@ -438,16 +438,24 @@ function renderMarkdown(text) {
     return html;
 }
 
+document.addEventListener?.('click', event => {
+    const link = event.target.closest?.('.chat-clause-link');
+    if (!link) return;
+    const clauseId = link.dataset.clauseId;
+    if (link.dataset.contractKey) jumpToContractClause(link.dataset.contractKey, clauseId);
+    else jumpToClause(clauseId);
+});
+
 function jumpToContractClause(contractKey, clauseId) {
     if (!contracts[contractKey]) return;
     // 规范化条款号：依次尝试多种键名格式
-    // 支持纯数字键（如 GCC 的 "20"）和带合同前缀的键（如 SCC 的 "SCC 124" 或 "SCC124"）
+    // 支持纯条款号和已带当前来源前缀的条款键。
     const cleanId = (clauseId || '').trim();
     const dataKeys = Object.keys(contracts[contractKey].data);
     const candidates = [
         cleanId,                          // 直接匹配，如 "20" 或 "124"
-        contractKey + ' ' + cleanId,      // 带合同前缀+空格，如 "SCC 124"
-        contractKey + cleanId,            // 带合同前缀无空格，如 "SCC124"
+        contractKey + ' ' + cleanId,
+        contractKey + cleanId,
     ];
     const resolvedId = dataKeys.find(k =>
         candidates.some(c => k === c || k.toLowerCase() === c.toLowerCase())
@@ -480,12 +488,14 @@ function openClauseSelector() {
     let columnsHtml = '';
     const keys = Object.keys(contracts);
     keys.forEach(contractKey => {
+        const encodedContractKey = encodeInlineArgument(contractKey);
+        const listId = `clauseList-${getContractDomId(contractKey)}`;
         let list = '';
         Object.keys(contracts[contractKey].data).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).forEach(id => {
             const clause = contracts[contractKey].data[id];
-            list += '<div class="clause-option" data-title="' + escapeHtml(clause.title).toLowerCase() + '" onclick="insertClause(\'' + contractKey + '\', \'' + id + '\')" style="padding:8px; cursor:pointer; border-bottom:1px solid var(--border-color); transition:background 0.2s;" onmouseover="this.style.background=\'var(--bg-nav-item-hover)\'" onmouseout="this.style.background=\'\'">' + clause.title + '</div>';
+            list += '<div class="clause-option" data-title="' + escapeHtml(String(clause.title || '').toLowerCase()) + '" onclick="insertClause(decodeURIComponent(\'' + encodedContractKey + '\'), decodeURIComponent(\'' + encodeInlineArgument(id) + '\'))" style="padding:8px; cursor:pointer; border-bottom:1px solid var(--border-color); transition:background 0.2s;" onmouseover="this.style.background=\'var(--bg-nav-item-hover)\'" onmouseout="this.style.background=\'\'">' + escapeHtml(clause.title || id) + '</div>';
         });
-        columnsHtml += '<div style="flex:1; display:flex; flex-direction:column; min-width:0;"><div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;"><h4 style="margin:0; color:var(--highlight-color); white-space:nowrap;">' + contractKey + ' 条款</h4><div class="clause-search-wrapper"><input type="text" class="clause-search-input" placeholder="搜索..." autocomplete="new-password" oninput="filterClauses(this, \'' + contractKey + '\')"><span class="clause-search-clear" onclick="clearClauseSearch(this, \'' + contractKey + '\')">✕</span></div></div><div id="clauseList-' + contractKey + '" style="flex:1; overflow-y:auto; max-height:400px; border:1px solid var(--border-color); border-radius:4px;">' + list + '</div></div>';
+        columnsHtml += '<div style="flex:1; display:flex; flex-direction:column; min-width:0;"><div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;"><h4 style="margin:0; color:var(--highlight-color); white-space:nowrap;">' + escapeHtml(contractKey) + ' 条款</h4><div class="clause-search-wrapper"><input type="text" class="clause-search-input" placeholder="搜索..." autocomplete="new-password" oninput="filterClauses(this, decodeURIComponent(\'' + encodedContractKey + '\'))"><span class="clause-search-clear" onclick="clearClauseSearch(this, decodeURIComponent(\'' + encodedContractKey + '\'))">✕</span></div></div><div id="' + listId + '" style="flex:1; overflow-y:auto; max-height:400px; border:1px solid var(--border-color); border-radius:4px;">' + list + '</div></div>';
     });
     modal.innerHTML = '<div class="modal-content" style="max-width:' + Math.min(750, keys.length * 350) + 'px; height:auto; max-height:80%;"><div class="modal-header"><span style="font-size:16px; font-weight:bold;">📋 选择条款引用</span><span class="close-modal" onclick="closeClauseSelector()">✕</span></div><div class="modal-body" style="padding:15px; display:flex; gap:15px;">' + columnsHtml + '</div></div>';
     document.body.appendChild(modal);
@@ -502,7 +512,7 @@ function insertClause(contractType, clauseId) {
 
 function filterClauses(inputEl, type) {
     const keyword = inputEl.value.trim().toLowerCase();
-    const listContainer = document.getElementById('clauseList-' + type); if (!listContainer) return;
+    const listContainer = document.getElementById('clauseList-' + getContractDomId(type)); if (!listContainer) return;
     const clearBtn = inputEl.parentElement.querySelector('.clause-search-clear');
     if (clearBtn) clearBtn.style.display = keyword ? 'flex' : 'none';
     listContainer.querySelectorAll('.clause-option').forEach(item => { const title = item.dataset.title || item.textContent.toLowerCase(); item.style.display = title.includes(keyword) ? '' : 'none'; });
@@ -545,7 +555,8 @@ function showAssistantClause(type, clauseId, preserveScroll) {
     const content = document.getElementById('assistantRefContent');
     header.style.display = 'block'; header.classList.remove('mode-ref', 'mode-trans'); header.classList.add(assistantRefMode === 'ref' ? 'mode-ref' : 'mode-trans');
     let displayTitle = clause.title;
-    if (!/^(Clause|clause)/i.test(displayTitle) && !new RegExp('^' + type, 'i').test(displayTitle)) { displayTitle = type + ' Clause ' + displayTitle; }
+    const escapedType = String(type || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (!/^(Clause|clause)/i.test(displayTitle) && !new RegExp('^' + escapedType, 'i').test(displayTitle)) { displayTitle = type + ' Clause ' + displayTitle; }
     else if (/^Clause/i.test(displayTitle)) { displayTitle = type + ' ' + displayTitle; }
     title.innerText = displayTitle;
     document.getElementById('btnAssistantLangMode').innerText = assistantRefMode === 'ref' ? '译' : '原';
@@ -591,28 +602,30 @@ function toggleKnowledgeBaseMode() {
 
 async function checkRAGIndexStatus() {
     try {
+        const scope = window.RetrievalSettings ? window.RetrievalSettings.summary(contracts) : { enabled: Object.keys(contracts).length, unconfigured: 0 };
         const status = await RAG.getIndexStatus(AI_CONFIG, contracts);
         window.assistantRAGIndexStatus = status;
         const updateButton = document.getElementById('btnUpdateIndex');
         if (updateButton) {
             updateButton.title = status.corpus
-                ? `更新知识库索引：有效语义向量 ${status.valid}/${status.corpus}`
+                ? `更新知识库索引：${scope.enabled} 个来源，有效语义向量 ${status.valid}/${status.corpus}`
                 : '更新知识库索引：尚未加载合同正文';
             updateButton.setAttribute('aria-label', updateButton.title);
         }
         if (!isKnowledgeBaseMode) return status;
         if (!status.corpus) {
-            showStatus('warning', '尚未加载可检索的合同正文，请先导入或恢复 GCC/SCC。', '📂', 6500);
+            showStatus('warning', '当前没有已启用且包含正文的检索来源，请先导入来源或在“检索设置”中启用。', '📂', 6500);
             return status;
         }
+        const scopeText = `${scope.enabled} 个检索来源${scope.unconfigured ? `，其中 ${scope.unconfigured} 个层级未设置` : ''}`;
         const indexDetail = RAG.describeIndexStatus(status);
         if (status.valid) {
-            showStatus('success', `已加载 ${status.corpus} 条合同正文；有效语义向量 ${status.valid}/${status.corpus}，正在使用混合检索。`, '📚', 6500);
+            showStatus('success', `已启用 ${scopeText}，加载 ${status.corpus} 条正文；有效语义向量 ${status.valid}/${status.corpus}，正在使用混合检索。`, '📚', 6500);
         } else {
             const nextStep = isEmbeddingConfigured()
                 ? '当前使用本地检索；如需语义检索，请点击“更新知识库索引”。'
                 : '当前使用本地检索；如需语义检索，请先在设置中配置嵌入模型。';
-            showStatus('warning', `已加载 ${status.corpus} 条合同正文；有效语义向量 0/${status.corpus}。${indexDetail ? indexDetail + '；' : ''}${nextStep}`, '📚', 9000);
+            showStatus('warning', `已启用 ${scopeText}，加载 ${status.corpus} 条正文；有效语义向量 0/${status.corpus}。${indexDetail ? indexDetail + '；' : ''}${nextStep}`, '📚', 9000);
         }
         return status;
     } catch (e) {
@@ -648,21 +661,12 @@ const keywordTranslation = {
 function extractKeywords(query) {
     const clausePatterns = [/clause\s*(\d+)/gi, /第\s*(\d+)\s*条/gi, /条款\s*(\d+)/gi];
     const clauseNumbers = []; clausePatterns.forEach(p => { let m; while ((m = p.exec(query)) !== null) clauseNumbers.push(m[1]); });
-    Object.keys(contracts).forEach(key => { const regex = new RegExp(key + '\\s*(\\d+)', 'gi'); let m; while ((m = regex.exec(query)) !== null) clauseNumbers.push(m[1]); });
+    Object.keys(contracts).forEach(key => { const regex = new RegExp(key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*(\\d+)', 'gi'); let m; while ((m = regex.exec(query)) !== null) clauseNumbers.push(m[1]); });
     let translatedKeywords = [];
     for (const [cn, en] of Object.entries(keywordTranslation)) { if (query.includes(cn)) translatedKeywords.push(...en.toLowerCase().split(' ')); }
     const stopWords = ['the', 'a', 'an', 'is', 'are', 'to', 'of', 'in', 'for', 'on', 'and', 'but', 'or', 'not', 'what', 'which', 'how', 'why', '的', '是', '在', '有', '和', '与', '或', '了', '什么', '怎么', '请', '我', '你'];
     const words = query.toLowerCase().replace(/[^\w\s\u4e00-\u9fff]/g, ' ').split(/\s+/).filter(w => w.length > 1 && !stopWords.includes(w));
     Object.keys(contracts).forEach(key => { const idx = words.indexOf(key.toLowerCase()); if (idx !== -1) words.splice(idx, 1); });
-
-    // \u4ece\u4ea4\u53c9\u5f15\u7528\u5173\u952e\u8bcd\u7d22\u5f15\u8865\u5145\u6761\u6b3e\u76f8\u5173\u5173\u952e\u8bcd\uff08\u7528\u4e8e cross-ref.js \u7684 findByCrossRef\uff09
-    if (typeof GCC_CLAUSE_KEYWORD_INDEX !== 'undefined') {
-        for (const word of words) {
-            if (GCC_CLAUSE_KEYWORD_INDEX[word.toLowerCase()]) {
-                translatedKeywords.push(word.toLowerCase());
-            }
-        }
-    }
 
     return { clauseNumbers: [...new Set(clauseNumbers)], keywords: [...new Set([...translatedKeywords, ...words])] };
 }

@@ -52,12 +52,61 @@ async function run() {
         await page.evaluate(async () => {
             registerContract('GCC', 'General Conditions', { '5': { title: 'Documents mutually explanatory', content: 'The Architect shall respond within 14 days of receipt of the Contractor’s request in writing for instructions.' }, '34': { title: 'Facilities', content: 'Facilities for other persons.' }, '50': { title: 'Extension', content: '(1) Original extension notice.', translation: '工期延长通知。', translation_tc: '工期延長通知。' } });
             registerContract('SCC', 'Special Conditions', { 'SCC 34': { title: 'Night concreting', content: 'Night concreting permission must be obtained.', translation: '夜间混凝土浇筑须获批准。', translation_tc: '夜間混凝土澆築須獲批准。' } });
+            registerContract("资料 A+B's", 'Future neutral source', { '附录/1': { title: 'Disabled source check', content: '不应进入检索的专属校验词。' } });
             AI_CHAT_MODELS = [{ id: 'browser-test', name: 'Browser Test', endpoint: 'https://api.deepseek.com/v1', apiKey: 'dummy-key', model: 'deepseek-flash' }];
             currentSelectedModelId = 'browser-test'; applySelectedModel(); saveChatModels(); saveSelectedModelId(); updateModelSelector();
             await new Promise((resolve, reject) => {
                 const tx = RAG.db.transaction(['vectors'], 'readwrite'); tx.objectStore('vectors').put({ id: 'GCC_50', type: 'GCC', clauseId: '50', vector: [1, 0] }); tx.oncomplete = resolve; tx.onerror = reject;
             });
         });
+        await page.evaluate(() => openClauseSelector());
+        await page.locator('#clauseSelectorModal .clause-option').filter({ hasText: 'Disabled source check' }).click();
+        assert.ok((await page.locator('#chatInput').inputValue()).includes("资料 A+B's"), 'labels containing punctuation and apostrophes must remain usable in generated controls');
+        await page.evaluate(() => { document.getElementById('chatInput').value = ''; });
+        await page.locator('button[title="AI 设置"]').click();
+        await page.locator('#tabRetrievalSettings').click();
+        assert.strictEqual(await page.locator('#firebaseSettingsContent').count(), 0, 'legacy Firebase settings must be removed');
+        assert.strictEqual(await page.locator('.retrieval-source-card').count(), 3, 'every current source must appear in retrieval settings');
+        const relationOptions = await page.locator('#retrievalRelationType option').allTextContents();
+        assert.deepStrictEqual(relationOptions, ['高于', '同级', '无推定关系'], 'source relations must expose only the approved three choices');
+        const customSourceCard = page.locator('.retrieval-source-card').filter({ hasText: "资料 A+B's" });
+        await customSourceCard.locator('.retrieval-source-toggle').uncheck();
+        await page.getByLabel('SCC 的适用等级').selectOption('1');
+        await page.getByLabel('GCC 的适用等级').selectOption('2');
+        const sourceIds = await page.evaluate(() => ({ gcc: contracts.GCC.sourceId, scc: contracts.SCC.sourceId }));
+        await page.locator('#retrievalRelationFrom').selectOption(sourceIds.scc);
+        await page.locator('#retrievalRelationType').selectOption('higher');
+        await page.locator('#retrievalRelationTo').selectOption(sourceIds.gcc);
+        await page.locator('#retrievalAddRelation').click();
+        assert.ok((await page.locator('#retrievalRelationList').innerText()).includes('SCC 高于 GCC'));
+        await page.locator('#retrievalPreviewQuery').fill('不应进入检索的专属校验词');
+        await page.locator('#retrievalPreviewButton').click();
+        await page.waitForFunction(() => document.getElementById('retrievalPreviewButton')?.disabled === false);
+        const previewText = await page.locator('#retrievalPreviewResult').innerText();
+        assert.ok(previewText.includes('检索范围：GCC、SCC'), 'preview must display the enabled scope');
+        assert.ok(previewText.includes('命中 0 条'), 'disabled arbitrary sources must not leak into retrieval results');
+        const retrievalModal = page.locator('#settingsModal .settings-modal-content');
+        await retrievalModal.screenshot({ path: path.join(output, 'retrieval-settings-preview.png') });
+        await page.locator('#settingsModalBody').evaluate(element => { element.scrollTop = 0; });
+        await retrievalModal.screenshot({ path: path.join(output, 'retrieval-settings.png') });
+        await page.getByRole('button', { name: /保存设置/ }).click();
+        await page.locator('#settingsModal').waitFor({ state: 'hidden' });
+        await page.locator('button[title="AI 设置"]').click();
+        await page.locator('#tabRetrievalSettings').click();
+        assert.strictEqual(await page.locator('.retrieval-source-card').filter({ hasText: "资料 A+B's" }).locator('.retrieval-source-toggle').isChecked(), false, 'source scope must persist after reopening settings');
+        assert.strictEqual(await page.getByLabel('SCC 的适用等级').inputValue(), '1', 'source level must persist after reopening settings');
+        assert.ok((await page.locator('#retrievalRelationList').innerText()).includes('SCC 高于 GCC'), 'source relation must persist after reopening settings');
+        await page.setViewportSize({ width: 390, height: 844 });
+        const mobileLayout = await page.evaluate(() => {
+            const modal = document.querySelector('#settingsModal .settings-modal-content');
+            const body = document.getElementById('settingsModalBody');
+            return { modalFits: modal.scrollWidth <= modal.clientWidth + 1, bodyFits: body.scrollWidth <= body.clientWidth + 1 };
+        });
+        assert.ok(mobileLayout.modalFits && mobileLayout.bodyFits, 'retrieval settings must not overflow horizontally on a phone viewport');
+        await page.locator('#settingsModalBody').evaluate(element => { element.scrollTop = 0; });
+        await page.locator('#settingsModal .settings-modal-content').screenshot({ path: path.join(output, 'retrieval-settings-mobile.png') });
+        await page.setViewportSize({ width: 1280, height: 720 });
+        await page.getByRole('button', { name: '取消', exact: true }).click();
         await page.getByRole('button', { name: '管理助手', exact: true }).click();
         assert.ok(await page.locator('#sendBtn').evaluate(button => button.parentElement?.classList.contains('input-tools')), 'send button must be inside the input toolbar');
         const inputToolLayout = await page.evaluate(() => {
@@ -69,7 +118,7 @@ async function run() {
         assert.ok(Math.abs(inputToolLayout.toolsRight - inputToolLayout.sendRight) < 2, 'send button must align to the right edge of the input toolbar');
         assert.ok(Math.abs(inputToolLayout.sendCenterY - inputToolLayout.clearCenterY) < 6, 'send button must share the input action row');
         await page.locator('#btnThinkingMode').click(); await page.locator('#btnKnowledgeBase').click();
-        await page.locator('#statusBar').getByText('已加载 4 条合同正文', { exact: false }).waitFor();
+        await page.locator('#statusBar').getByText('加载 4 条正文', { exact: false }).waitFor();
         assert.strictEqual(await page.locator('#statusBar').getAttribute('aria-live'), 'polite', 'knowledge-base status must be announced without moving focus');
         assert.match(await page.locator('#btnUpdateIndex').getAttribute('aria-label'), /有效语义向量 0\/4/, 'knowledge-base action must report the valid index count');
         const send = async query => { await page.locator('#chatInput').fill(query); await page.locator('#sendBtn').click(); await page.waitForFunction(() => !isStreaming); };
@@ -271,7 +320,7 @@ async function run() {
             const records = await RAG.readRecords();
             const ready = records.filter(row => RAG.validateRecord(row, AI_CONFIG, contracts) === 'ready');
             contracts.GCC.data['50'].content += ' Changed original.';
-            const stale = records.find(row => row.type === 'GCC' && row.clauseId === '50');
+            const stale = records.find(row => row.sourceId === contracts.GCC.sourceId && row.clauseId === '50');
             const code = RAG.validateRecord(stale, AI_CONFIG, contracts);
             window.PREBUILT_VECTORS = { embeddingModel: 'legacy', vectors: { legacy: { type: 'GCC', clauseId: '50', title: 'Legacy', vector: [1, 0] } } };
             await RAG.importPrebuiltVectors();
@@ -283,7 +332,8 @@ async function run() {
         await page.evaluate(() => RAG.exportVectorsAsJS(AI_CONFIG.embeddingModel));
         const download = await downloadPromise;
         const exportedContext = { window: {} }; vm.createContext(exportedContext); vm.runInContext(fs.readFileSync(await download.path(), 'utf8'), exportedContext);
-        assert.ok(exportedContext.window.PREBUILT_VECTORS.vectors.GCC_50.sourceHash); assert.ok(exportedContext.window.PREBUILT_VECTORS.vectors.GCC_50.embeddingSpace);
+        const exportedGcc = Object.values(exportedContext.window.PREBUILT_VECTORS.vectors).find(vector => vector.sourceId && vector.type === 'GCC' && vector.clauseId === '50');
+        assert.ok(exportedGcc.sourceHash); assert.ok(exportedGcc.embeddingSpace);
         await page.screenshot({ path: path.join(output, 'assistant-retrieval.png'), fullPage: true });
         await page.reload(); await page.evaluate(() => window.contractAppReady); await page.getByRole('button', { name: '管理助手', exact: true }).click();
         await page.locator('#btnAssistantNotebook').click();
@@ -295,7 +345,7 @@ async function run() {
         await page.waitForFunction(() => document.getElementById('assistantNotebookCount').textContent === '0');
         assert.strictEqual(await page.locator('#assistantTopicList .assistant-topic-item').count(), 0, 'unfavoriting must remove the notebook entry');
         assert.deepStrictEqual(errors, []);
-        const report = { passed: true, scope: 'isolated localhost with mocked providers', checks: ['existing browser regression', 'thinking+knowledge flags', 'knowledge-base status distinguishes loaded corpus from invalid vectors', 'typed SCC evidence', 'Chinese response-deadline query retrieves GCC Clause 5 without semantic vectors', 'multi-file TXT/Markdown/PDF/DOCX local attachment parsing and request hydration', 'followup', 'clause link', 'assistant original/translation and Chinese-variant preference across links', 'regeneration history', 'context break', 'one repair', 'failed repair warning', 'legacy vector feedback', 'stop', 'reload', 'AI topic title with same-model request and length guard', 'assistant reply branching with numbering/truncation/source preservation/no provider call', 'assistant topics title-only rows/outside-click menu/full-row active state/create/rename/archive preview/restore/delete', 'favorite action, notebook source/preview/compare modes, live rendering, scroll sync, editable persistence, and unfavorite deletion', 'send button inside input toolbar', 'native IndexedDB build/import/freshness/export'], providerRequests: 0 };
+        const report = { passed: true, scope: 'isolated localhost with mocked providers', checks: ['existing browser regression', 'retrieval settings replace legacy Firebase UI', 'arbitrary-name source controls and strict disabled-source scope', 'source level/relation persistence and three approved relation choices', 'desktop/mobile retrieval settings layout', 'thinking+knowledge flags', 'knowledge-base status distinguishes loaded corpus from invalid vectors', 'typed SCC evidence', 'Chinese response-deadline query retrieves GCC Clause 5 without semantic vectors', 'multi-file TXT/Markdown/PDF/DOCX local attachment parsing and request hydration', 'followup', 'clause link', 'assistant original/translation and Chinese-variant preference across links', 'regeneration history', 'context break', 'one repair', 'failed repair warning', 'legacy vector feedback', 'stop', 'reload', 'AI topic title with same-model request and length guard', 'assistant reply branching with numbering/truncation/source preservation/no provider call', 'assistant topics title-only rows/outside-click menu/full-row active state/create/rename/archive preview/restore/delete', 'favorite action, notebook source/preview/compare modes, live rendering, scroll sync, editable persistence, and unfavorite deletion', 'send button inside input toolbar', 'native IndexedDB build/import/freshness/export'], providerRequests: 0 };
         fs.writeFileSync(path.join(output, 'assistant-browser-report.json'), JSON.stringify(report, null, 2));
         console.log(JSON.stringify(report)); await context.close();
     } finally { if (browser) await browser.close(); await new Promise(resolve => server.close(resolve)); }

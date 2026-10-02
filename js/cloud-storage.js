@@ -343,10 +343,12 @@ async function persistLocalStateForCloud() {
 function collectAllContractData() {
     const allContractData = {};
     if (typeof contracts === 'undefined') return allContractData;
+    if (window.RetrievalSettings) window.RetrievalSettings.ensureSourceIds(contracts);
 
     Object.keys(contracts).forEach(contractKey => {
         const contract = contracts[contractKey];
         allContractData[contractKey] = {
+            sourceId: contract.sourceId || null,
             title: contract.title || '',
             data: JSON.parse(JSON.stringify(contract.data || {}))
         };
@@ -407,19 +409,6 @@ async function saveToCloud(options = {}) {
         }
         console.log('  所有书签收集完成:', Object.keys(allBookmarks));
 
-        // 收集 Firebase 配置（从 AI 设置中的 "Firebase配置设置" 标签页）
-        let firebaseConfig = null;
-        try {
-            const storedFbConfig = localStorage.getItem('HK_Firebase_Config');
-            if (storedFbConfig) {
-                firebaseConfig = JSON.parse(storedFbConfig);
-            } else if (window.FIREBASE_CONFIG) {
-                firebaseConfig = window.FIREBASE_CONFIG;
-            }
-        } catch (e) {
-            console.warn('读取 Firebase 配置失败:', e);
-        }
-
         // 收集完整合同数据（标题 + 所有条款内容，包括原始内容和翻译）
         const allContractData = collectAllContractData();
 
@@ -432,7 +421,7 @@ async function saveToCloud(options = {}) {
             bookmarks: allBookmarks,
             theme: typeof currentThemeIndex !== 'undefined' ? currentThemeIndex : 0,
             ai_settings: typeof getAISettingsForCloud === 'function' ? getAISettingsForCloud() : null,
-            firebase_config: firebaseConfig,
+            retrieval_settings: window.RetrievalSettings ? window.RetrievalSettings.getForCloud(contracts) : null,
             contract_data: allContractData
         };
 
@@ -495,6 +484,7 @@ async function applyCloudDataToLocal(cloudData) {
             Object.keys(cloudData.contract_data || {}).forEach(contractKey => {
                 const cloudContract = cloudData.contract_data[contractKey] || {};
                 restoredContracts[contractKey] = {
+                    sourceId: cloudContract.sourceId || null,
                     title: cloudContract.title || contractKey,
                     data: JSON.parse(JSON.stringify(cloudContract.data || {})),
                     bookmarks: JSON.parse(JSON.stringify(cloudData.bookmarks?.[contractKey] || []))
@@ -516,6 +506,7 @@ async function applyCloudDataToLocal(cloudData) {
             });
 
             contracts = restoredContracts;
+            if (window.RetrievalSettings) window.RetrievalSettings.ensureSourceIds(contracts);
             if (typeof ORIGINAL_CONTRACTS === 'undefined') window.ORIGINAL_CONTRACTS = {};
             Object.keys(contracts).forEach(key => {
                 restoreContractOriginals(key);
@@ -556,8 +547,8 @@ async function applyCloudDataToLocal(cloudData) {
         if (cloudData.ai_settings && typeof applyCloudAISettings === 'function') {
             applyCloudAISettings(cloudData.ai_settings);
         }
-        if (cloudData.firebase_config) {
-            localStorage.setItem('HK_Firebase_Config', JSON.stringify(cloudData.firebase_config));
+        if (cloudData.retrieval_settings && window.RetrievalSettings) {
+            window.RetrievalSettings.applyCloud(cloudData.retrieval_settings, contracts);
         }
 
         if (typeof saveContractsToStorage === 'function') {
@@ -602,15 +593,18 @@ function hydrateMissingCloudContracts(cloudData) {
         const cloudContract = cloudData.contract_data[contractKey] || {};
         if (!contracts[contractKey]) {
             contracts[contractKey] = {
+                sourceId: cloudContract.sourceId || null,
                 title: cloudContract.title || contractKey,
                 data: JSON.parse(JSON.stringify(cloudContract.data || {})),
                 bookmarks: JSON.parse(JSON.stringify(cloudData.bookmarks?.[contractKey] || []))
             };
             restoreContractOriginals(contractKey);
+            if (window.RetrievalSettings) window.RetrievalSettings.ensureSourceIds(contracts);
             return;
         }
 
         const localContract = contracts[contractKey];
+        if (!localContract.sourceId && cloudContract.sourceId) localContract.sourceId = cloudContract.sourceId;
         if (!localContract.title && cloudContract.title) localContract.title = cloudContract.title;
         if (!localContract.data) localContract.data = {};
         Object.keys(cloudContract.data || {}).forEach(clauseId => {
@@ -727,6 +721,14 @@ async function syncWithCloud() {
         );
         if (mergedAISettings && typeof applyCloudAISettings === 'function') {
             applyCloudAISettings(mergedAISettings);
+        }
+        if (window.RetrievalSettings) {
+            const mergedRetrievalSettings = window.RetrievalSettings.merge(
+                window.RetrievalSettings.getForCloud(contracts),
+                cloudData.retrieval_settings || null,
+                contracts
+            );
+            window.RetrievalSettings.applyCloud(mergedRetrievalSettings, contracts);
         }
 
         // 8. 持久化合并结果并上传当前完整快照，绝不复用旧 contract_data。
@@ -999,7 +1001,7 @@ function openCloudBackup() {
     if (!initialized) {
         // 检查配置是否有效
         if (!window.FIREBASE_CONFIG || window.FIREBASE_CONFIG.apiKey === 'YOUR_API_KEY') {
-            alert('⚠️ Firebase 未配置\n\n请先在 "AI 设置 -> Firebase 配置设置" 中配置您的 Firebase 项目凭证。');
+            alert('⚠️ 云端同步服务未配置\n\n请检查部署环境中的 Firebase 运行配置，或联系部署管理员。');
             return;
         }
     }
@@ -1228,14 +1230,16 @@ function isOldFormat(data) {
  * @param {firebase.firestore.WriteBatch} batch - 批量写入对象
  */
 function writeContractDataWithBatching(mainRef, contractKey, contractData, timestamp, batch) {
+    const sourceId = contractData.sourceId || contractKey;
     const fullDoc = {
         contract_key: contractKey,
+        source_id: sourceId,
         title: contractData.title || '',
         data: contractData.data || {},
         updated_at: timestamp
     };
     const fullSize = new Blob([JSON.stringify(fullDoc)]).size;
-    const cdRef = mainRef.collection('contract_data').doc(contractKey);
+    const cdRef = mainRef.collection('contract_data').doc(sourceId);
 
     if (fullSize < 900 * 1024) {
         // 单个文档大小合适，直接写入
@@ -1249,6 +1253,7 @@ function writeContractDataWithBatching(mainRef, contractKey, contractData, times
         let currentSize = 0;
         const metadataSize = new Blob([JSON.stringify({
             contract_key: contractKey,
+            source_id: sourceId,
             title: contractData.title || '',
             batch_count: 1,
             updated_at: timestamp
@@ -1275,6 +1280,7 @@ function writeContractDataWithBatching(mainRef, contractKey, contractData, times
         // 写入元数据文档（不含 data 字段，只记录 batch_count）
         batch.set(cdRef, {
             contract_key: contractKey,
+            source_id: sourceId,
             title: contractData.title || '',
             batch_count: batches.length,
             updated_at: timestamp
@@ -1313,6 +1319,8 @@ async function loadBatchedContractData(mainRef, contractKey, metadata) {
 
     console.log(`  [分批加载] contract_data/${contractKey}: 合并了 ${batchSnap.size} 个批次, ${Object.keys(mergedData).length} 条条款`);
     return {
+        contractKey: metadata.contract_key || contractKey,
+        sourceId: metadata.source_id || null,
         title: metadata.title || '',
         data: mergedData
     };
@@ -1340,9 +1348,10 @@ async function cleanupStaleCloudPayloadCollections(mainRef, data) {
     ]);
 
     const refsToDelete = [];
-    const modificationKeys = new Set(Object.keys(data.modifications || {}));
-    const bookmarkKeys = new Set(Object.keys(data.bookmarks || {}));
-    const contractKeys = new Set(Object.keys(data.contract_data || {}));
+    const documentIdFor = key => data.contract_data?.[key]?.sourceId || key;
+    const modificationKeys = new Set(Object.keys(data.modifications || {}).map(documentIdFor));
+    const bookmarkKeys = new Set(Object.keys(data.bookmarks || {}).map(documentIdFor));
+    const contractKeys = new Set(Object.keys(data.contract_data || {}).map(documentIdFor));
     modSnap.forEach(doc => { if (!modificationKeys.has(doc.id)) refsToDelete.push(doc.ref); });
     bookmarkSnap.forEach(doc => { if (!bookmarkKeys.has(doc.id)) refsToDelete.push(doc.ref); });
 
@@ -1372,16 +1381,18 @@ async function writeDataToSubcollections(mainRef, data, options = {}) {
         active_contract_key: data.active_contract_key || null,
         theme: data.theme != null ? data.theme : 0,
         ai_settings: data.ai_settings || null,
-        firebase_config: data.firebase_config || null,
-        format_version: 2
+        retrieval_settings: data.retrieval_settings || null,
+        format_version: 3
     }, { merge: true });
 
     // 2. modifications → 子集合，每个合约一个文档
     const mods = data.modifications || {};
     Object.keys(mods).forEach(contractKey => {
-        const ref = mainRef.collection('modifications').doc(contractKey);
+        const sourceId = data.contract_data?.[contractKey]?.sourceId || contractKey;
+        const ref = mainRef.collection('modifications').doc(sourceId);
         batch.set(ref, {
             contract_key: contractKey,
+            source_id: sourceId,
             modifications: mods[contractKey],
             updated_at: now
         });
@@ -1390,9 +1401,11 @@ async function writeDataToSubcollections(mainRef, data, options = {}) {
     // 3. bookmarks → 子集合，每个合约一个文档
     const bms = data.bookmarks || {};
     Object.keys(bms).forEach(contractKey => {
-        const ref = mainRef.collection('bookmarks').doc(contractKey);
+        const sourceId = data.contract_data?.[contractKey]?.sourceId || contractKey;
+        const ref = mainRef.collection('bookmarks').doc(sourceId);
         batch.set(ref, {
             contract_key: contractKey,
+            source_id: sourceId,
             bookmarks: bms[contractKey],
             updated_at: now
         });
@@ -1406,12 +1419,10 @@ async function writeDataToSubcollections(mainRef, data, options = {}) {
 
     // 提交批量写入（原子性：全部成功或全部回滚）
     await batch.commit();
-    console.log('✓ 数据已写入子集合格式 (format_version: 2)');
+    console.log('✓ 数据已写入子集合格式 (format_version: 3)');
 
-    // 强制上传在新快照写入成功后再清理旧文档，避免失败时先丢失云端备份。
-    if (options.replace === true) {
-        await cleanupStaleCloudPayloadCollections(mainRef, data);
-    }
+    // 新快照写入成功后清理旧标签路径和已删除来源，避免陈旧文档在下次同步时复活。
+    await cleanupStaleCloudPayloadCollections(mainRef, data);
 
     // 5. 清理旧格式键（从单文档迁移到子集合后）
     await cleanupOldFormatKeys(mainRef);
@@ -1450,14 +1461,14 @@ async function loadFromSubcollections(mainRef) {
     const modifications = {};
     modSnap.forEach(doc => {
         const d = doc.data();
-        modifications[doc.id] = d.modifications || {};
+        modifications[d.contract_key || doc.id] = d.modifications || {};
     });
 
     // 重建 bookmarks
     const bookmarks = {};
     bmSnap.forEach(doc => {
         const d = doc.data();
-        bookmarks[doc.id] = d.bookmarks || [];
+        bookmarks[d.contract_key || doc.id] = d.bookmarks || [];
     });
 
     // 重建 contract_data（处理可能的分批存储）
@@ -1470,12 +1481,16 @@ async function loadFromSubcollections(mainRef) {
             // 分批存储：从子批次读取并合并
             batchedPromises.push(
                 loadBatchedContractData(mainRef, doc.id, d).then(result => {
-                    contract_data[doc.id] = result;
+                    contract_data[result.contractKey || doc.id] = {
+                        sourceId: result.sourceId,
+                        title: result.title,
+                        data: result.data
+                    };
                 })
             );
         } else if (d.data) {
             // 直接存储
-            contract_data[doc.id] = { title: d.title || '', data: d.data };
+            contract_data[d.contract_key || doc.id] = { sourceId: d.source_id || null, title: d.title || '', data: d.data };
         }
     });
 
@@ -1487,7 +1502,7 @@ async function loadFromSubcollections(mainRef) {
     // 重建扁平格式（与旧格式完全兼容，applyCloudDataToLocal 无需改动）
     return {
         data: {
-            ...mainData,       // user_id, updated_at, theme, ai_settings, firebase_config, format_version
+            ...mainData,       // user_id, updated_at, theme, ai_settings, retrieval_settings, format_version
             modifications,
             bookmarks,
             contract_data
@@ -1509,14 +1524,16 @@ async function cleanupOldFormatKeys(mainRef) {
         const data = mainDoc.data();
         const hasOldKeys = (data.modifications !== undefined ||
                            data.bookmarks !== undefined ||
-                           data.contract_data !== undefined);
+                           data.contract_data !== undefined ||
+                           data.firebase_config !== undefined);
 
         if (hasOldKeys) {
             const cleanupBatch = db.batch();
             cleanupBatch.update(mainRef, {
                 modifications: firebase.firestore.FieldValue.delete(),
                 bookmarks: firebase.firestore.FieldValue.delete(),
-                contract_data: firebase.firestore.FieldValue.delete()
+                contract_data: firebase.firestore.FieldValue.delete(),
+                firebase_config: firebase.firestore.FieldValue.delete()
             });
             await cleanupBatch.commit();
             console.log('✓ 旧格式键已从主文档中清理（迁移完成）');
