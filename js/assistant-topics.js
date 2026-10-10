@@ -49,6 +49,7 @@
         }));
     }
     function notify(message, kind = '') {
+        if (message !== '本地保存' && !(kind === 'pending' && !canSync())) window.StatusCenter?.post(kind === 'error' ? 'error' : kind === 'warning' ? 'warning' : message === '同步中…' ? 'loading' : kind === 'ok' ? 'success' : 'info', message, { source: '话题同步', id: 'topic-sync' });
         const el = document.getElementById('assistantTopicSyncState');
         if (el) { el.textContent = message; el.className = `assistant-sync-state ${kind}`; }
     }

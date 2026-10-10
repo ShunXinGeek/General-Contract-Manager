@@ -264,7 +264,7 @@ async function saveContractsToStorage() {
         return true;
     } catch (e) {
         Logger.error('storage', '无法保存合同数据到 IndexedDB', e);
-        if (typeof showError === 'function') showError('数据持久化失败', e.message);
+        if (typeof showError === 'function') showError('数据持久化失败：' + e.message);
         return false;
     }
 }
@@ -526,6 +526,7 @@ function showWelcomePage() {
     document.getElementById('navList').innerHTML = '';
     const searchInput = document.querySelector('.search-input');
     if (searchInput) { searchInput.value = ''; currentSearchTerm = ''; }
+    if (typeof updateSearchStatus === 'function') updateSearchStatus(0, 0);
 
     // 默认折叠左右侧面板
     const panelNav = document.getElementById('panelNav');
@@ -830,6 +831,7 @@ function switchContract(key) {
         filterNav(targetSearchTerm);
     } else {
         currentSearchTerm = '';
+        if (typeof updateSearchStatus === 'function') updateSearchStatus(0, 0);
     }
 
     document.querySelector('.nav-title').innerText = `${key} NAVIGATOR`;
@@ -1137,19 +1139,24 @@ function scrollToClause(id, el) {
     const clauseEl = document.getElementById('clause-' + id);
     const panelMain = document.getElementById('panelMain');
 
-    // 找到对应书签对象，判断是否有精确滚动位置
+    // 书签以条款正文中的文字为目标；旧书签仅保留条款级跳转。
     let navItem = el && el.classList && el.classList.contains('nav-item') ? el : (el && el.closest ? el.closest('.nav-item') : null);
     let bmIndex = navItem ? parseInt(navItem.dataset.index) : -1;
     let bm = (!isNaN(bmIndex) && bmIndex >= 0 && typeof savedBookmarks !== 'undefined' && savedBookmarks && savedBookmarks[bmIndex]) ? savedBookmarks[bmIndex] : null;
 
     if (clauseEl && panelMain) {
-        if (bm && typeof bm.scrollTop === 'number') {
-            // 精确跳转到书签记录的滚动位置
-            panelMain.scrollTop = bm.scrollTop;
-        } else {
-            // 回退：跳转到条款起始位置（兼容旧书签及默认条款书签）
-            panelMain.scrollTop = clauseEl.offsetTop - panelMain.offsetTop;
+        let targetRect = null;
+        if (bm?.anchor?.kind === 'text') {
+            const body = clauseEl.querySelector('.clause-text');
+            if (body) {
+                const offset = resolveBookmarkOffset(body.textContent || '', bm.anchor);
+                if (offset !== null) targetRect = getBookmarkTargetRect(body, offset);
+            }
+            if (!targetRect) showStatus('warning', '书签原文已变化，已跳转到所属条款开头。', '⚠️', 4000);
         }
+        const panelRect = panelMain.getBoundingClientRect();
+        const rect = targetRect || clauseEl.getBoundingClientRect();
+        panelMain.scrollTop += rect.top - panelRect.top - (targetRect ? 12 : 0);
     } else if (clauseEl && !panelMain) {
         clauseEl.scrollIntoView();
     }

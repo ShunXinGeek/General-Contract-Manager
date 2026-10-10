@@ -234,6 +234,7 @@ function loadAISettings() {
 }
 
 function showSettingsStatus(message, type) {
+    window.StatusCenter?.post(type || 'info', message, { source: '设置' });
     const s = document.getElementById('settingsStatus');
     s.style.display = 'block';
     s.innerText = message;
@@ -629,7 +630,7 @@ function readModelEditor() {
 function saveModel() {
     const modelId = document.getElementById('editingModelId').value;
     let config;
-    try { config = readModelEditor(); } catch (error) { alert(error.message); return; }
+    try { config = readModelEditor(); } catch (error) { notifyStatus(error.message); return; }
     if (modelId) {
         const idx = AI_CHAT_MODELS.findIndex(m => m.id === modelId);
         if (idx !== -1) AI_CHAT_MODELS[idx] = { id: modelId, ...config };
@@ -648,8 +649,9 @@ async function testModelConnection() {
     const status = document.getElementById('modelConnectionStatus');
     let config;
     try { config = { ...readModelEditor(), apiEndpoint: document.getElementById('modelEditEndpoint').value.trim() }; }
-    catch (error) { status.textContent = '❌ ' + error.message; return; }
+    catch (error) { status.textContent = '❌ ' + error.message; showError(error.message); return; }
     button.disabled = true;
+    const task = window.StatusCenter?.start('正在测试模型连接…', '模型测试');
     status.textContent = '正在发送简短测试问题（会消耗少量模型用量）…';
     const controller = new AbortController();
     try {
@@ -662,7 +664,8 @@ async function testModelConnection() {
         }
         if (!received) throw new Error('连接已建立，但模型没有返回内容。');
         status.textContent = '✅ 连接成功，已收到模型输出。';
-    } catch (error) { status.textContent = '❌ ' + error.message; }
+        task?.finish('连接成功，已收到模型输出。');
+    } catch (error) { status.textContent = '❌ ' + error.message; task?.finish('模型连接失败：' + error.message, 'error'); }
     finally { controller.abort(); button.disabled = false; }
 }
 

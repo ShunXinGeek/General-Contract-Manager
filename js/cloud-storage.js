@@ -667,6 +667,7 @@ async function syncWithCloud() {
         return { success: false, reason: 'offline' };
     }
 
+    const task = window.StatusCenter?.start('正在合并本机与云端数据…', '云同步');
     try {
         console.log('=== 开始智能同步 (字段级合并) ===');
 
@@ -679,6 +680,7 @@ async function syncWithCloud() {
         if (!cloudData) {
             await saveToCloud();
             localStorage.setItem(LOCAL_TIMESTAMP_KEY, Date.now().toString());
+            task?.finish('本机数据已同步到云端');
             return { success: true, direction: 'local_to_cloud' };
         }
 
@@ -741,6 +743,7 @@ async function syncWithCloud() {
         console.log('=== 字段级合并同步完成 ===');
         Logger.info('cloud', `同步完成 - 本地较新:${mergeResult.stats.localNewer}, 云端较新:${mergeResult.stats.cloudNewer}, 相同:${mergeResult.stats.same}`);
 
+        task?.finish(`云同步完成：本地较新 ${mergeResult.stats.localNewer} 条，云端较新 ${mergeResult.stats.cloudNewer} 条，无变化 ${mergeResult.stats.same} 条。`);
         return {
             success: true,
             direction: 'field_merge',
@@ -748,6 +751,7 @@ async function syncWithCloud() {
         };
 
     } catch (error) {
+        task?.finish('云同步失败：' + error.message, 'error');
         console.error('同步失败:', error);
         Logger.error('cloud', '云端同步失败', error);
         return { success: false, error: error.message };
@@ -1001,7 +1005,7 @@ function openCloudBackup() {
     if (!initialized) {
         // 检查配置是否有效
         if (!window.FIREBASE_CONFIG || window.FIREBASE_CONFIG.apiKey === 'YOUR_API_KEY') {
-            alert('⚠️ 云端同步服务未配置\n\n请检查部署环境中的 Firebase 运行配置，或联系部署管理员。');
+            notifyStatus('⚠️ 云端同步服务未配置\n\n请检查部署环境中的 Firebase 运行配置，或联系部署管理员。');
             return;
         }
     }
@@ -1083,16 +1087,16 @@ async function handleCloudLogin() {
     const password = document.getElementById('cloudPassword').value;
 
     if (!email || !password) {
-        alert('请输入邮箱和密码');
+        notifyStatus('请输入邮箱和密码');
         return;
     }
 
     try {
         await emailLogin(email, password);
         closeCloudModal();
-        alert('✓ 登录成功！\n\n云备份功能已启用，每5分钟自动同步一次。');
+        notifyStatus('✓ 登录成功！\n\n云备份功能已启用，每5分钟自动同步一次。');
     } catch (error) {
-        alert('登录失败：' + error.message);
+        notifyStatus('登录失败：' + error.message);
     }
 }
 
@@ -1104,21 +1108,21 @@ async function handleCloudRegister() {
     const password = document.getElementById('cloudPassword').value;
 
     if (!email || !password) {
-        alert('请输入邮箱和密码');
+        notifyStatus('请输入邮箱和密码');
         return;
     }
 
     if (password.length < 6) {
-        alert('密码至少需要6个字符');
+        notifyStatus('密码至少需要6个字符');
         return;
     }
 
     try {
         await emailRegister(email, password);
         closeCloudModal();
-        alert('✓ 注册成功！\n\n云备份功能已启用，每5分钟自动同步一次。');
+        notifyStatus('✓ 注册成功！\n\n云备份功能已启用，每5分钟自动同步一次。');
     } catch (error) {
-        alert('注册失败：' + error.message);
+        notifyStatus('注册失败：' + error.message);
     }
 }
 
@@ -1129,9 +1133,9 @@ async function handleCloudLogout() {
     try {
         await logout();
         closeCloudModal();
-        alert('已退出登录');
+        notifyStatus('已退出登录');
     } catch (error) {
-        alert('退出失败：' + error.message);
+        notifyStatus('退出失败：' + error.message);
     }
 }
 
@@ -1146,7 +1150,7 @@ async function handleManualSync() {
             if (result.direction === 'field_merge' && result.stats) {
                 // 字段级合并结果
                 const { localNewer, cloudNewer, same } = result.stats;
-                alert(`✓ 智能合并完成\n\n` +
+                notifyStatus(`✓ 智能合并完成\n\n` +
                     `📤 本地较新: ${localNewer} 条\n` +
                     `📥 云端较新: ${cloudNewer} 条\n` +
                     `🔄 无变化: ${same} 条\n\n` +
@@ -1157,13 +1161,13 @@ async function handleManualSync() {
                     'cloud_to_local': '云端 → 本地',
                     'no_change': '数据已同步'
                 };
-                alert(`✓ 同步完成\n\n${directionText[result.direction] || '同步完成'}`);
+                notifyStatus(`✓ 同步完成\n\n${directionText[result.direction] || '同步完成'}`);
             }
         } else {
-            alert('同步失败：' + (result.reason || result.error || '未知错误'));
+            notifyStatus('同步失败：' + (result.reason || result.error || '未知错误'));
         }
     } catch (error) {
-        alert('同步失败：' + error.message);
+        notifyStatus('同步失败：' + error.message);
     }
 }
 
@@ -1174,13 +1178,14 @@ async function handleForceUpload() {
     const isUpload = await CustomDialog.confirm('不会下载或合并云端内容。\n云端独有的合同和修改将被删除。\n\n仍要用本机数据覆盖云端吗？');
     if (!isUpload) return;
 
+    const task = window.StatusCenter?.start('正在上传本机数据到云端…', '云备份');
     try {
         closeCloudModal();
         const uploaded = await forceUploadToCloud();
         if (!uploaded) throw new Error('云端未确认写入成功');
-        await CustomDialog.alert('✓ 本地数据已上传到云端', '强制上传');
+        task?.finish('本地数据已上传到云端');
     } catch (error) {
-        await CustomDialog.alert('上传失败：' + error.message, '错误');
+        task?.finish('上传失败：' + error.message, 'error');
     }
 }
 
@@ -1191,6 +1196,7 @@ async function handleForceDownload() {
     const isDownload = await CustomDialog.confirm('确定要下载云端数据吗？\n这将覆盖本地的修改。');
     if (!isDownload) return;
 
+    const task = window.StatusCenter?.start('正在下载云端数据…', '云备份');
     try {
         closeCloudModal();
         const cloudData = await loadFromCloud();
@@ -1198,12 +1204,12 @@ async function handleForceDownload() {
             const applied = await applyCloudDataToLocal(cloudData);
             if (!applied) throw new Error('云端数据未能应用到本地');
             localStorage.setItem(LOCAL_TIMESTAMP_KEY, new Date(cloudData.updated_at).getTime().toString());
-            await CustomDialog.alert('✓ 云端数据已下载到本地', '强制下载');
+            task?.finish('云端数据已下载到本地');
         } else {
-            await CustomDialog.alert('云端没有备份数据', '提示');
+            task?.finish('云端没有备份数据', 'info');
         }
     } catch (error) {
-        await CustomDialog.alert('下载失败：' + error.message, '错误');
+        task?.finish('下载失败：' + error.message, 'error');
     }
 }
 

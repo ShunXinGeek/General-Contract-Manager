@@ -29,12 +29,6 @@
 
 <body>
 
-    <!-- 离线状态提示条 -->
-    <div id="offlineBanner" class="offline-banner" style="display: none;">
-        <span class="offline-icon">⚠️</span>
-        <span class="offline-text">您当前处于离线状态，云同步功能暂时不可用</span>
-    </div>
-
     <header>
         <div class="header-group">
             <button id="btnToggleNavigator" class="icon-btn" onclick="toggleNav()" title="切换侧边栏" aria-label="切换侧边栏" aria-expanded="true">
@@ -45,19 +39,45 @@
             </button>
             <div class="header-info">
                 <span class="header-title">General Contract Manager</span>
-                <div id="statusDisplay" class="status-display" title="状态显示">
-                    <span id="statusIcon" class="status-icon">✓</span>
-                    <span id="statusText" class="status-text">就绪</span>
-                </div>
+                <button id="statusDisplay" class="status-mascot" type="button" aria-expanded="false" aria-controls="statusPanel" aria-label="小猫助手：查看消息中心" title="小猫助手 · 点击查看消息中心">
+                    <svg class="status-cat" viewBox="0 0 64 58" aria-hidden="true" focusable="false">
+                        <ellipse cx="32" cy="53" rx="19" ry="2.5" fill="#000" opacity=".15"/>
+                        <g class="cat-stride">
+                            <g class="cat-pose" stroke="#634939" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                <path class="cat-tail" d="M43 46 Q59 49 55 35 Q54 31 51 33" fill="none" stroke="#f1b96b" stroke-width="6"/>
+                                <path d="M22 32 Q18 42 21 50 Q32 54 43 50 Q47 42 41 32" fill="#f1b96b"/>
+                                <ellipse cx="32" cy="43" rx="8" ry="8" fill="#fff0d6" stroke="none"/>
+                                <path d="M23 48 L23 52 L29 52 M36 52 L42 52 L42 48" fill="#fff0d6"/>
+                                <g class="cat-head">
+                                    <path d="M15 22 L15 6 Q16 3 19 6 L27 12 Q32 10 38 12 L46 5 Q49 3 49 7 L49 24 Q49 36 32 37 Q15 36 15 22Z" fill="#f7c984"/>
+                                    <path d="M18 10 L18 19 L25 14 M40 14 L46 9 L46 19" fill="#e99c91" stroke="none"/>
+                                    <path d="M29 12 L30 17 M35 12 L34 17" stroke="#d79750" stroke-width="2"/>
+                                    <ellipse cx="32" cy="29" rx="10" ry="6" fill="#fff0d6" stroke="none"/>
+                                    <g class="cat-eyes" fill="#463b37" stroke="none"><ellipse cx="24" cy="24" rx="2" ry="2.8"/><ellipse cx="40" cy="24" rx="2" ry="2.8"/></g>
+                                    <path d="M30 28 L34 28 L32 30Z" fill="#b76b67" stroke="none"/>
+                                    <path d="M32 30 Q29 33 27 30 M32 30 Q35 33 37 30" fill="none" stroke-width="1.2"/>
+                                    <path d="M19 28 L11 26 M19 31 L11 32 M45 28 L53 26 M45 31 L53 32" stroke="#d79750" stroke-width="1.2"/>
+                                </g>
+                                <path d="M23 37 Q32 41 41 37" fill="none" stroke="#579c99" stroke-width="3"/>
+                                <circle cx="32" cy="40" r="2" fill="#ffe19b" stroke="#947038" stroke-width="1"/>
+                                <path class="cat-paw" d="M42 39 Q48 34 49 39 Q49 44 42 45" fill="#fff0d6"/>
+                            </g>
+                        </g>
+                    </svg>
+                    <span id="statusUnread" class="status-unread" hidden aria-hidden="true"></span>
+                    <span id="statusTaskCount" class="status-task-count" hidden aria-hidden="true"></span>
+                </button>
             </div>
         </div>
 
         <!-- 动态标签栏：合同标签由 JS 动态生成 -->
-        <div class="header-tabs" id="contract-tabs">
-            <!-- 合同标签将通过 renderTabs() 动态插入到此处 -->
-            <button class="header-tab" id="tab-Assistant" onclick="switchToAssistant()">
-                <span class="tab-full">管理助手</span><span class="tab-short">🤖</span>
-            </button>
+        <div class="header-tabs-space">
+            <div class="header-tabs" id="contract-tabs">
+                <!-- 合同标签将通过 renderTabs() 动态插入到此处 -->
+                <button class="header-tab" id="tab-Assistant" onclick="switchToAssistant()">
+                    <span class="tab-full">管理助手</span><span class="tab-short">🤖</span>
+                </button>
+            </div>
         </div>
 
         <div class="header-group">
@@ -716,6 +736,33 @@
         </div>
 
         <!-- 脚本加载 -->
+        <aside id="statusBubble" class="status-bubble" aria-label="小猫消息提示" hidden>
+            <button id="statusBubbleOpen" class="status-bubble-open" type="button" aria-controls="statusPanel">
+                <span id="statusBubbleLabel" class="status-bubble-label">消息</span>
+                <span id="statusText" class="status-bubble-text">就绪</span>
+                <span class="status-bubble-hint">点击查看详情</span>
+            </button>
+            <button id="statusBubbleClose" class="status-bubble-close" type="button" aria-label="收起消息提示">×</button>
+            <span id="statusProgress" class="status-progress" hidden aria-hidden="true"><span></span></span>
+        </aside>
+        <span id="statusAnnouncement" class="status-sr-only" role="status" aria-live="polite" aria-atomic="true"></span>
+        <section id="statusPanel" class="status-panel" aria-labelledby="statusPanelTitle" hidden>
+            <div class="status-panel-heading">
+                <div><h2 id="statusPanelTitle">消息中心</h2><p id="statusPanelSummary">暂无记录</p></div>
+                <button id="statusClose" type="button" aria-label="关闭消息中心">关闭</button>
+            </div>
+            <div class="status-panel-tools">
+                <div role="group" aria-label="筛选消息">
+                    <button type="button" data-filter="all" aria-pressed="true">全部</button>
+                    <button type="button" data-filter="active" aria-pressed="false">进行中</button>
+                    <button type="button" data-filter="attention" aria-pressed="false">需关注</button>
+                </div>
+                <button id="statusClear" type="button">清空历史</button>
+            </div>
+            <div id="statusList" class="status-list"></div>
+            <p class="status-panel-footnote">点击消息展开全文 · 保留本次页面会话最近 100 条已完成记录</p>
+        </section>
+        <script src="js/status-center.js"></script>
         <script src="js/utils.js"></script>
         <script src="js/logger.js"></script>
         <script src="js/config.js"></script>
@@ -751,9 +798,8 @@
                 });
             }
             function updateOnlineStatus() {
-                const banner = document.getElementById('offlineBanner');
-                if (navigator.onLine) { banner.style.display = 'none'; document.body.classList.remove('is-offline'); }
-                else { banner.style.display = 'flex'; document.body.classList.add('is-offline'); }
+                if (!navigator.onLine) StatusCenter.post('warning', '您当前处于离线状态，云同步暂不可用；可以继续使用本地合同。', { source: '网络', id: 'network', duration: 0 });
+                else if (StatusCenter.snapshot().some(item => item.id === 'network')) StatusCenter.post('success', '网络已恢复，云同步可用。', { source: '网络', id: 'network' });
             }
             window.addEventListener('online', updateOnlineStatus);
             window.addEventListener('offline', updateOnlineStatus);

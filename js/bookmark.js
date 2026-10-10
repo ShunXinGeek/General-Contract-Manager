@@ -159,26 +159,30 @@ async function addNewBookmark() {
     const id = getCurrentVisibleClauseId();
     if (!id) return;
     const clauseTitle = fullClauseDatabase[id].title;
-    const panelMain = document.getElementById('panelMain');
-    const scrollTop = panelMain ? panelMain.scrollTop : 0;
-    await saveBookmarkAction(id, clauseTitle, scrollTop);
+    // 在弹出命名对话框前记录正文位置，避免焦点变化影响定位。
+    const anchor = captureBookmarkAnchor(id);
+    await saveBookmarkAction(id, clauseTitle, anchor);
 }
 
 /**
  * 保存书签动作
  */
-async function saveBookmarkAction(clauseId, clauseTitle, scrollTop) {
+async function saveBookmarkAction(clauseId, clauseTitle, anchor) {
     let name = await CustomDialog.prompt("添加书签:", clauseTitle);
     if (name === null) return;
     if (name.trim() === "") name = clauseTitle;
 
-    const bm = { id: clauseId, label: name.trim(), uid: Date.now() + Math.random().toString(36).substr(2, 9), level: 0, collapsed: false, scrollTop: (typeof scrollTop === 'number') ? scrollTop : null };
+    const bm = { id: clauseId, label: name.trim(), uid: Date.now() + Math.random().toString(36).substr(2, 9), level: 0, collapsed: false, anchor };
     let idx = -1;
     savedBookmarks.forEach((b, i) => { if (b.id === clauseId) idx = i });
     if (idx !== -1) savedBookmarks.splice(idx + 1, 0, bm);
     else savedBookmarks.unshift(bm);
     if (savedBookmarks.length > 0 && savedBookmarks[0].level === 1) savedBookmarks[0].level = 0;
     initBookmarks();
+    if (activeContractKey && contracts[activeContractKey]) {
+        contracts[activeContractKey].bookmarks = savedBookmarks;
+        await saveContractsToStorage();
+    }
 }
 
 /**
@@ -186,17 +190,112 @@ async function saveBookmarkAction(clauseId, clauseTitle, scrollTop) {
  */
 function getCurrentVisibleClauseId() {
     const main = document.getElementById('panelMain');
-    for (let c of main.querySelectorAll('[id^="clause-"]')) {
+    if (!main) return null;
+    const panel = main.getBoundingClientRect();
+    const readingLine = Math.min(panel.top + 12, panel.bottom - 1);
+    for (const c of main.querySelectorAll('[id^="clause-"]')) {
         const r = c.getBoundingClientRect();
-        if ((r.top >= 50 && r.top < main.clientHeight) || (r.top < 50 && r.bottom > 100)) return c.id.replace('clause-', '');
+        if (r.top <= readingLine && r.bottom > readingLine) return c.id.replace('clause-', '');
+        if (r.top > readingLine && r.top < panel.bottom) return c.id.replace('clause-', '');
     }
     return null;
 }
 
 /**
- * 滚动到指定条款（精确位置版）
- * 注意：完整实现位于 app.js 的 scrollToClause(id, el)，此处不重复定义以避免覆盖问题。
+ * 记录条款正文首个可见字的位置。正文的文字偏移不受换行和标记样式影响。
  */
+function captureBookmarkAnchor(id) {
+    const main = document.getElementById('panelMain');
+    const clause = document.getElementById('clause-' + id);
+    const body = clause?.querySelector('.clause-text');
+    if (!main || !body) return { version: 1, kind: 'heading' };
+
+    const panel = main.getBoundingClientRect();
+    const readingLine = Math.min(panel.top + 12, panel.bottom - 1);
+    if (body.getBoundingClientRect().top > readingLine) return { version: 1, kind: 'heading' };
+
+    const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+    const range = document.createRange();
+    let node;
+    let precedingLength = 0;
+    while ((node = walker.nextNode())) {
+        const value = node.nodeValue || '';
+        if (!value.trim()) { precedingLength += value.length; continue; }
+        range.selectNodeContents(node);
+        for (const rect of range.getClientRects()) {
+            if (rect.bottom <= readingLine || rect.top >= panel.bottom || !rect.width) continue;
+            const y = Math.max(rect.top + 1, readingLine + 1);
+            const position = document.caretPositionFromPoint?.(rect.left + 2, y);
+            const caret = document.caretRangeFromPoint?.(rect.left + 2, y) ||
+                (position && { startContainer: position.offsetNode, startOffset: position.offset });
+            if (!caret || caret.startContainer.nodeType !== Node.TEXT_NODE || !body.contains(caret.startContainer)) continue;
+
+            let offset = precedingLength;
+            if (caret.startContainer === node) {
+                offset += Math.min(caret.startOffset, Math.max(0, value.length - 1));
+            } else {
+                const count = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+                let part;
+                offset = 0;
+                while ((part = count.nextNode()) && part !== caret.startContainer) offset += part.nodeValue.length;
+                if (!part) continue;
+                offset += Math.min(caret.startOffset, Math.max(0, part.nodeValue.length - 1));
+            }
+            const text = body.textContent || '';
+            return {
+                version: 1, kind: 'text', offset,
+                quote: text.slice(offset, offset + 64),
+                prefix: text.slice(Math.max(0, offset - 32), offset),
+                suffix: text.slice(offset + 64, offset + 96)
+            };
+        }
+        precedingLength += value.length;
+    }
+    return { version: 1, kind: 'heading' };
+}
+
+/** 找回文字锚点；重复文字须有足够上下文才能判定。 */
+function resolveBookmarkOffset(text, anchor) {
+    if (!anchor || anchor.kind !== 'text' || !anchor.quote) return null;
+    const { quote, prefix = '', suffix = '' } = anchor;
+    const original = anchor.offset;
+    if (Number.isInteger(original) && original >= 0 && text.slice(original, original + quote.length) === quote &&
+        text.slice(Math.max(0, original - prefix.length), original) === prefix &&
+        text.slice(original + quote.length, original + quote.length + suffix.length) === suffix) return original;
+
+    const matches = [];
+    let at = -1;
+    while ((at = text.indexOf(quote, at + 1)) !== -1) matches.push(at);
+    if (matches.length === 1) return matches[0];
+    if (!matches.length) return null;
+
+    const ranked = matches.map(offset => {
+        const before = text.slice(Math.max(0, offset - prefix.length), offset);
+        const after = text.slice(offset + quote.length, offset + quote.length + suffix.length);
+        let score = 0;
+        while (score < prefix.length && before[before.length - 1 - score] === prefix[prefix.length - 1 - score]) score++;
+        let following = 0;
+        while (following < suffix.length && after[following] === suffix[following]) following++;
+        return { offset, score: score + following };
+    }).sort((a, b) => b.score - a.score);
+    return ranked[0].score >= Math.min(8, prefix.length + suffix.length) && ranked[0].score > ranked[1].score
+        ? ranked[0].offset : null;
+}
+
+/** 以当前 DOM 的文字 Range 计算滚动位置。 */
+function getBookmarkTargetRect(body, offset) {
+    const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+    let node;
+    let remaining = offset;
+    while ((node = walker.nextNode())) {
+        if (remaining >= node.nodeValue.length) { remaining -= node.nodeValue.length; continue; }
+        const range = document.createRange();
+        range.setStart(node, remaining);
+        range.setEnd(node, remaining + 1);
+        return range.getClientRects()[0] || null;
+    }
+    return null;
+}
 
 /**
  * 切换删除模式

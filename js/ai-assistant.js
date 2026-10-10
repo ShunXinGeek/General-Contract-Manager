@@ -17,6 +17,7 @@ let assistantReadOnly = false;
 function messageUid() { return globalThis.crypto?.randomUUID?.() || `message-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
 function switchToAssistant() {
     isAssistantMode = true;
+    if (typeof setSearchStatus === 'function') setSearchStatus('success', '就绪', '✓');
     document.querySelectorAll('.header-tab').forEach(btn => btn.classList.remove('active'));
     document.getElementById('tab-Assistant').classList.add('active');
     document.getElementById('panelNav').style.display = 'none';
@@ -43,7 +44,14 @@ function switchBackToContract() {
 // 覆写 switchContract：切换合同时自动退出助手模式
 (function () {
     const originalSwitchContract = switchContract;
-    switchContract = function (key) { if (isAssistantMode) switchBackToContract(); originalSwitchContract(key); };
+    switchContract = function (key) {
+        const returningToSameContract = isAssistantMode && activeContractKey === key;
+        if (isAssistantMode) switchBackToContract();
+        originalSwitchContract(key);
+        if (returningToSameContract && typeof filterNav === 'function') {
+            filterNav(document.querySelector('.search-input')?.value || '');
+        }
+    };
 })();
 
 // 覆写 showWelcomePage：切换欢迎页时自动退出助手模式
@@ -60,23 +68,24 @@ async function sendMessage() {
     const text = input.value.trim();
     const hasAttachments = !!document.querySelector('#attachmentTray:not([hidden])');
     if ((!text && !hasAttachments) || isStreaming) return;
-    if (!isAIConfigured()) { alert('🤖 AI 助手尚未配置\n\n请点击 ⚙️ 设置按钮配置。'); openSettings(); return; }
+    if (!isAIConfigured()) { notifyStatus('🤖 AI 助手尚未配置\n\n请点击 ⚙️ 设置按钮配置。'); openSettings(); return; }
     const currentTopicId = window.AssistantTopics?.getCurrentTopicId?.() || 'legacy';
     const messageId = messageUid();
     // 附件准备是异步操作，先锁定发送状态，避免连续点击造成重复消息或测试竞争。
     isStreaming = true; window.AssistantTopics?.setBusy(true); updateSendButton();
+    const statusTask = window.StatusCenter?.start('正在准备并生成回复…', 'AI 助手');
     let sent = false, titleModelConfig = null, titleModelId = null;
     try {
         const attachments = await window.AssistantAttachments?.prepareMessage?.(currentTopicId, messageId) || [];
-        if (!text && !attachments.length) return;
+        if (!text && !attachments.length) { statusTask?.finish('没有可发送的内容', 'info'); return; }
         abortController = new AbortController();
         const requestSignal = abortController.signal;
         addMessage('user', text || '请分析以下附件。', { id: messageId, attachments });
         sent = true; input.value = ''; autoResizeInput(); showTypingIndicator();
         const messages = await buildMessagesForAPI(); if (requestSignal.aborted) throw new DOMException('已停止生成', 'AbortError');
-        const result = await streamAPIResponse(messages); if (result) { titleModelConfig = { ...AI_CONFIG }; titleModelId = typeof currentSelectedModelId !== 'undefined' ? currentSelectedModelId : null; }
+        const result = await streamAPIResponse(messages); statusTask?.finish(result ? 'AI 回复已完成' : 'AI 回复已停止', result ? 'success' : 'info'); if (result) { titleModelConfig = { ...AI_CONFIG }; titleModelId = typeof currentSelectedModelId !== 'undefined' ? currentSelectedModelId : null; }
     }
-    catch (error) { if (error.name !== 'AbortError') { if (sent) addMessage('assistant', '❌ 请求失败: ' + error.message); else alert(error.message || '附件尚未准备完成。'); } }
+    catch (error) { statusTask?.finish(error.name === 'AbortError' ? '已停止生成回复' : 'AI 请求失败：' + error.message, error.name === 'AbortError' ? 'info' : 'error'); if (error.name !== 'AbortError') { if (sent) addMessage('assistant', '❌ 请求失败: ' + error.message); else notifyStatus(error.message || '附件尚未准备完成。'); } }
     finally { isStreaming = false; window.AssistantTopics?.setBusy(false); hideTypingIndicator(); updateSendButton(); await saveChatToStorage(); }
     if (titleModelConfig) scheduleTopicTitle(titleModelConfig, titleModelId);
 }
@@ -220,10 +229,10 @@ function stopGeneration() { if (abortController) { abortController.abort(); abor
 // =======================================================
 function toggleThinkingMode() {
     if (AI_CONFIG.apiEndpoint && AIClient.thinkingCapability(AI_CONFIG, AI_CONFIG.model) === 'always') {
-        alert('该模型固定开启思考，无法通过此开关关闭。'); return;
+        notifyStatus('该模型固定开启思考，无法通过此开关关闭。'); return;
     }
     if (AI_CONFIG.apiEndpoint && AIClient.thinkingCapability(AI_CONFIG, AI_CONFIG.model) === 'default') {
-        alert('此模型暂未配置原生思考开关，将使用服务商默认行为。'); return;
+        notifyStatus('此模型暂未配置原生思考开关，将使用服务商默认行为。'); return;
     }
     isThinkingMode = !isThinkingMode;
     const btn = document.getElementById('btnThinkingMode');
@@ -308,16 +317,17 @@ async function branchMessage(btn) {
 }
 async function regenerateMessage(btn) {
     if (isStreaming) return;
-    if (!isAIConfigured()) { alert('🤖 AI 助手尚未配置\n\n请点击 ⚙️ 设置按钮配置。'); openSettings(); return; }
+    if (!isAIConfigured()) { notifyStatus('🤖 AI 助手尚未配置\n\n请点击 ⚙️ 设置按钮配置。'); openSettings(); return; }
     const msgDiv = btn.closest('.chat-message');
     const index = parseInt(msgDiv.dataset.msgIndex);
     if (!isNaN(index) && index >= 0 && index < chatMessages.length) {
         abortController = new AbortController();
         const requestSignal = abortController.signal;
         showTypingIndicator();
+        const statusTask = window.StatusCenter?.start('正在重新生成回复…', 'AI 助手');
         let titleModelConfig = null, titleModelId = null;
-        try { isStreaming = true; window.AssistantTopics?.setBusy(true); updateSendButton(); const messages = await buildMessagesForAPI(chatMessages.slice(0, index)); if (requestSignal.aborted) throw new DOMException('已停止生成', 'AbortError'); const result = await streamAPIResponse(messages, msgDiv, index); if (result) { titleModelConfig = { ...AI_CONFIG }; titleModelId = typeof currentSelectedModelId !== 'undefined' ? currentSelectedModelId : null; } }
-        catch (error) { if (error.name !== 'AbortError') { chatMessages[index] = { role: 'assistant', content: '❌ 请求失败: ' + error.message }; renderChatMessages(); } }
+        try { isStreaming = true; window.AssistantTopics?.setBusy(true); updateSendButton(); const messages = await buildMessagesForAPI(chatMessages.slice(0, index)); if (requestSignal.aborted) throw new DOMException('已停止生成', 'AbortError'); const result = await streamAPIResponse(messages, msgDiv, index); statusTask?.finish(result ? 'AI 回复已重新生成' : 'AI 回复已停止', result ? 'success' : 'info'); if (result) { titleModelConfig = { ...AI_CONFIG }; titleModelId = typeof currentSelectedModelId !== 'undefined' ? currentSelectedModelId : null; } }
+        catch (error) { statusTask?.finish(error.name === 'AbortError' ? '已停止生成回复' : 'AI 请求失败：' + error.message, error.name === 'AbortError' ? 'info' : 'error'); if (error.name !== 'AbortError') { chatMessages[index] = { role: 'assistant', content: '❌ 请求失败: ' + error.message }; renderChatMessages(); } }
         finally { isStreaming = false; window.AssistantTopics?.setBusy(false); hideTypingIndicator(); updateSendButton(); await saveChatToStorage(); }
         if (titleModelConfig) scheduleTopicTitle(titleModelConfig, titleModelId);
     }
@@ -639,12 +649,13 @@ async function buildKnowledgeBaseIndex() {
     if (!isEmbeddingConfigured()) { await CustomDialog.alert('🔗 嵌入模型尚未配置\n请点击设置按钮配置。', '未配置'); openSettings(); return; }
     const initialStatus = await RAG.getIndexStatus(AI_CONFIG, contracts);
     if (!initialStatus.corpus) { await CustomDialog.alert('尚未加载可检索的合同正文，无法建立知识库索引。', '没有合同正文'); return; }
+    const task = window.StatusCenter?.start('正在构建知识库索引…', '知识库');
     const btn = document.getElementById('btnUpdateIndex'); const orig = btn.innerHTML; btn.innerHTML = '⏳'; btn.disabled = true;
     try {
-        const summary = await RAG.buildIndex(contracts, AI_CONFIG, (c, t, s) => { });
+        const summary = await RAG.buildIndex(contracts, AI_CONFIG, (c, t, s) => { task?.update(`正在构建索引 ${c}/${t}：${s || ''}`, t ? c / t * 100 : null); });
         const status = await checkRAGIndexStatus();
-        await CustomDialog.alert('本次成功更新 ' + (summary?.count || 0) + '/' + (summary?.total || 0) + ' 条；失败 ' + (summary?.failed || 0) + ' 条。当前有效语义向量 ' + (status?.valid || 0) + '/' + (status?.corpus || 0) + ' 条。', summary?.failed ? '部分构建失败' : '构建完成');
-    } catch (e) { await CustomDialog.alert('构建索引失败: ' + e.message, '构建失败'); }
+        task?.finish('本次成功更新 ' + (summary?.count || 0) + '/' + (summary?.total || 0) + ' 条；失败 ' + (summary?.failed || 0) + ' 条。当前有效语义向量 ' + (status?.valid || 0) + '/' + (status?.corpus || 0) + ' 条。', summary?.failed ? 'warning' : 'success');
+    } catch (e) { task?.finish('构建索引失败: ' + e.message, 'error'); }
     finally { btn.innerHTML = orig; btn.disabled = false; }
 }
 

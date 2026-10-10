@@ -248,16 +248,19 @@ function clearBookmarkHighlights() {
     });
 }
 
-/**
- * 更新搜索状态显示
- */
+/** 在标题旁的状态屏显示搜索状态。 */
+function setSearchStatus(type, message, statusIcon) {
+    window.StatusCenter?.setContext(type, message);
+}
+
+/** 更新搜索状态显示。 */
 function updateSearchStatus(found, total) {
     if (found > 0) {
-        showStatus('info', `找到 ${found} 条`, '🔍', 0);
+        setSearchStatus('info', `找到 ${found} 条`, '🔍');
     } else if (currentSearchTerm) {
-        showStatus('warning', '无匹配', '🔍', 0);
+        setSearchStatus('warning', '无匹配', '🔍');
     } else {
-        showStatus('success', '就绪', '✓', 0);
+        setSearchStatus('success', '就绪', '✓');
     }
 }
 

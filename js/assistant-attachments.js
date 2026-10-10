@@ -105,20 +105,23 @@
         const selected = Array.from(fileList || []); if (!selected.length) return;
         const current = await getDraft();
         const currentBytes = current.reduce((sum, item) => sum + (item.size || 0), 0);
-        if (current.length + selected.length > LIMITS.count) { alert(`最多可添加 ${LIMITS.count} 个附件。`); return; }
-        if (currentBytes + selected.reduce((sum, file) => sum + file.size, 0) > LIMITS.batchBytes) { alert('附件总大小不能超过 30 MB。'); return; }
+        if (current.length + selected.length > LIMITS.count) { notifyStatus(`最多可添加 ${LIMITS.count} 个附件。`); return; }
+        if (currentBytes + selected.reduce((sum, file) => sum + file.size, 0) > LIMITS.batchBytes) { notifyStatus('附件总大小不能超过 30 MB。'); return; }
         const additions = selected.map(file => ({ id: id(), name: file.name, type: fileExt(file), size: file.size, status: 'parsing', extractedBytes: 0 }));
         await saveDraft([...current, ...additions]);
         for (let index = 0; index < selected.length; index++) {
             const targetId = additions[index].id;
+            const task = window.StatusCenter?.start(`正在解析附件 ${selected[index].name}`, '附件');
             try {
                 const result = await parseFile(selected[index]);
                 const latest = await getDraft(); const item = latest.find(row => row.id === targetId);
-                if (!item) continue;
+                if (!item) { task?.finish('附件已移除', 'info'); continue; }
                 Object.assign(item, { status: 'ready', text: result.text, extractedBytes: byteLength(result.text), warning: result.warning || null }); await saveDraft(latest);
+                task?.finish(`附件 ${selected[index].name} 解析完成${result.warning ? '：' + result.warning : ''}`, result.warning ? 'warning' : 'success');
             } catch (error) {
+                task?.finish(`附件 ${selected[index].name} 解析失败：${error.message}`, 'error');
                 const latest = await getDraft(); const item = latest.find(row => row.id === targetId);
-                if (!item) continue;
+                if (!item) { task?.finish('附件已移除', 'info'); continue; }
                 Object.assign(item, { status: 'error', error: error.message || '解析失败' }); await saveDraft(latest);
             }
         }

@@ -10,37 +10,72 @@
 // =======================================================
 // 12b. 备注系统
 // =======================================================
+function getClauseTextForNode(node) {
+    const element = node?.nodeType === 3 ? node.parentElement : node;
+    return element?.closest?.('.clause-text') || null;
+}
+
+function captureNoteSelection() {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount || selection.isCollapsed || !selection.toString().trim()) return null;
+
+    const range = selection.getRangeAt(0);
+    const clauseText = getClauseTextForNode(range.startContainer);
+    if (!clauseText || clauseText !== getClauseTextForNode(range.endContainer)) return null;
+
+    return { range: range.cloneRange(), clauseText };
+}
+
+function isCapturedNoteSelectionValid(snapshot) {
+    if (!snapshot?.clauseText?.isConnected) return false;
+    const { range, clauseText } = snapshot;
+    return getClauseTextForNode(range.startContainer) === clauseText &&
+        getClauseTextForNode(range.endContainer) === clauseText;
+}
+
 async function addOrEditNote() {
     const sel = window.getSelection();
     if (!sel.rangeCount) return;
-    let node = sel.anchorNode;
-    if (node.nodeType === 3) node = node.parentNode;
-    let mutationTarget = node;
-    if (node.classList.contains('note-span')) {
-        const oldText = node.getAttribute('data-note');
+    const node = sel.anchorNode?.nodeType === 3 ? sel.anchorNode.parentElement : sel.anchorNode;
+    const noteSpan = node?.closest?.('.note-span');
+
+    if (noteSpan) {
+        const oldText = noteSpan.getAttribute('data-note');
         const newText = await CustomDialog.prompt('编辑备注:', oldText);
         if (newText === null) return;
         if (newText.trim() === '') {
-            const text = document.createTextNode(node.innerText);
-            node.parentNode.replaceChild(text, node);
+            const text = document.createTextNode(noteSpan.innerText);
+            noteSpan.parentNode.replaceChild(text, noteSpan);
         } else {
-            node.setAttribute('data-note', newText);
+            noteSpan.setAttribute('data-note', newText);
         }
+        handleEditorMutation(noteSpan);
     } else {
+        // CustomDialog.prompt 会把焦点移到输入框；必须在 await 前冻结正文选区。
+        const snapshot = captureNoteSelection();
+        if (!snapshot) {
+            showError('请选择同一条款中的连续文本后再添加备注。');
+            return;
+        }
         const newText = await CustomDialog.prompt('添加备注:', '');
-        if (newText && newText.trim() !== '') {
-            const range = sel.getRangeAt(0);
-            const span = document.createElement('span');
-            span.className = 'note-span';
-            span.setAttribute('data-note', newText);
-            try {
-                range.surroundContents(span);
-                mutationTarget = span;
-                sel.removeAllRanges();
-            } catch (e) { console.warn('备注添加失败:', e); }
+        if (!newText || newText.trim() === '') return;
+        if (!isCapturedNoteSelectionValid(snapshot)) {
+            showError('正文已变化或已切换条款，请重新选择文本后添加备注。');
+            return;
+        }
+
+        const span = document.createElement('span');
+        span.className = 'note-span';
+        span.setAttribute('data-note', newText);
+        try {
+            snapshot.range.surroundContents(span);
+            sel.removeAllRanges();
+            handleEditorMutation(span);
+        } catch (e) {
+            console.warn('备注添加失败:', e);
+            showError('所选内容跨越了复杂格式，暂无法添加备注。请重新选择连续文本。');
         }
     }
-    handleEditorMutation(mutationTarget);
 }
 
 // 备注气泡 Tooltip
@@ -317,7 +352,7 @@ async function exportToPdf() {
     if (!isConfirm) return;
 
     captureCurrentContent();
-    await CustomDialog.alert('正在生成 PDF，请稍候...点击确定开始。', '处理中');
+    const exportTask = window.StatusCenter?.start('正在生成 PDF，请稍候…', 'PDF 导出');
 
     const element = document.getElementById('panelMain').cloneNode(true);
     // 移除不必要的按钮
@@ -338,9 +373,9 @@ async function exportToPdf() {
 
     try {
         await html2pdf().set(opt).from(element).save();
-        CustomDialog.alert('PDF 导出成功。', '导出完成');
+        exportTask?.finish('PDF 导出成功。');
     } catch (err) {
-        CustomDialog.alert(`导出 PDF 失败: ${err.message}`, '错误');
+        exportTask?.finish(`导出 PDF 失败: ${err.message}`, 'error');
     }
 }
 
@@ -409,6 +444,7 @@ async function exportToWord(includeAnnotations) {
     const doc = new Document({ sections: [{ properties: {}, children: children }] });
     const suffix = includeAnnotations ? '_带批注审阅版' : '_基础版';
 
+    const exportTask = window.StatusCenter?.start('正在生成 Word 文档…', 'Word 导出');
     Packer.toBlob(doc).then(blob => {
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement("a");
@@ -416,9 +452,9 @@ async function exportToWord(includeAnnotations) {
         a.download = `${contracts[activeContractKey].title}${suffix}.docx`;
         a.click();
         window.URL.revokeObjectURL(url);
-        CustomDialog.alert(`Word ${suffix} 导出成功。`, '导出完成');
+        exportTask?.finish(`Word ${suffix} 导出成功。`);
     }).catch(err => {
-        CustomDialog.alert(`导出Word失败: ${err.message}`, '错误');
+        exportTask?.finish(`导出 Word 失败: ${err.message}`, 'error');
     });
 }
 

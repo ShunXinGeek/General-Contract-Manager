@@ -20,6 +20,7 @@
     const noteRef = id => db.collection(window.FIREBASE_COLLECTIONS.CONTRACT_MODS).doc(currentUser.uid).collection('assistant_notes').doc(id);
 
     function status(text, kind = '') {
+        if (text) window.StatusCenter?.post(kind || 'info', text, { source: '笔记本', id: 'notebook-status' });
         const el = document.getElementById('assistantNotebookStatus');
         if (el) { el.textContent = text || ''; el.dataset.kind = kind; }
     }

@@ -47,42 +47,23 @@ function sanitizeHtml(html) {
 // 状态提示条
 // =======================================================
 
-/**
- * 在页面底部显示一个临时状态提示条
- * @param {string} type   - 'success' | 'error' | 'warning' | 'loading'
- * @param {string} message - 显示的文字
- * @param {string} icon   - 可选图标
- * @param {number} duration - 显示时长（毫秒），0 表示不自动消失
- */
+/** Keep the existing notification API while routing all results to the header. */
 function showStatus(type, message, icon, duration) {
-    let statusBar = document.getElementById('statusBar');
-    if (!statusBar) {
-        statusBar = document.createElement('div');
-        statusBar.id = 'statusBar';
-        statusBar.setAttribute('role', 'status');
-        statusBar.setAttribute('aria-live', 'polite');
-        statusBar.setAttribute('aria-atomic', 'true');
-        statusBar.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);padding:10px 20px;border-radius:8px;z-index:10000;font-size:14px;box-shadow:0 2px 10px rgba(0,0,0,0.3);transition:opacity 0.3s;';
-        document.body.appendChild(statusBar);
+    // Older rename callers use (message, duration, isError).
+    if (!['success', 'error', 'warning', 'loading', 'info'].includes(type)) {
+        duration = message; message = type; type = icon === true ? 'error' : 'info';
     }
-    statusBar.style.background =
-        type === 'error' ? '#f44336' :
-            type === 'warning' ? '#ff9800' :
-                type === 'loading' ? '#2196F3' : '#4CAF50';
-    statusBar.style.color = '#fff';
-    statusBar.innerText = (icon || '') + ' ' + message;
-    statusBar.style.opacity = '1';
-    statusBar.style.display = 'block';
-    if (duration > 0) {
-        setTimeout(() => {
-            statusBar.style.opacity = '0';
-            setTimeout(() => statusBar.style.display = 'none', 300);
-        }, duration);
-    }
+    return window.StatusCenter?.post(type, message, { duration: typeof duration === 'number' ? duration : undefined });
 }
-
-function showSuccess(msg, duration) { showStatus('success', msg, '✅', duration || 3000); }
-function showError(msg, duration) { showStatus('error', msg, '❌', duration || 4000); }
+function showSuccess(msg, duration) { return showStatus('success', msg, '', duration ?? 3000); }
+function showError(msg, duration) { return showStatus('error', msg, '', typeof duration === 'number' ? duration : 8000); }
+function notifyStatus(message, title = '提示') {
+    const text = String(message);
+    const type = /失败|错误|无法|未能/.test(title + text) ? 'error' : /成功|完成|已开启|已退出/.test(title + text) ? 'success' : /请|尚未|没有|不能|至少|最多|未配置/.test(title + text) ? 'warning' : 'info';
+    return window.StatusCenter?.post(type, text, { source: title,
+        action: /AI|嵌入模型/.test(text) && /配置/.test(text) && typeof openSettings === 'function'
+            ? { label: '打开设置', run: () => openSettings() } : null });
+}
 
 // =======================================================
 // 简单加解密混淆 (防君子不防小人，防止明文直接被扫描)
@@ -135,26 +116,10 @@ const CustomDialog = {
         return { content, body };
     },
 
+    // Informational alerts no longer block the workflow. Decisions stay in confirm/prompt.
     alert: function (message, title = '提示') {
-        return new Promise(resolve => {
-            const overlay = this._createOverlay();
-            const { content, body } = this._createContent(title, escapeHtml(message).replace(/\n/g, '<br>'));
-
-            const btnDiv = document.createElement('div');
-            btnDiv.style.marginTop = '20px';
-            btnDiv.style.textAlign = 'right';
-
-            const btn = document.createElement('button');
-            btn.innerText = '确定';
-            btn.style.cssText = 'padding:8px 20px; background:#3498db; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;';
-            btn.onclick = () => { overlay.remove(); resolve(); };
-
-            btnDiv.appendChild(btn);
-            body.appendChild(btnDiv);
-            overlay.appendChild(content);
-            document.body.appendChild(overlay);
-            btn.focus();
-        });
+        notifyStatus(message, title);
+        return Promise.resolve();
     },
 
     confirm: function (message, title = '确认') {

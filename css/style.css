@@ -362,7 +362,7 @@ header .icon-btn:disabled {
 
 
 
-/* 状态显示屏 */
+/* 顶部小猫与消息中心 */
 
 .header-info {
 
@@ -376,131 +376,80 @@ header .icon-btn:disabled {
 
 
 
-.status-display {
-
-    display: flex;
-
-    align-items: center;
-
-    gap: 5px;
-
-    padding: 4px 12px;
-
-    border-radius: 15px;
-
-    background: rgba(39, 174, 96, 0.2);
-
-    border: 1px solid rgba(39, 174, 96, 0.4);
-
-    font-size: 12px;
-
-    min-width: 80px;
-
-    transition: all 0.3s ease;
-
+/* The mascot has its own small stage; messages float below the header. */
+#statusDisplay {
+    position: relative; display: grid; place-items: center; flex: 0 0 64px;
+    width: 64px; height: 46px; min-width: 64px; padding: 0; border: 0;
+    border-radius: 8px; background: transparent; cursor: pointer;
+    transition: background 160ms ease;
 }
-
-
-
-.status-icon {
-
-    font-size: 12px;
-
+#statusDisplay:hover, #statusDisplay[aria-expanded="true"] { background: #ffffff12; }
+#statusDisplay:focus-visible, .status-panel :focus-visible, .status-bubble button:focus-visible { outline: 2px solid #58b9ef; outline-offset: 2px; }
+.status-cat { width: 44px; height: 40px; overflow: visible; }
+.cat-eyes { transform-box: fill-box; transform-origin: center; animation: cat-blink 9s infinite; }
+.cat-tail { transform-origin: 44px 46px; animation: cat-tail 12s ease-in-out infinite; }
+.cat-head { transform-origin: 32px 32px; }
+.cat-paw { transform-origin: 42px 44px; }
+.status-loading .cat-stride { animation: cat-walk 8s ease-in-out infinite; }
+.status-loading .cat-head { animation: cat-look 8s ease-in-out infinite; }
+.status-warning .cat-paw, .status-error .cat-paw { animation: cat-wave 700ms ease-in-out 2; }
+@keyframes cat-blink { 0%, 44%, 48%, 100% { transform: scaleY(1); } 46% { transform: scaleY(.12); } }
+@keyframes cat-tail { 0%, 70%, 90%, 100% { transform: rotate(0); } 76%, 86% { transform: rotate(-12deg); } 81% { transform: rotate(8deg); } }
+@keyframes cat-walk { 0%, 15%, 85%, 100% { transform: translateX(0); } 30%, 45% { transform: translateX(6px); } 60%, 70% { transform: translateX(-6px); } }
+@keyframes cat-look { 0%, 15%, 85%, 100% { transform: rotate(0); } 30%, 45% { transform: rotate(6deg); } 60%, 70% { transform: rotate(-6deg); } }
+@keyframes cat-wave { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(-45deg); } }
+.status-unread { position: absolute; right: 8px; top: 6px; width: 7px; height: 7px; border: 2px solid var(--bg-header); border-radius: 50%; background: #ffbf70; }
+.status-task-count { position: absolute; right: 3px; bottom: 1px; background: #d6eef6; color: #173e53; border-radius: 5px; padding: 1px 4px; font: 600 10px/14px 'Segoe UI', sans-serif; }
+.status-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.status-bubble { --bubble-accent: #458eb7; position: fixed; z-index: 10001; width: min(330px, calc(100vw - 32px)); box-sizing: border-box; background: var(--bg-panel); color: var(--text-body); border: 1px solid var(--border-color); border-left: 3px solid var(--bubble-accent); border-radius: 12px; box-shadow: 0 8px 24px #0003; }
+@keyframes bubble-arrive { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+.status-bubble { animation: bubble-arrive 180ms ease-out; }
+.status-bubble::before { content: ''; position: absolute; top: -6px; left: var(--bubble-tip, 28px); width: 10px; height: 10px; background: var(--bg-panel); border-top: 1px solid var(--border-color); border-left: 1px solid var(--border-color); transform: rotate(45deg); }
+.status-bubble[data-type="error"] { --bubble-accent: #d96659; }
+.status-bubble[data-type="warning"] { --bubble-accent: #c79735; }
+.status-bubble[data-type="success"] { --bubble-accent: #399978; }
+.status-bubble-open { display: flex; flex-direction: column; gap: 6px; width: 100%; min-height: 80px; padding: 15px 44px 15px 16px; border: none; border-radius: inherit; background: transparent; color: inherit; text-align: left; cursor: pointer; font: inherit; }
+.status-bubble-label { font-size: 11px; font-weight: 600; }
+.status-bubble-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; font-size: 13px; line-height: 1.65; }
+.status-bubble-hint { font-size: 11px; opacity: .8; }
+.status-bubble-close { position: absolute; right: 0; top: 0; width: 44px; height: 44px; padding: 0; border: none; border-radius: 0 12px 0 8px; background: transparent; color: inherit; font-size: 22px; cursor: pointer; }
+.status-bubble button:hover { background: var(--bg-nav-item-hover); }
+.status-progress { height: 3px; display: block; margin: 0 12px 8px; overflow: hidden; background: var(--border-color); border-radius: 2px; }
+.status-progress > span { display: block; height: 100%; background: var(--bubble-accent); transform-origin: left; transition: transform 150ms ease; }
+.status-progress.is-indeterminate > span { animation: status-scan 1.8s ease-in-out infinite; }
+@keyframes status-scan { from { transform: translateX(-35%) scaleX(.35); } to { transform: translateX(100%) scaleX(.35); } }
+.status-panel[hidden], .status-bubble[hidden], .status-unread[hidden], .status-task-count[hidden], .status-progress[hidden] { display: none; }
+.status-panel { position: fixed; z-index: 10002; top: 58px; left: 16px; width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 76px); box-sizing: border-box; display: flex; flex-direction: column; background: var(--bg-panel); color: var(--text-body); border: 1px solid var(--border-color); border-radius: 12px; box-shadow: 0 16px 48px #0004; overflow: hidden; }
+.status-panel-heading { padding: 18px 18px 10px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.status-panel h2 { margin: 0; font-size: 18px; color: var(--text-main); }
+.status-panel-heading p { margin: 5px 0 0; font-size: 12px; }
+.status-panel button { min-height: 44px; padding: 0 10px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-panel); color: var(--text-body); font: inherit; font-size: 12px; cursor: pointer; transition: background 150ms ease; }
+.status-panel button:hover { background: var(--bg-nav-item-hover); }
+.status-panel button[aria-pressed="true"] { background: var(--bg-topic-active); border-color: #458eb7; font-weight: 600; }
+.status-panel-tools { display: flex; justify-content: space-between; gap: 8px; padding: 0 18px 12px; border-bottom: 1px solid var(--border-color); }
+.status-panel-tools [role="group"] { display: flex; gap: 4px; }
+.status-list { overflow: auto; overscroll-behavior: contain; min-height: 80px; padding: 10px 18px; }
+.status-record { border: 1px solid var(--border-color); border-left: 3px solid #458eb7; border-radius: 6px; margin-bottom: 8px; padding: 0 12px; }
+.status-record.record-error { border-left-color: #df665c; }
+.status-record.record-warning { border-left-color: #ca9737; }
+.status-record.record-success { border-left-color: #3aa57d; }
+.status-record summary { cursor: pointer; padding: 12px 0; min-height: 44px; box-sizing: border-box; }
+.status-record-meta { font-size: 11px; }
+.status-record-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; margin-top: 6px; }
+.status-record-full { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.7; margin: 0 0 12px; }
+.status-record progress { width: 100%; height: 6px; margin-bottom: 12px; accent-color: #458eb7; }
+.status-record .status-action { margin-bottom: 12px; }
+.status-empty { font-size: 13px; text-align: center; padding: 24px 0; }
+.status-panel-footnote { margin: 0; border-top: 1px solid var(--border-color); padding: 12px 18px; font-size: 11px; line-height: 1.5; }
+@media (max-width: 600px) {
+    .status-panel-tools, .status-panel-heading { padding-left: 12px; padding-right: 12px; }
+    .status-list { padding-left: 12px; padding-right: 12px; }
 }
-
-
-
-.status-text {
-
-    white-space: nowrap;
-
-    max-width: 200px;
-
-    overflow: hidden;
-
-    text-overflow: ellipsis;
-
+#statusDisplay[data-paused="true"] *, .status-bubble[data-paused="true"] * { animation-play-state: paused !important; }
+@media (prefers-reduced-motion: reduce) {
+    #statusDisplay, .status-panel button, .status-progress > span { transition: none; }
+    #statusDisplay *, .status-bubble, .status-progress.is-indeterminate > span { animation: none !important; }
 }
-
-
-
-/* 成功状态 */
-
-.status-display.status-success {
-
-    background: rgba(39, 174, 96, 0.2);
-
-    border-color: rgba(39, 174, 96, 0.4);
-
-    color: #2ecc71;
-
-}
-
-
-
-/* 错误状态 */
-
-.status-display.status-error {
-
-    background: rgba(231, 76, 60, 0.2);
-
-    border-color: rgba(231, 76, 60, 0.4);
-
-    color: #e74c3c;
-
-}
-
-
-
-/* 警告状态 */
-
-.status-display.status-warning {
-
-    background: rgba(241, 196, 15, 0.2);
-
-    border-color: rgba(241, 196, 15, 0.4);
-
-    color: #f1c40f;
-
-}
-
-
-
-/* 信息状态 */
-
-.status-display.status-info {
-
-    background: rgba(52, 152, 219, 0.2);
-
-    border-color: rgba(52, 152, 219, 0.4);
-
-    color: #3498db;
-
-}
-
-
-
-/* 加载状态 */
-
-.status-display.status-loading {
-
-    background: rgba(155, 89, 182, 0.2);
-
-    border-color: rgba(155, 89, 182, 0.4);
-
-    color: #9b59b6;
-
-}
-
-
-
-.status-display.status-loading .status-icon {
-
-    animation: spin 1s linear infinite;
-
-}
-
-
 
 @keyframes spin {
 
@@ -4744,23 +4693,7 @@ header .icon-btn:disabled {
 
 
 
-    /* 隐藏状态描述文字，只保留图标 */
 
-    .status-text {
-
-        display: none;
-
-    }
-
-
-
-    .status-display {
-
-        min-width: auto;
-
-        padding: 4px 8px;
-
-    }
 
 
 
@@ -5008,23 +4941,7 @@ header .icon-btn:disabled {
 
 
 
-    /* 隐藏状态显示屏的文字，只显示图标 */
 
-    .status-text {
-
-        display: none;
-
-    }
-
-
-
-    .status-display {
-
-        min-width: auto;
-
-        padding: 4px 8px;
-
-    }
 
 
 
@@ -5172,9 +5089,9 @@ header .icon-btn:disabled {
 
 
 
-    .status-display {
+    #statusDisplay {
 
-        display: none;
+        display: flex;
 
     }
 
@@ -6318,3 +6235,16 @@ header .icon-btn:disabled {
 .attachment-chip button { width:20px; height:20px; padding:0; border-radius:50%; color:var(--text-muted); font-size:17px; line-height:1; }
 .attachment-chip button:hover:not(:disabled) { color:#fff; background:#b42318; }.attachment-chip.is-error { border-color:#d92d20; }.attachment-chip.is-parsing { opacity:.7; }
 .message-attachments { display:flex; flex-wrap:wrap; gap:5px; margin-top:7px; }.message-attachments span { padding:3px 7px; }
+
+/* Transparent middle space flexes; the tab background hugs its contents. */
+header { gap: 12px; flex-shrink: 0; }
+header > .header-group { flex-shrink: 0; }
+.header-tabs-space { min-width: 48px; flex: 1 1 0; display: flex; justify-content: center; }
+.header-tabs-space > .header-tabs { position: static; transform: none; margin: 0; min-width: 0; max-width: 100%; width: max-content; box-sizing: border-box; flex: 0 1 auto; overflow-x: auto; scrollbar-width: thin; }
+.header-tabs-space .header-tab { flex-shrink: 0; white-space: nowrap; }
+@media (max-width: 600px) {
+    header { flex-wrap: wrap; height: 96px; gap: 0 8px; align-content: center; }
+    header > .header-group:last-child { width: 100%; justify-content: flex-end; }
+    .workspace { height: calc(100vh - 96px); }
+    .status-panel { top: 104px; max-height: calc(100dvh - 120px); }
+}

@@ -17,6 +17,7 @@ function handleContractImport(event) {
 
     Logger.info('import', `开始导入合同文件: ${file.name}`);
 
+    const importTask = window.StatusCenter?.start(`正在读取合同 ${file.name}…`, '合同导入');
     const reader = new FileReader();
     reader.onload = async function (e) {
         try {
@@ -26,7 +27,7 @@ function handleContractImport(event) {
             const parsedData = parseContractText(rawText);
 
             if (Object.keys(parsedData).length === 0) {
-                await CustomDialog.alert(`未能在 ${file.name} 中识别出有效的条款格式。\n\n请确保文件内容符合规范。`, '导入失败');
+                importTask?.finish(`未能在 ${file.name} 中识别出有效的条款格式。请确保文件内容符合规范。`, 'error');
                 return;
             }
 
@@ -73,8 +74,6 @@ function handleContractImport(event) {
                     }
                 }
 
-                await CustomDialog.alert(`"${meta.fullName}" (${contractKey}) 数据导入成功！共 ${Object.keys(parsedData).length} 条条款。`, '导入成功');
-
                 if (typeof updateLocalModificationTime === 'function') {
                     updateLocalModificationTime();
                 }
@@ -85,14 +84,17 @@ function handleContractImport(event) {
                 buildReverseIndex();
                 autoSave();
                 if (typeof saveContractsToStorage === 'function') saveContractsToStorage();
-            }
+                importTask?.finish(`"${meta.fullName}" (${contractKey}) 数据导入成功！共 ${Object.keys(parsedData).length} 条条款。`);
+            } else { importTask?.finish('已取消合同导入', 'info'); }
         } catch (error) {
             console.error(error);
-            await CustomDialog.alert(`导入失败：\n${error.message}`, '错误');
+            importTask?.finish(`导入失败：\n${error.message}`, 'error');
         }
         // The input element's value should be cleared by the caller if it's an input type="file"
     };
 
+    reader.onerror = () => importTask?.finish(`无法读取文件 ${file.name}`, 'error');
+    reader.onabort = () => importTask?.finish('已取消读取合同文件', 'info');
     reader.readAsText(file);
 }
 
