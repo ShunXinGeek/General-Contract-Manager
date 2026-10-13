@@ -654,7 +654,9 @@ async function buildKnowledgeBaseIndex() {
     try {
         const summary = await RAG.buildIndex(contracts, AI_CONFIG, (c, t, s) => { task?.update(`正在构建索引 ${c}/${t}：${s || ''}`, t ? c / t * 100 : null); });
         const status = await checkRAGIndexStatus();
-        task?.finish('本次成功更新 ' + (summary?.count || 0) + '/' + (summary?.total || 0) + ' 条；失败 ' + (summary?.failed || 0) + ' 条。当前有效语义向量 ' + (status?.valid || 0) + '/' + (status?.corpus || 0) + ' 条。', summary?.failed ? 'warning' : 'success');
+        const succeeded = (summary?.count || 0) + (summary?.skipped || 0);
+        const reasons = (summary?.errors || []).map(item => `${item.reason} ${item.count} 条`).join('；');
+        task?.finish(`本次成功更新 ${succeeded}/${summary?.total || 0} 条（新建 ${summary?.count || 0} 条，沿用已有 ${summary?.skipped || 0} 条）；失败 ${summary?.failed || 0} 条。${reasons ? `失败原因：${reasons}。` : ''}当前有效语义向量 ${status?.valid || 0}/${status?.corpus || 0} 条。`, summary?.failed ? 'warning' : 'success');
     } catch (e) { task?.finish('构建索引失败: ' + e.message, 'error'); }
     finally { btn.innerHTML = orig; btn.disabled = false; }
 }

@@ -80,6 +80,8 @@ async function run() {
     // Real RAG methods with controlled DB/API boundaries.
     vm.runInContext(fs.readFileSync(path.join(root, 'js/rag.js'), 'utf8'), ctx);
     const rag = ctx.RAG, config = { embeddingModel: 'test-model', embeddingEndpoint: 'https://example.test/v1', embeddingApiKey: 'test-key' };
+    ctx.fetch = async () => ({ ok: false, status: 429 });
+    await assert.rejects(rag.getEmbedding('query', config.embeddingApiKey, config.embeddingEndpoint, config.embeddingModel), error => error.status === 429);
     const record = { sourceId: minimal.GCC.sourceId, type: 'GCC', clauseId: '50', title: 'Extension', embeddingModel: 'test-model', schemaVersion: rag.INDEX_SCHEMA_VERSION, sourceHash: api.fingerprint(minimal.GCC.data['50'].content), dimension: 2, vector: [1, 0] };
     record.titleHash = api.fingerprint('Extension'); record.embeddingSpace = rag.embeddingSpace(config.embeddingEndpoint, config.embeddingModel);
     assert.strictEqual(rag.validateRecord(record, config, minimal), 'ready');
@@ -119,9 +121,28 @@ async function run() {
     // Snapshot consistency while building: generated vectors describe the submitted text, not later edits.
     const stored = [];
     rag.db = { transaction() { return { objectStore() { return { put(row) { stored.push(row); const req = {}; setTimeout(() => req.onsuccess(), 0); return req; } }; } }; } };
+    rag.readRecords = async () => [];
     rag.getEmbedding = async text => { assert.match(text, /Original extension/); return [1, 0]; };
     const summary = await rag.buildIndex({ GCC: { sourceId: minimal.GCC.sourceId, data: { '50': minimal.GCC.data['50'] } }, SCC: { sourceId: minimal.SCC.sourceId, data: { '2': minimal.SCC.data['2'] } } }, config);
     assert.strictEqual(summary.count, 1); assert.strictEqual(stored[0].sourceHash, record.sourceHash); assert.strictEqual(stored[0].schemaVersion, rag.INDEX_SCHEMA_VERSION);
+    const reusable = { ...stored[0], id: 'source::50', sourceId: 'source' };
+    rag.readRecords = async () => [reusable];
+    const waits = []; rag.pauseIndex = async ms => { waits.push(ms); };
+    let attempts = 0;
+    rag.getEmbedding = async () => {
+        if (++attempts === 1) { const error = new Error('rate limited'); error.status = 429; throw error; }
+        return [1, 0];
+    };
+    const resumed = await rag.buildIndex({ GCC: { sourceId: 'source', data: {
+        '50': minimal.GCC.data['50'], '51': { title: 'More', content: 'More source text.' }
+    } } }, config);
+    assert.strictEqual(resumed.count, 1); assert.strictEqual(resumed.skipped, 1); assert.strictEqual(resumed.failed, 0);
+    assert.strictEqual(attempts, 2); assert.ok(waits.includes(65000), 'HTTP 429 must wait and retry the same clause');
+    assert.strictEqual(stored.length, 2, 'valid stored vectors must not be regenerated');
+    rag.readRecords = async () => [];
+    rag.getEmbedding = async () => { const error = new Error('unauthorized'); error.status = 401; throw error; };
+    const rejected = await rag.buildIndex({ GCC: { sourceId: 'source', data: { '51': { title: 'More', content: 'More source text.' } } } }, config);
+    assert.strictEqual(rejected.failed, 1); assert.strictEqual(rejected.errors[0].reason, 'HTTP 401');
     const edited = JSON.parse(JSON.stringify(minimal)); edited.GCC.data['50'].content += ' Changed.';
     assert.strictEqual(rag.validateRecord(stored[0], config, edited), 'source-stale');
     const budgetEvidence = await api.retrieve('SCC Clause 34', minimal, { retrievalCharacterBudget: 2000 }); assert.ok(budgetEvidence.diagnostic.characters <= 2000);

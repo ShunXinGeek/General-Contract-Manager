@@ -631,13 +631,20 @@ function hydrateMissingCloudContracts(cloudData) {
 
 function refreshContractsAfterCloud(preferredContractKey = null) {
     if (typeof contracts === 'undefined') return;
+    const welcomeActive = document.getElementById('tab-Welcome')?.classList.contains('active') === true;
+    const assistantActive = typeof isAssistantMode !== 'undefined' && isAssistantMode;
+    if (welcomeActive) {
+        if (typeof renderTabs === 'function') renderTabs();
+        if (typeof showWelcomePage === 'function') showWelcomePage();
+        return;
+    }
     const currentKey = contracts[activeContractKey]
         ? activeContractKey
         : (contracts[preferredContractKey] ? preferredContractKey : Object.keys(contracts)[0]);
 
     if (!currentKey) {
         if (typeof renderTabs === 'function') renderTabs();
-        if (typeof showWelcomePage === 'function') showWelcomePage();
+        if (!assistantActive && typeof showWelcomePage === 'function') showWelcomePage();
         return;
     }
 
@@ -656,7 +663,7 @@ function refreshContractsAfterCloud(preferredContractKey = null) {
  * 智能双向同步 - 字段级合并策略
  * 逐条款比较本地和云端的修改时间，保留较新的版本
  */
-async function syncWithCloud() {
+async function syncWithCloud({ showProgress = true } = {}) {
     if (!initialized || !isLoggedIn()) {
         console.log('未登录，跳过同步');
         return { success: false, reason: 'not_logged_in' };
@@ -667,7 +674,7 @@ async function syncWithCloud() {
         return { success: false, reason: 'offline' };
     }
 
-    const task = window.StatusCenter?.start('正在合并本机与云端数据…', '云同步');
+    const task = showProgress ? window.StatusCenter?.start('正在合并本机与云端数据…', '云同步') : null;
     try {
         console.log('=== 开始智能同步 (字段级合并) ===');
 
@@ -751,7 +758,8 @@ async function syncWithCloud() {
         };
 
     } catch (error) {
-        task?.finish('云同步失败：' + error.message, 'error');
+        if (task) task.finish('云同步失败：' + error.message, 'error');
+        else window.StatusCenter?.post('error', '云同步失败：' + error.message, { source: '云同步' });
         console.error('同步失败:', error);
         Logger.error('cloud', '云端同步失败', error);
         return { success: false, error: error.message };
@@ -977,7 +985,7 @@ function startAutoSync() {
     autoSyncTimer = setInterval(() => {
         if (isLoggedIn() && navigator.onLine) {
             console.log('[自动同步] 执行中...');
-            syncWithCloud();
+            syncWithCloud({ showProgress: false });
         }
     }, interval);
 
@@ -1605,7 +1613,7 @@ document.addEventListener('DOMContentLoaded', async function () {
     if (cloudReady && currentUser) {
         try {
             if (window.contractAppReady) await window.contractAppReady;
-            const result = await syncWithCloud();
+            const result = await syncWithCloud({ showProgress: false });
             if (!result.success) console.warn('页面启动自动同步未完成:', result.reason || result.error);
         } catch (error) {
             console.warn('页面启动自动同步失败:', error);

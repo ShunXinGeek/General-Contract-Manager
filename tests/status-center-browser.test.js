@@ -110,6 +110,12 @@ const server = http.createServer((request, response) => {
         });
         assert((await status.innerText()).includes('本次成功更新 10/10'));
         assert.strictEqual(await page.evaluate(() => StatusCenter.snapshot().filter(item => item.active).length), 0);
+        await page.evaluate(() => {
+            RAG.buildIndex = async () => ({ count: 0, skipped: 9, total: 10, failed: 1,
+                errors: [{ reason: 'HTTP 429', count: 1 }] });
+            return buildKnowledgeBaseIndex();
+        });
+        assert((await status.innerText()).includes('失败原因：HTTP 429 1 条'));
 
         await open(); await page.locator('#statusClear').click(); await page.keyboard.press('Escape');
         await page.evaluate(() => {
@@ -157,6 +163,10 @@ const server = http.createServer((request, response) => {
         assert.strictEqual(await page.locator('.status-progress > span').evaluate(el => getComputedStyle(el).animationName), 'none');
         for (const width of [375, 768]) {
             await page.setViewportSize({ width, height: 800 });
+            await page.waitForFunction(viewportWidth => {
+                const bounds = document.getElementById('statusPanel').getBoundingClientRect();
+                return bounds.x >= 0 && bounds.right <= viewportWidth;
+            }, width);
             const bounds = await panel.boundingBox();
             assert(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width,
                 `panel must fit the viewport: ${JSON.stringify(bounds)}`);

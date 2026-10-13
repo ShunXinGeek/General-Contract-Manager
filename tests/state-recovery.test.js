@@ -64,6 +64,8 @@ async function run() {
     await evaluate(refreshed, 'loadContractsFromStorage()');
     assert.strictEqual(evaluate(refreshed, `contracts.TEST.sourceId`), originalSourceId, 'source id survives local reload');
     assert.strictEqual(evaluate(refreshed, `RetrievalSettings.get(contracts).sources[contracts.TEST.sourceId].authorityLevel`), 2);
+    assert.strictEqual(evaluate(refreshed, 'activeContractKey'), null, 'reload must open the welcome page');
+    evaluate(refreshed, `switchContract('TEST')`);
     assert.strictEqual(evaluate(refreshed, `fullClauseDatabase['1'].content`), 'edited');
     assert.strictEqual(evaluate(refreshed, `getOriginalClause('TEST', '1').content`), 'original');
     assert.strictEqual(evaluate(refreshed, `checkClauseModified('1')`), true, 'baseline survives refresh');

@@ -104,7 +104,7 @@ function run() {
                 [key]: { title: key, data: { '1': { title: `${key} 1`, content: 'body' } } }
             }
         };
-        evaluate(context, `hydrateMissingCloudContracts(cloudSnapshot); activeContractKey = null; refreshContractsAfterCloud(cloudSnapshot.active_contract_key);`);
+        evaluate(context, `hydrateMissingCloudContracts(cloudSnapshot); activeContractKey = null; document.getElementById('tab-Welcome').classList.remove('active'); refreshContractsAfterCloud(cloudSnapshot.active_contract_key);`);
         assert.deepStrictEqual(panelState(context), {
             activeContractKey: key,
             navCollapsed: false,
@@ -128,6 +128,13 @@ function run() {
     `);
     assert.strictEqual(panelState(context).navCollapsed, true, 'a user-collapsed navigator must remain collapsed');
     assert.strictEqual(panelState(context).refCollapsed, true, 'a user-collapsed reference panel must remain collapsed');
+
+    evaluate(context, `showWelcomePage(); refreshContractsAfterCloud('CUSTOM');`);
+    assert.strictEqual(panelState(context).activeContractKey, null, 'cloud refresh must preserve the welcome page');
+    assert.strictEqual(evaluate(context, `document.getElementById('tab-Welcome').classList.contains('active')`), true);
+
+    evaluate(context, `document.getElementById('tab-Welcome').classList.remove('active'); isAssistantMode = true; activeContractKey = 'CUSTOM'; refreshContractsAfterCloud('CUSTOM');`);
+    assert.strictEqual(panelState(context).activeContractKey, 'CUSTOM', 'cloud refresh must preserve the assistant view');
 
     console.log('panel state regression tests passed (all contract tabs, cloud refresh, same-tab restore, manual collapse)');
 }

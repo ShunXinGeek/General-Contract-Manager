@@ -16,7 +16,6 @@ async (page) => {
     // Use the real file input directly so CLI does not return early on a native chooser event.
     await page.locator('#importContractFile').setInputFiles('tests/fixtures/recovery-contract.txt');
     await page.getByRole('button', { name: '确定', exact: true }).click();
-    await page.getByRole('button', { name: '确定', exact: true }).click();
     await page.locator('#clause-1 h2').waitFor();
     assert(!(await page.locator('#btnToggleNavigator').isDisabled()), 'Navigator toggle must be enabled on a contract page');
     assert(!(await page.locator('#btnToggleReferenceView').isDisabled()), 'Reference-view toggle must be enabled on a contract page');
@@ -62,7 +61,6 @@ async (page) => {
     assert(panelStateChecks.every(result => result.manualCollapsePreserved), 'Cloud refresh overwrote a user-collapsed panel state');
     await page.evaluate(() => switchContract('RECOVERY'));
     await page.locator('#btnEditMode').click();
-    await page.getByRole('button', { name: '确定', exact: true }).click();
     await page.locator('#clause-1 .clause-text').fill('Edited browser test text.');
     await page.waitForFunction(() => !hasUnsavedChanges && fullClauseDatabase['1'].content.includes('Edited browser'));
     assert(await page.locator('#clause-1 .btn-modified').count() === 1, 'Edit badge missing');
@@ -72,6 +70,8 @@ async (page) => {
     await page.locator('.compare-modal .btn-close').click();
     await page.reload();
     await page.evaluate(() => window.contractAppReady);
+    assert(await page.locator('#tab-Welcome').evaluate(el => el.classList.contains('active')), 'Reload must open the welcome page');
+    await page.locator('[data-key="RECOVERY"]').click();
     assert((await page.locator('#clause-1 .clause-text').innerText()).includes('Edited browser'), 'Edit not restored after refresh');
     assert(await page.locator('#clause-1 .btn-modified').count() === 1, 'Baseline not restored after refresh');
     await page.locator('#clause-1 .btn-modified').click();
@@ -125,6 +125,15 @@ async (page) => {
     await page.evaluate(() => showRef('1'));
     assert((await page.locator('#refContent').innerText()).includes('GCC Clause 1 English'), 'Added contract tab did not retain original preference');
     await page.evaluate(() => switchContract('RECOVERY'));
+    await page.locator('#tab-Assistant').click();
+    await page.evaluate(() => refreshContractsAfterCloud('GCC'));
+    assert(await page.locator('.header-tab.active').count() === 1, 'Assistant and contract tabs must not both remain active after cloud refresh');
+    assert(await page.locator('#tab-Assistant').evaluate(el => el.classList.contains('active')), 'Assistant must remain selected after cloud refresh');
+    await page.locator('#tab-Welcome').click();
+    await page.evaluate(() => refreshContractsAfterCloud('GCC'));
+    assert(await page.locator('.header-tab.active').count() === 1, 'Welcome and contract tabs must not both remain active after cloud refresh');
+    assert(await page.locator('#tab-Welcome').evaluate(el => el.classList.contains('active')), 'Welcome must remain selected after cloud refresh');
+    await page.locator('[data-key="RECOVERY"]').click();
 
     const snapshot = await page.evaluate(() => ({ contract_data: collectAllContractData(),
         active_contract_key: activeContractKey, bookmarks: collectAllBookmarks(), modifications: {} }));
@@ -154,6 +163,7 @@ async (page) => {
         assert(result, 'New device overwrote cloud settings with empty configuration');
         await fresh.reload();
         await fresh.evaluate(() => window.contractAppReady);
+        assert(await fresh.locator('#tab-Welcome').evaluate(el => el.classList.contains('active')), 'New device reload must open the welcome page');
         assert(await fresh.locator('#currentModelName').textContent() === 'Browser Model Two', 'Selected model did not survive refresh');
         await fresh.getByRole('button', { name: '⚙️', exact: true }).click();
         assert(await fresh.locator('.model-card').count() === 2, 'Model list not restored');
@@ -171,6 +181,7 @@ async (page) => {
         await fresh.locator('#chatInput').fill('Browser test question');
         await fresh.locator('#sendBtn').click();
         await fresh.locator('#chatMessages .chat-message.assistant p').filter({ hasText: 'Browser AI mock ready.' }).waitFor();
+        await fresh.locator('[data-key="RECOVERY"]').click();
         assert((await fresh.locator('#clause-1 .clause-text').innerText()).includes('Original browser'), 'New-device contract restore failed');
     } finally {
         await secondContext.close();
@@ -188,6 +199,8 @@ async (page) => {
         await coldContext.setOffline(true);
         await cold.reload();
         await cold.evaluate(() => window.contractAppReady);
+        assert(await cold.locator('#tab-Welcome').evaluate(el => el.classList.contains('active')), 'Offline reload must open the welcome page');
+        await cold.locator('[data-key="RECOVERY"]').click();
         assert((await cold.locator('#clause-1 .clause-text').innerText()).includes('Original browser'), 'Offline restore failed');
         const ready = await cold.evaluate(() => !!(window.localforage && window.DOMPurify && window.marked && window.docx && window.html2pdf && window.firebase));
         assert(ready, 'Offline core dependencies missing');

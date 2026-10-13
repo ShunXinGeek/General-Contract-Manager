@@ -190,7 +190,7 @@ function renderTabs() {
         btn.innerText = key;
         btn.onclick = () => switchContract(key);
 
-        if (key === activeContractKey) {
+        if (key === activeContractKey && !isAssistantMode) {
             btn.classList.add('active');
         }
 
@@ -336,10 +336,7 @@ async function loadContractsFromStorage() {
                     if (typeof syncStatePerContract !== 'undefined') syncStatePerContract[key] = false;
                 });
                 renderTabs();
-                const restoredKey = contracts[storedActiveContractKey]
-                    ? storedActiveContractKey
-                    : Object.keys(contracts)[0];
-                switchContract(restoredKey);
+                showWelcomePage();
                 Logger.info('storage', `从 IndexedDB 成功恢复 ${Object.keys(contracts).length} 个合同`);
                 return true;
             }

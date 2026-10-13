@@ -7,6 +7,8 @@ const RAG_DB_NAME = 'ContractVectorStore';
 const RAG_DB_VERSION = 1;
 const RAG_STORE_NAME = 'vectors';
 const RAG_INDEX_SCHEMA_VERSION = 3;
+// Leave room under the Netlify /api/retrieval limit of 60 requests per minute.
+const RAG_INDEX_REQUEST_INTERVAL_MS = 1250;
 
 const RAG = {
     db: null,
@@ -159,7 +161,9 @@ const RAG = {
                 body: JSON.stringify({ kind: 'embedding', endpoint: url, apiKey, body: { input: text, model: model } })
             });
             if (!response.ok) {
-                throw new Error(`Embedding API Error ${response.status}`);
+                const error = new Error(`嵌入请求失败（HTTP ${response.status}）`);
+                error.status = response.status;
+                throw error;
             }
             const data = await response.json();
             const vector = data.data?.[0]?.embedding;
@@ -171,6 +175,10 @@ const RAG = {
         } finally {
             clearTimeout(timer); signal?.removeEventListener('abort', cancel);
         }
+    },
+
+    async pauseIndex(ms) {
+        await new Promise(resolve => setTimeout(resolve, ms));
     },
 
     /**
@@ -210,12 +218,20 @@ const RAG = {
         if (total === 0) {
             console.warn('[RAG] No clauses found to index.');
             if (onProgress) onProgress(0, 0, 'No data to index!');
-            return { count: 0, total: 0, failed: 0 };
+            return { count: 0, skipped: 0, total: 0, failed: 0, errors: [] };
         }
 
-        let successCount = 0;
+        const status = await this.getIndexStatus(config, enabledContracts);
+        const validIds = new Set(status.validRecords.map(item => item.id));
+        let successCount = 0, skipped = 0, lastRequestAt = 0;
+        const failures = new Map();
         for (let i = 0; i < total; i++) {
             const task = tasks[i];
+            if (validIds.has(task.id)) {
+                skipped++;
+                if (onProgress) onProgress(i + 1, total, `已有有效向量 ${task.type} ${task.clauseId}`);
+                continue;
+            }
             try {
                 if (onProgress) onProgress(i + 1, total, `Processing ${task.type} ${task.clauseId}...`);
 
@@ -224,12 +240,21 @@ const RAG = {
                     throw new Error('嵌入模型配置不完整，请在设置中配置 Embedding Base URL、Embedding API Key 和 Embedding Model Name');
                 }
 
-                const vector = await this.getEmbedding(
-                    task.text,
-                    embeddingConfig.apiKey,
-                    embeddingConfig.apiEndpoint,
-                    embeddingConfig.model
-                );
+                let vector;
+                for (let attempt = 0; attempt < 3; attempt++) {
+                    const wait = Math.max(0, lastRequestAt + RAG_INDEX_REQUEST_INTERVAL_MS - Date.now());
+                    if (wait) await this.pauseIndex(wait);
+                    lastRequestAt = Date.now();
+                    try {
+                        vector = await this.getEmbedding(task.text, embeddingConfig.apiKey,
+                            embeddingConfig.apiEndpoint, embeddingConfig.model);
+                        break;
+                    } catch (error) {
+                        if (error.status !== 429 || attempt === 2) throw error;
+                        if (onProgress) onProgress(i + 1, total, `请求受限（HTTP 429），等待恢复后重试 ${task.type} ${task.clauseId}`);
+                        await this.pauseIndex(65000);
+                    }
+                }
 
                 await new Promise((resolve, reject) => {
                     const transaction = this.db.transaction([RAG_STORE_NAME], 'readwrite');
@@ -257,13 +282,16 @@ const RAG = {
                 });
             } catch (err) {
                 console.error(`[RAG] Failed to index ${task.id}:`, err);
+                const reason = err.status ? `HTTP ${err.status}` : (err.message || '未知错误');
+                failures.set(reason, (failures.get(reason) || 0) + 1);
                 if (onProgress) onProgress(i + 1, total, `Error on ${task.id}: ${err.message}`);
             }
         }
 
         if (onProgress) onProgress(total, total, 'Indexing Complete!');
         console.log(`[RAG] Index building complete. Successfully indexed ${successCount}/${total} clauses.`);
-        return { count: successCount, total, failed: total - successCount };
+        return { count: successCount, skipped, total, failed: total - successCount - skipped,
+            errors: [...failures].map(([reason, count]) => ({ reason, count })) };
     },
 
     /**

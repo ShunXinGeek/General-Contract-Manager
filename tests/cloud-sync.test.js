@@ -166,6 +166,24 @@ async function run() {
         'force upload must propagate write failures'
     );
 
+    const autoSyncContext = loadCloudContext();
+    const notices = [];
+    autoSyncContext.StatusCenter = {
+        start() { notices.push('started'); return { finish() { notices.push('finished'); } }; },
+        post(type, message) { notices.push({ type, message }); }
+    };
+    vm.runInContext(`
+        initialized = true; currentUser = { uid: 'test-user' };
+        loadFromCloud = async () => null;
+        saveToCloud = async () => ({ success: true });
+    `, autoSyncContext);
+    assert.strictEqual((await vm.runInContext('syncWithCloud({ showProgress: false })', autoSyncContext)).success, true);
+    assert.deepStrictEqual(notices, [], 'automatic sync success must stay out of the message center');
+    vm.runInContext(`saveToCloud = async () => { throw new Error('sync failed'); };`, autoSyncContext);
+    assert.strictEqual((await vm.runInContext('syncWithCloud({ showProgress: false })', autoSyncContext)).success, false);
+    assert.strictEqual(notices.length, 1, 'automatic sync failure must be reported once');
+    assert.strictEqual(notices[0].type, 'error');
+
     console.log('cloud sync regression tests passed');
 }
 
