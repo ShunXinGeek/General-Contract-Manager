@@ -16,6 +16,11 @@
     const escape = value => String(value || '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
     const activeNotes = () => state.notes.filter(note => note.status !== 'deleted').sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
     const getNote = id => state.notes.find(note => note.id === (id || state.selectedId)) || null;
+    const sourceTopicTitle = note => {
+        const topic = note.sourceTopicId && window.AssistantTopics?.getTopicInfo?.(note.sourceTopicId);
+        return (topic?.status !== 'deleted' && topic?.title) || note.sourceTopicTitle || (note.sourceTopicId ? '未命名话题' : '未关联话题');
+    };
+    const favoriteDate = note => new Date(note.createdAt || note.updatedAt || now()).toLocaleString('zh-CN', { hour12: false });
     const canSync = () => typeof db !== 'undefined' && !!db && typeof currentUser !== 'undefined' && !!currentUser && navigator.onLine;
     const noteRef = id => db.collection(window.FIREBASE_COLLECTIONS.CONTRACT_MODS).doc(currentUser.uid).collection('assistant_notes').doc(id);
 
@@ -125,14 +130,29 @@
         const filter = document.getElementById('assistantTopicSearch')?.value.trim().toLowerCase() || '';
         list.replaceChildren();
         const back = document.createElement('button'); back.type = 'button'; back.className = 'assistant-topic-back'; back.textContent = '‹ 返回话题'; back.onclick = () => window.AssistantTopics?.closeNotebook?.(); list.appendChild(back);
-        const notes = activeNotes().filter(note => !filter || String(note.title || '').toLowerCase().includes(filter));
-        if (!notes.length) { const empty = document.createElement('div'); empty.className = 'assistant-topic-empty'; empty.textContent = filter ? '没有匹配的笔记' : '笔记本为空'; list.appendChild(empty); }
-        notes.forEach(note => {
-            const row = document.createElement('div'); row.className = `assistant-topic-item${note.id === state.selectedId ? ' is-note-active' : ''}`;
-            const button = document.createElement('button'); button.type = 'button'; button.className = 'assistant-topic-select'; button.setAttribute('aria-current', note.id === state.selectedId ? 'page' : 'false'); button.innerHTML = `<span class="assistant-topic-title">${escape(note.title || '未命名笔记')}</span>`;
-            button.onclick = () => selectNote(note.id);
-            const menuButton = document.createElement('button'); menuButton.type = 'button'; menuButton.className = 'assistant-topic-more'; menuButton.textContent = '⋯'; menuButton.title = '笔记操作'; menuButton.setAttribute('aria-label', `操作：${note.title || '未命名笔记'}`); menuButton.setAttribute('aria-haspopup', 'menu'); menuButton.setAttribute('aria-expanded', 'false'); menuButton.onclick = event => { event.stopPropagation(); renderNoteMenu(row, note, menuButton); };
-            row.append(button, menuButton); list.appendChild(row);
+        const groups = new Map();
+        activeNotes().forEach(note => {
+            const title = sourceTopicTitle(note);
+            const key = note.sourceTopicId || `legacy:${title}`;
+            if (!groups.has(key)) groups.set(key, { title, notes: [] });
+            groups.get(key).notes.push(note);
+        });
+        const visibleGroups = [...groups.values()].map(group => ({
+            ...group,
+            notes: !filter || group.title.toLowerCase().includes(filter)
+                ? group.notes : group.notes.filter(note => String(note.title || '').toLowerCase().includes(filter))
+        })).filter(group => group.notes.length);
+        if (!visibleGroups.length) { const empty = document.createElement('div'); empty.className = 'assistant-topic-empty'; empty.textContent = filter ? '没有匹配的笔记' : '笔记本为空'; list.appendChild(empty); }
+        visibleGroups.forEach(group => {
+            const heading = document.createElement('h3'); heading.className = 'assistant-topic-group assistant-notebook-group'; heading.textContent = group.title; list.appendChild(heading);
+            group.notes.forEach(note => {
+                const row = document.createElement('div'); row.className = `assistant-topic-item assistant-notebook-item${note.id === state.selectedId ? ' is-note-active' : ''}`;
+                const button = document.createElement('button'); button.type = 'button'; button.className = 'assistant-topic-select'; button.setAttribute('aria-current', note.id === state.selectedId ? 'page' : 'false');
+                button.innerHTML = `<span class="assistant-notebook-item-text"><span class="assistant-topic-title">${escape(note.title || '未命名笔记')}</span><span class="assistant-notebook-item-date">${escape(favoriteDate(note))}</span></span>`;
+                button.onclick = () => selectNote(note.id);
+                const menuButton = document.createElement('button'); menuButton.type = 'button'; menuButton.className = 'assistant-topic-more'; menuButton.textContent = '⋯'; menuButton.title = '笔记操作'; menuButton.setAttribute('aria-label', `操作：${note.title || '未命名笔记'}`); menuButton.setAttribute('aria-haspopup', 'menu'); menuButton.setAttribute('aria-expanded', 'false'); menuButton.onclick = event => { event.stopPropagation(); renderNoteMenu(row, note, menuButton); };
+                row.append(button, menuButton); list.appendChild(row);
+            });
         });
     }
     function render() {
@@ -156,9 +176,8 @@
         if (content) {
             content.hidden = state.editing;
             if (!state.editing) {
-                const date = new Date(note.updatedAt || note.createdAt || now()).toLocaleString('zh-CN', { hour12: false });
                 const rendered = renderMarkdown(note.content);
-                content.innerHTML = `<p class="assistant-notebook-meta">收藏于 ${escape(date)}${note.sourceTopicTitle ? ` · 来源：${escape(note.sourceTopicTitle)}` : ''}</p>${rendered}`;
+                content.innerHTML = `<p class="assistant-notebook-meta">来源：${escape(sourceTopicTitle(note))} · 收藏于 ${escape(favoriteDate(note))}</p>${rendered}`;
             }
         }
         if (state.editing) renderDraftPreview();
@@ -238,4 +257,12 @@
     }
     const ready = initialize();
     window.AssistantNotebook = { ready, open, requestClose, render, renderSidebar, addFromAssistant, getCount: () => activeNotes().length, syncWithCloud, flushOutbox, isOpen: () => state.open };
+    if (typeof window.syncWithCloud === 'function') {
+        const originalCloudSync = window.syncWithCloud;
+        window.syncWithCloud = async function (...args) {
+            const result = await originalCloudSync(...args);
+            if (result?.success) { await ready; await syncWithCloud(); }
+            return result;
+        };
+    }
 })();

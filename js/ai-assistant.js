@@ -81,7 +81,7 @@ async function sendMessage() {
         abortController = new AbortController();
         const requestSignal = abortController.signal;
         addMessage('user', text || '请分析以下附件。', { id: messageId, attachments });
-        sent = true; input.value = ''; autoResizeInput(); showTypingIndicator();
+        sent = true; input.value = ''; input.dispatchEvent(new Event('input', { bubbles: true })); autoResizeInput(); showTypingIndicator();
         const messages = await buildMessagesForAPI(); if (requestSignal.aborted) throw new DOMException('已停止生成', 'AbortError');
         const result = await streamAPIResponse(messages); statusTask?.finish(result ? 'AI 回复已完成' : 'AI 回复已停止', result ? 'success' : 'info'); if (result) { titleModelConfig = { ...AI_CONFIG }; titleModelId = typeof currentSelectedModelId !== 'undefined' ? currentSelectedModelId : null; }
     }
