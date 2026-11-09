@@ -3,10 +3,10 @@
     'use strict';
 
     const STORAGE_KEY = 'retrieval_settings_v1';
-    const VERSION = 1;
-    const RELATION_TYPES = new Set(['higher', 'same', 'none']);
+    const VERSION = 2;
+    const RELATION_TYPES = new Set(['higher', 'lower', 'same', 'none']);
+    const RELATION_LABELS = { higher: '高于', lower: '低于', same: '同级', none: '无推定关系' };
     const ROLE_TYPES = new Set(['unspecified', 'base', 'amendment', 'supplement', 'reference', 'independent']);
-    const NEW_SOURCE_POLICIES = new Set(['enabled', 'review', 'disabled']);
     const CONFLICT_POLICIES = new Set(['evidence-first', 'compare-only', 'strict-hierarchy']);
     const PROFILES = new Set(['precise', 'balanced', 'comprehensive']);
     const PROFILE_LIMITS = {
@@ -18,7 +18,6 @@
     const defaults = () => ({
         version: VERSION,
         modifiedAt: 0,
-        newSourcePolicy: 'enabled',
         conflictPolicy: 'evidence-first',
         profile: 'balanced',
         sources: {},
@@ -27,7 +26,7 @@
 
     let current = null;
     let draft = null;
-    let draftBaseline = '';
+    let draftBaseline = null;
 
     function clone(value) {
         return JSON.parse(JSON.stringify(value));
@@ -81,15 +80,12 @@
         return changed;
     }
 
-    function enabledForPolicy(policy) {
-        return policy === 'enabled';
+    function defaultSourceEnabled(settings) {
+        // 旧快照没有逐来源状态时，沿用它原先的默认范围。
+        return (Number(settings.version) || 0) < 2 && !['review', 'disabled'].includes(settings.newSourcePolicy);
     }
 
-    function needsReviewForPolicy(policy) {
-        return policy !== 'disabled';
-    }
-
-    function normalizeSource(raw, policy, label) {
+    function normalizeSource(raw, defaultEnabled, label) {
         const level = raw?.authorityLevel === null || raw?.authorityLevel === undefined || raw?.authorityLevel === ''
             ? null : Number(raw.authorityLevel);
         const aliases = Array.isArray(raw?.aliases)
@@ -97,12 +93,11 @@
             : [];
         if (raw?.lastLabel && raw.lastLabel !== label && !aliases.includes(raw.lastLabel)) aliases.push(raw.lastLabel);
         return {
-            enabled: typeof raw?.enabled === 'boolean' ? raw.enabled : enabledForPolicy(policy),
+            enabled: typeof raw?.enabled === 'boolean' ? raw.enabled : defaultEnabled,
             role: ROLE_TYPES.has(raw?.role) ? raw.role : 'unspecified',
             authorityLevel: Number.isInteger(level) && level >= 1 && level <= 9 ? level : null,
             aliases: [...new Set(aliases)].slice(0, 12),
             lastLabel: label,
-            needsReview: typeof raw?.needsReview === 'boolean' ? raw.needsReview : needsReviewForPolicy(policy),
             modifiedAt: Number(raw?.modifiedAt) || 0
         };
     }
@@ -113,6 +108,7 @@
         const toSourceId = String(raw.toSourceId || '');
         if (!fromSourceId || !toSourceId || fromSourceId === toSourceId) return null;
         if (raw.type === 'higher') return { fromSourceId, toSourceId, type: 'higher' };
+        if (raw.type === 'lower') return { fromSourceId: toSourceId, toSourceId: fromSourceId, type: 'higher' };
         const pair = [fromSourceId, toSourceId].sort();
         return { fromSourceId: pair[0], toSourceId: pair[1], type: raw.type };
     }
@@ -133,13 +129,13 @@
         const base = defaults();
         const input = raw && typeof raw === 'object' ? raw : {};
         base.modifiedAt = Number(input.modifiedAt) || 0;
-        base.newSourcePolicy = NEW_SOURCE_POLICIES.has(input.newSourcePolicy) ? input.newSourcePolicy : base.newSourcePolicy;
         base.conflictPolicy = CONFLICT_POLICIES.has(input.conflictPolicy) ? input.conflictPolicy : base.conflictPolicy;
         base.profile = PROFILES.has(input.profile) ? input.profile : base.profile;
 
         const entries = sourceEntries(data || {});
+        const defaultEnabled = defaultSourceEnabled(input);
         for (const entry of entries) {
-            base.sources[entry.sourceId] = normalizeSource(input.sources?.[entry.sourceId], base.newSourcePolicy, entry.label);
+            base.sources[entry.sourceId] = normalizeSource(input.sources?.[entry.sourceId], defaultEnabled, entry.label);
         }
         const available = new Set(entries.map(entry => entry.sourceId));
         const seenPairs = new Set();
@@ -163,7 +159,7 @@
         }
         // 保留完整快照；调用方有时会传入已筛选的来源子集，读取动作不能据此
         // 永久裁掉其他来源设置，否则下一次完整检索会把它们按默认值重新启用。
-        current = parsed && typeof parsed === 'object' ? clone(parsed) : defaults();
+        current = parsed && typeof parsed === 'object' ? parsed : {};
         return normalize(current, data || root.contracts || {});
     }
 
@@ -187,7 +183,8 @@
     function hasConfiguredValue(settings) {
         if (!settings) return false;
         if (Number(settings.modifiedAt)) return true;
-        return Object.values(settings.sources || {}).some(source => source.authorityLevel !== null || source.role !== 'unspecified' || source.enabled === false) ||
+        const defaultEnabled = defaultSourceEnabled(settings);
+        return Object.values(settings.sources || {}).some(source => source.authorityLevel !== null || source.role !== 'unspecified' || source.enabled !== defaultEnabled) ||
             (settings.relations || []).length > 0;
     }
 
@@ -196,9 +193,11 @@
         if (!localSettings) return normalize(cloudSettings, data || root.contracts || {});
         const localTime = Number(localSettings.modifiedAt) || 0;
         const cloudTime = Number(cloudSettings.modifiedAt) || 0;
-        if (!hasConfiguredValue(localSettings) && !localTime) return normalize(cloudSettings, data || root.contracts || {});
-        if (!hasConfiguredValue(cloudSettings) && !cloudTime) return normalize(localSettings, data || root.contracts || {});
-        return normalize(cloudTime > localTime ? cloudSettings : localSettings, data || root.contracts || {});
+        const cloudWins = !hasConfiguredValue(localSettings) || (hasConfiguredValue(cloudSettings) && cloudTime > localTime);
+        const primary = cloudWins ? cloudSettings : localSettings;
+        const secondary = cloudWins ? localSettings : cloudSettings;
+        // 较新的设置快照可能尚未包含另一端新增的合同。
+        return normalize({ ...primary, sources: { ...secondary.sources, ...primary.sources } }, data || root.contracts || {});
     }
 
     function applyCloud(settings, data) {
@@ -207,13 +206,18 @@
     }
 
     function beginDraft(data) {
-        draft = clone(get(data));
-        draftBaseline = JSON.stringify(draft);
+        draft = get(data);
+        draftBaseline = clone(draft);
         return draft;
     }
 
     function getDraft(data) {
-        return draft || beginDraft(data);
+        if (!draft) return beginDraft(data);
+        data = data || root.contracts || {};
+        const savedSources = get(data).sources;
+        draft = normalize({ ...draft, sources: { ...savedSources, ...draft.sources } }, data);
+        draftBaseline = normalize({ ...draftBaseline, sources: { ...savedSources, ...draftBaseline.sources } }, data);
+        return draft;
     }
 
     function setDraft(next, data) {
@@ -221,58 +225,122 @@
         return draft;
     }
 
-    function isDraftDirty() {
-        return !!draft && JSON.stringify(draft) !== draftBaseline;
+    function isDraftDirty(data) {
+        return !!draft && JSON.stringify(getDraft(data)) !== JSON.stringify(draftBaseline);
     }
 
     function discardDraft() {
         draft = null;
-        draftBaseline = '';
+        draftBaseline = null;
     }
 
     function resetDraft(data) {
+        const previous = getDraft(data);
         const reset = defaults();
+        for (const [sourceId, source] of Object.entries(previous.sources)) {
+            reset.sources[sourceId] = { enabled: source.enabled, aliases: source.aliases };
+        }
         draft = normalize(reset, data || root.contracts || {});
         return draft;
     }
 
+    function compareLevels(first, second) {
+        const left = first?.authorityLevel, right = second?.authorityLevel;
+        if (left == null || right == null) return 'unknown';
+        if (left === right) return 'same';
+        return left < right ? 'higher' : 'lower';
+    }
+
+    function levelConflict(relation, sources) {
+        const order = compareLevels(sources[relation.fromSourceId], sources[relation.toSourceId]);
+        return order !== 'unknown' && order !== relation.type ? order : null;
+    }
+
+    function describeRelation(relation, sources) {
+        const describe = id => {
+            const { lastLabel, authorityLevel } = sources[id];
+            return `“${lastLabel}”（${authorityLevel === null ? '未设置等级' : '第 ' + authorityLevel + ' 级'}）`;
+        };
+        return `${describe(relation.fromSourceId)} ${RELATION_LABELS[relation.type]} ${describe(relation.toSourceId)}`;
+    }
+
+    function findOrderPath(graph, start, end) {
+        const incoming = new Map([[start, null]]);
+        const queue = [start];
+        for (let i = 0; i < queue.length && !incoming.has(end); i++) {
+            for (const edge of graph.get(queue[i])) {
+                if (incoming.has(edge.toSourceId)) continue;
+                incoming.set(edge.toSourceId, edge);
+                queue.push(edge.toSourceId);
+            }
+        }
+        if (!incoming.has(end)) return null;
+        const path = [];
+        for (let edge = incoming.get(end); edge; edge = incoming.get(edge.fromSourceId)) path.push(edge);
+        return path.reverse();
+    }
+
+    function findAuthorityCycle(sources, relations) {
+        const graph = new Map(Object.keys(sources).map(id => [id, []]));
+        const strictEdges = [];
+        function add(fromSourceId, toSourceId, type, relation) {
+            const edge = { fromSourceId, toSourceId, type, relation };
+            graph.get(fromSourceId).push(edge);
+            if (type === 'same') {
+                graph.get(toSourceId).push({ ...edge, fromSourceId: toSourceId, toSourceId: fromSourceId });
+            } else {
+                strictEdges.push(edge);
+            }
+        }
+
+        // 同等级用双向边连接，相邻等级之间用高到低的单向边连接。
+        const levelRepresentatives = new Map();
+        for (const [id, { authorityLevel }] of Object.entries(sources)) {
+            if (authorityLevel === null) continue;
+            const representative = levelRepresentatives.get(authorityLevel);
+            if (representative) add(representative, id, 'same');
+            else levelRepresentatives.set(authorityLevel, id);
+        }
+        const ordered = [...levelRepresentatives.keys()].sort((a, b) => a - b);
+        for (let i = 1; i < ordered.length; i++) {
+            add(levelRepresentatives.get(ordered[i - 1]), levelRepresentatives.get(ordered[i]), 'higher');
+        }
+        for (const relation of relations) {
+            if (relation.type !== 'none') add(relation.fromSourceId, relation.toSourceId, relation.type, relation);
+        }
+        for (const edge of strictEdges) {
+            const reversePath = findOrderPath(graph, edge.toSourceId, edge.fromSourceId);
+            if (reversePath) return [edge, ...reversePath];
+        }
+        return null;
+    }
+
     function validate(settings, data) {
         const normalized = normalize(settings, data || root.contracts || {});
-        const entries = sourceEntries(data || root.contracts || {});
+        const { sources, relations } = normalized;
         const errors = [];
-        const enabledIds = new Set(entries.filter(entry => normalized.sources[entry.sourceId]?.enabled).map(entry => entry.sourceId));
-        if (entries.length && !enabledIds.size) errors.push('至少启用一个检索来源');
-
-        const graph = new Map(entries.map(entry => [entry.sourceId, []]));
-        for (const relation of normalized.relations) {
-            const left = normalized.sources[relation.fromSourceId];
-            const right = normalized.sources[relation.toSourceId];
-            if (!left || !right) {
-                errors.push('来源关系包含已删除的来源');
-                continue;
-            }
-            if (relation.type === 'higher') {
-                graph.get(relation.fromSourceId)?.push(relation.toSourceId);
-                if (left.authorityLevel !== null && right.authorityLevel !== null && left.authorityLevel >= right.authorityLevel) {
-                    errors.push('“高于”关系与来源等级顺序冲突');
-                }
-            } else if (relation.type === 'same' && left.authorityLevel !== null && right.authorityLevel !== null && left.authorityLevel !== right.authorityLevel) {
-                errors.push('“同级”关系中的两个来源被设置为不同等级');
-            }
+        for (const relation of relations) {
+            const expected = levelConflict(relation, sources);
+            if (!expected) continue;
+            errors.push(`来源关系与等级冲突：${describeRelation(relation, sources)}，但按已设等级应为 ${describeRelation({ ...relation, type: expected }, sources)}`);
         }
-
-        const visiting = new Set(), visited = new Set();
-        function visit(id) {
-            if (visiting.has(id)) return true;
-            if (visited.has(id)) return false;
-            visiting.add(id);
-            for (const next of graph.get(id) || []) if (visit(next)) return true;
-            visiting.delete(id);
-            visited.add(id);
-            return false;
+        if (!errors.length) {
+            const cycle = findAuthorityCycle(sources, relations);
+            if (cycle) errors.push(`来源等级或关系存在循环矛盾：${cycle.map(edge => describeRelation(edge, sources)).join('，')}`);
         }
-        if ([...graph.keys()].some(visit)) errors.push('“高于”关系存在循环，请调整来源顺序');
-        return { valid: errors.length === 0, errors: [...new Set(errors)], settings: normalized };
+        return { valid: errors.length === 0, errors, settings: normalized };
+    }
+
+    function getEffectiveRelations(settings) {
+        if (!settings) return [];
+        const { sources } = settings;
+        let relations = settings.relations.filter(relation => !levelConflict(relation, sources));
+        // 旧版或同步数据可能含有冲突。保留原设置供修正，检索只使用相容关系。
+        for (let cycle = findAuthorityCycle(sources, relations); cycle; cycle = findAuthorityCycle(sources, relations)) {
+            const conflicting = new Set(cycle.map(edge => edge.relation));
+            relations = relations.filter(relation => !conflicting.has(relation));
+        }
+        return relations;
     }
 
     function saveDraft(data) {
@@ -280,7 +348,7 @@
         if (!result.valid) return result;
         const settings = persist(result.settings, data || root.contracts || {}, true);
         draft = clone(settings);
-        draftBaseline = JSON.stringify(draft);
+        draftBaseline = clone(draft);
         return { valid: true, errors: [], settings };
     }
 
@@ -305,6 +373,8 @@
 
     function relationBetween(firstSourceId, secondSourceId, settings, data) {
         const active = normalize(settings || get(data), data || root.contracts || {});
+        const order = compareLevels(active.sources[firstSourceId], active.sources[secondSourceId]);
+        if (order !== 'unknown') return { type: order, origin: 'level' };
         const explicit = active.relations.find(relation => {
             const pair = new Set([relation.fromSourceId, relation.toSourceId]);
             return pair.has(firstSourceId) && pair.has(secondSourceId);
@@ -315,11 +385,6 @@
                 origin: 'explicit'
             };
             return { type: explicit.type, origin: 'explicit' };
-        }
-        const first = active.sources[firstSourceId], second = active.sources[secondSourceId];
-        if (first?.authorityLevel !== null && second?.authorityLevel !== null) {
-            if (first.authorityLevel === second.authorityLevel) return { type: 'same', origin: 'level' };
-            return { type: first.authorityLevel < second.authorityLevel ? 'higher' : 'lower', origin: 'level' };
         }
         return { type: 'unknown', origin: 'unconfigured' };
     }
@@ -371,6 +436,7 @@
         getEnabledContracts,
         getSourceMeta,
         relationBetween,
+        getEffectiveRelations,
         getLimits,
         summary
     };

@@ -85,6 +85,14 @@ async function run() {
     const record = { sourceId: minimal.GCC.sourceId, type: 'GCC', clauseId: '50', title: 'Extension', embeddingModel: 'test-model', schemaVersion: rag.INDEX_SCHEMA_VERSION, sourceHash: api.fingerprint(minimal.GCC.data['50'].content), dimension: 2, vector: [1, 0] };
     record.titleHash = api.fingerprint('Extension'); record.embeddingSpace = rag.embeddingSpace(config.embeddingEndpoint, config.embeddingModel);
     assert.strictEqual(rag.validateRecord(record, config, minimal), 'ready');
+    const renamed = { 'Renamed SCC': minimal.SCC };
+    const sccClause = minimal.SCC.data['SCC 34'];
+    rag.readRecords = async () => [{ ...record, sourceId: minimal.SCC.sourceId, type: 'SCC', clauseId: 'SCC 34',
+        titleHash: api.fingerprint(sccClause.title), sourceHash: api.fingerprint(sccClause.content) }];
+    const renamedStatus = await rag.getIndexStatus(config, renamed, { allContracts: true });
+    assert.strictEqual(renamedStatus.coverage.get(minimal.SCC.sourceId).covered, 1);
+    assert.strictEqual(api.stableIdentity(renamedStatus.validRecords[0]), api.stableIdentity(api.rows(renamed).find(row => row.id === 'SCC 34')),
+        'vectors stored under the old label must resolve to the renamed source and its original clause key');
     assert.strictEqual(rag.validateRecord({ ...record, sourceHash: null }, config, minimal), 'legacy-unverified');
     assert.strictEqual(rag.validateRecord({ ...record, schemaVersion: 1 }, config, minimal), 'schema-mismatch');
     assert.strictEqual(rag.validateRecord({ ...record, embeddingModel: 'other' }, config, minimal), 'model-mismatch');
@@ -120,7 +128,12 @@ async function run() {
 
     // Snapshot consistency while building: generated vectors describe the submitted text, not later edits.
     const stored = [];
-    rag.db = { transaction() { return { objectStore() { return { put(row) { stored.push(row); const req = {}; setTimeout(() => req.onsuccess(), 0); return req; } }; } }; } };
+    rag.db = { transaction() {
+        const transaction = { objectStore() {
+            return { put(row) { stored.push(row); setTimeout(() => transaction.oncomplete(), 0); } };
+        } };
+        return transaction;
+    } };
     rag.readRecords = async () => [];
     rag.getEmbedding = async text => { assert.match(text, /Original extension/); return [1, 0]; };
     const summary = await rag.buildIndex({ GCC: { sourceId: minimal.GCC.sourceId, data: { '50': minimal.GCC.data['50'] } }, SCC: { sourceId: minimal.SCC.sourceId, data: { '2': minimal.SCC.data['2'] } } }, config);
@@ -196,12 +209,27 @@ async function run() {
         { fromSourceId: ids[2], toSourceId: ids[0], type: 'higher' }
     ];
     assert.strictEqual(ctx.RetrievalSettings.validate(genericSettings, generic).valid, false, 'cyclic higher relations must be rejected');
+    const ranked = ctx.RetrievalSettings.normalize(genericSettings, generic);
+    const [first, second, unranked] = ids;
+    ranked.sources[first].authorityLevel = 1;
+    ranked.sources[second].authorityLevel = 2;
+    ranked.relations = [{ fromSourceId: first, toSourceId: second, type: 'none' }];
+    assert.strictEqual(ctx.RetrievalSettings.validate(ranked, generic).valid, false, 'no-inference cannot override numeric levels');
+    assert.strictEqual(ctx.RetrievalSettings.relationBetween(first, second, ranked, generic).type, 'higher');
+    const legacyEvidence = await api.retrieve('Notice days', generic, {}, { retrievalSettings: ranked });
+    assert.ok(!api.prompt(legacyEvidence, '').includes('资料 A+B 与 条件(2027) 无推定关系'), 'legacy conflicts must not reach the model');
+    ranked.relations = [
+        { fromSourceId: second, toSourceId: unranked, type: 'higher' },
+        { fromSourceId: unranked, toSourceId: first, type: 'same' }
+    ];
+    assert.match(ctx.RetrievalSettings.validate(ranked, generic).errors[0], /循环矛盾.*资料 A\+B.*条件\(2027\).*附录\/甲/);
     const stableId = generic['资料 A+B'].sourceId;
     generic['基础条件（重命名）'] = generic['资料 A+B']; delete generic['资料 A+B'];
     assert.strictEqual(ctx.RetrievalSettings.sourceEntries(generic).find(entry => entry.label === '基础条件（重命名）').sourceId, stableId);
 
     // Context break and regeneration must not retrieve older/future turns.
     ctx.RAG.findMostRelevant = async () => [];
+    ctx.RetrievalSettings.persist(ctx.RetrievalSettings.normalize(null, minimal), minimal, false);
     ctx.chatMessages = [{ role: 'user', content: 'GCC Clause 50' }, { type: 'break' }, { role: 'user', content: 'SCC Clause 34' }];
     ctx.hasContextBreak = true; ctx.contextBreakIndex = 2; ctx.contracts = minimal;
     let messages = await evaluate(ctx, 'buildMessagesForAPI()'); assert.strictEqual(messages.length, 2); assert.match(messages[1].content, /SCC/);

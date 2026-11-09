@@ -260,12 +260,8 @@
                             <span id="thinkingModeIcon">🧠</span><span id="thinkingModeText" class="btn-text"> 思考</span>
                         </button>
                         <button class="assistant-btn" id="btnKnowledgeBase" onclick="toggleKnowledgeBaseMode()"
-                            title="切换知识库模式">
-                            <span id="kbModeIcon">📂</span> <span id="kbModeText" class="btn-text">打开知识库</span>
-                        </button>
-                        <button class="assistant-btn" id="btnUpdateIndex" onclick="buildKnowledgeBaseIndex()"
-                            title="更新知识库索引" aria-label="更新知识库索引" style="display:none; margin-left:5px;">
-                            <span>🔄</span>
+                            title="切换知识库检索" aria-pressed="false">
+                            <span aria-hidden="true">📂</span> <span class="btn-text">知识库</span>
                         </button>
                     </div>
                 </div>
@@ -546,16 +542,9 @@
 
                         <section class="retrieval-panel" aria-labelledby="retrievalDefaultsTitle">
                             <div class="retrieval-panel-heading">
-                                <div><h3 id="retrievalDefaultsTitle">默认行为</h3><p>控制新增来源和冲突分析方式。</p></div>
+                                <div><h3 id="retrievalDefaultsTitle">默认行为</h3><p>控制冲突分析方式和检索深度。</p></div>
                             </div>
                             <div class="retrieval-form-grid">
-                                <label class="retrieval-field">新增来源
-                                    <select id="retrievalNewSourcePolicy">
-                                        <option value="enabled">自动启用，层级未设置（推荐）</option>
-                                        <option value="review">加入列表，等待确认</option>
-                                        <option value="disabled">默认关闭</option>
-                                    </select>
-                                </label>
                                 <label class="retrieval-field">冲突处理
                                     <select id="retrievalConflictPolicy">
                                         <option value="evidence-first">证据优先、层级裁决（推荐）</option>
@@ -575,25 +564,26 @@
 
                         <section class="retrieval-panel" aria-labelledby="retrievalSourcesTitle">
                             <div class="retrieval-panel-heading">
-                                <div><h3 id="retrievalSourcesTitle">检索来源与等级</h3><p>相关度决定是否命中；等级只在同一事项真实冲突时使用。</p></div>
+                                <div><h3 id="retrievalSourcesTitle">检索来源与等级</h3><p>新导入的合同默认不勾选。勾选后点击“保存设置”，即可纳入检索范围。等级只在同一事项真实冲突时使用。</p></div>
                             </div>
                             <div id="retrievalSourceList" class="retrieval-source-list"></div>
                         </section>
 
                         <section class="retrieval-panel" aria-labelledby="retrievalRelationsTitle">
                             <div class="retrieval-panel-heading">
-                                <div><h3 id="retrievalRelationsTitle">来源关系</h3><p>只允许高于、同级和无推定关系；每对来源最多一条规则。</p></div>
+                                <div><h3 id="retrievalRelationsTitle">来源关系</h3><p>双方均有等级时，以等级为准。“所有其他文件”可批量设置高于或低于。</p></div>
                             </div>
                             <div class="retrieval-relation-builder">
-                                <label class="retrieval-field">来源 A<select id="retrievalRelationFrom"></select></label>
+                                <label class="retrieval-field">来源 A<select id="retrievalRelationFrom" aria-describedby="retrievalRelationError"></select></label>
                                 <label class="retrieval-field">关系
-                                    <select id="retrievalRelationType">
+                                    <select id="retrievalRelationType" aria-describedby="retrievalRelationError">
                                         <option value="higher">高于</option>
+                                        <option value="lower">低于</option>
                                         <option value="same">同级</option>
                                         <option value="none">无推定关系</option>
                                     </select>
                                 </label>
-                                <label class="retrieval-field">来源 B<select id="retrievalRelationTo"></select></label>
+                                <label class="retrieval-field">来源 B<select id="retrievalRelationTo" aria-describedby="retrievalRelationError"></select></label>
                                 <button type="button" id="retrievalAddRelation" class="retrieval-secondary-button">添加关系</button>
                             </div>
                             <div id="retrievalRelationError" class="retrieval-inline-error" role="alert"></div>
@@ -607,7 +597,7 @@
                             <ol class="retrieval-logic-list">
                                 <li>严格限定已启用来源，禁用内容不会进入向量、重排或回答。</li>
                                 <li>分别执行精确条款、本地关键词和有效语义召回，并保留相关来源代表证据。</li>
-                                <li>先判断是否属于同一事项及真实冲突，再使用“高于/同级/无推定关系”。</li>
+                                <li>先确认是同一事项的真实冲突，再按已设等级判断。任一方等级未设置时，使用已配置的来源关系。</li>
                                 <li>原文明示修改关系作为证据；若与设置矛盾，展示双方并提示，不静默裁决。</li>
                                 <li>回答必须使用当前来源名称和条款号引用；未检出不等于不存在。</li>
                             </ol>

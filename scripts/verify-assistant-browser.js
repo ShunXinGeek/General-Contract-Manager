@@ -52,50 +52,132 @@ async function run() {
         await page.evaluate(async () => {
             registerContract('GCC', 'General Conditions', { '5': { title: 'Documents mutually explanatory', content: 'The Architect shall respond within 14 days of receipt of the Contractor’s request in writing for instructions.' }, '34': { title: 'Facilities', content: 'Facilities for other persons.' }, '50': { title: 'Extension', content: '(1) Original extension notice.', translation: '工期延长通知。', translation_tc: '工期延長通知。' } });
             registerContract('SCC', 'Special Conditions', { 'SCC 34': { title: 'Night concreting', content: 'Night concreting permission must be obtained.', translation: '夜间混凝土浇筑须获批准。', translation_tc: '夜間混凝土澆築須獲批准。' } });
-            registerContract("资料 A+B's", 'Future neutral source', { '附录/1': { title: 'Disabled source check', content: '不应进入检索的专属校验词。' } });
             AI_CHAT_MODELS = [{ id: 'browser-test', name: 'Browser Test', endpoint: 'https://api.deepseek.com/v1', apiKey: 'dummy-key', model: 'deepseek-flash' }];
             currentSelectedModelId = 'browser-test'; applySelectedModel(); saveChatModels(); saveSelectedModelId(); updateModelSelector();
             await new Promise((resolve, reject) => {
                 const tx = RAG.db.transaction(['vectors'], 'readwrite'); tx.objectStore('vectors').put({ id: 'GCC_50', type: 'GCC', clauseId: '50', vector: [1, 0] }); tx.oncomplete = resolve; tx.onerror = reject;
             });
         });
+        const importedSource = "资料 A+B's";
+        await page.locator('#importContractFile').setInputFiles({
+            name: 'retrieval-scope.txt', mimeType: 'text/plain',
+            buffer: Buffer.from(`CONTRACT_META:\nname: Future neutral source\nshortName: ${importedSource}\n---\n` +
+                JSON.stringify({ '1': { title: 'Disabled source check', content: '不应进入检索的专属校验词。' } }))
+        });
+        await page.getByRole('button', { name: '确定', exact: true }).click();
+        await page.waitForFunction(label => contracts[label]?.data['1'], importedSource);
         await page.evaluate(() => openClauseSelector());
         await page.locator('#clauseSelectorModal .clause-option').filter({ hasText: 'Disabled source check' }).click();
-        assert.ok((await page.locator('#chatInput').inputValue()).includes("资料 A+B's"), 'labels containing punctuation and apostrophes must remain usable in generated controls');
+        assert.ok((await page.locator('#chatInput').inputValue()).includes(importedSource), 'labels containing punctuation and apostrophes must remain usable in generated controls');
         await page.evaluate(() => { document.getElementById('chatInput').value = ''; });
-        await page.locator('button[title="AI 设置"]').click();
-        await page.locator('#tabRetrievalSettings').click();
+        const openRetrievalSettings = async () => {
+            await page.locator('button[title="AI 设置"]').click();
+            await page.locator('#tabRetrievalSettings').click();
+        };
+        const assertSourceListsMatch = async () => {
+            await page.locator('#tabContractSettings').click();
+            const managed = await page.locator('.cm-row').evaluateAll(rows => rows.map(row => [
+                row.querySelector('[data-field="key"]').textContent,
+                `${row.querySelector('[data-field="title"]').textContent} · ${row.querySelector('.cm-clause-badge').textContent} 条`
+            ]));
+            await page.locator('#tabRetrievalSettings').click();
+            const sources = await page.locator('.retrieval-source-card').evaluateAll(cards => cards.map(card => [
+                card.querySelector('.retrieval-source-name').textContent, card.querySelector('.retrieval-source-meta').textContent
+            ]));
+            assert.deepStrictEqual(sources, managed, 'both settings tabs must show the same contract labels, names and clause counts');
+        };
+        const saveSettings = async () => {
+            await page.getByRole('button', { name: /保存设置/ }).click();
+            await page.locator('#settingsModal').waitFor({ state: 'hidden' });
+        };
+        const query = '不应进入检索的专属校验词';
+        const preview = async () => {
+            await page.locator('#retrievalPreviewQuery').fill(query);
+            await page.locator('#retrievalPreviewButton').click();
+            await page.waitForFunction(() => document.getElementById('retrievalPreviewButton')?.disabled === false);
+            return page.locator('#retrievalPreviewResult').innerText();
+        };
+        await openRetrievalSettings();
+        await assertSourceListsMatch();
         assert.strictEqual(await page.locator('#firebaseSettingsContent').count(), 0, 'legacy Firebase settings must be removed');
+        assert.strictEqual(await page.locator('#retrievalNewSourcePolicy').count(), 0, 'import policy selector must be removed');
         assert.strictEqual(await page.locator('.retrieval-source-card').count(), 3, 'every current source must appear in retrieval settings');
+        assert.strictEqual(await page.locator('.retrieval-source-toggle:checked').count(), 0, 'new contracts must start unchecked');
+        assert.match(await preview(), /命中 0 条[\s\S]*请在“设置 → 检索设置”中勾选来源并保存/);
+        await saveSettings();
+        await openRetrievalSettings();
+        await page.getByLabel(`将 ${importedSource} 加入检索范围`).check();
+        assert.match(await preview(), /命中 1 条/);
+        assert.deepStrictEqual(await page.evaluate(query => findRelevantClauses(query), query), [], 'an unsaved checkbox may only affect preview');
+        page.once('dialog', dialog => dialog.accept());
+        await page.locator('#retrievalResetButton').click();
+        assert.strictEqual(await page.getByLabel(`将 ${importedSource} 加入检索范围`).isChecked(), true);
+        assert.strictEqual(await page.locator('.retrieval-source-toggle:checked').count(), 1, 'reset must preserve the checked scope');
+        await saveSettings();
+        await page.reload();
+        await page.evaluate(() => window.contractAppReady);
+        assert.deepStrictEqual(await page.evaluate(async query => (await findRelevantClauses(query)).map(clause => clause.type), query), [importedSource], 'saved check must reach assistant retrieval after reload');
+        await openRetrievalSettings();
+        await page.locator('#tabContractSettings').click();
+        const contractRow = page.locator(`.cm-row[data-key="${importedSource}"]`);
+        const renamedSource = '已改名的测试合同';
+        await contractRow.locator('[data-field="title"]').fill('Renamed full title');
+        await contractRow.locator('[data-field="title"]').press('Enter');
+        await contractRow.locator('[data-field="key"]').fill(renamedSource);
+        await contractRow.locator('[data-field="key"]').press('Enter');
+        await assertSourceListsMatch();
+        const importedToggle = page.getByLabel(`将 ${renamedSource} 加入检索范围`);
+        assert.strictEqual(await importedToggle.isChecked(), true, 'renaming must preserve the checked state');
         const relationOptions = await page.locator('#retrievalRelationType option').allTextContents();
-        assert.deepStrictEqual(relationOptions, ['高于', '同级', '无推定关系'], 'source relations must expose only the approved three choices');
-        const customSourceCard = page.locator('.retrieval-source-card').filter({ hasText: "资料 A+B's" });
-        await customSourceCard.locator('.retrieval-source-toggle').uncheck();
+        assert.deepStrictEqual(relationOptions, ['高于', '低于', '同级', '无推定关系']);
+        await importedToggle.uncheck();
+        await page.getByLabel('将 GCC 加入检索范围').check();
+        await page.getByLabel('将 SCC 加入检索范围').check();
         await page.getByLabel('SCC 的适用等级').selectOption('1');
         await page.getByLabel('GCC 的适用等级').selectOption('2');
         const sourceIds = await page.evaluate(() => ({ gcc: contracts.GCC.sourceId, scc: contracts.SCC.sourceId }));
-        await page.locator('#retrievalRelationFrom').selectOption(sourceIds.scc);
-        await page.locator('#retrievalRelationType').selectOption('higher');
-        await page.locator('#retrievalRelationTo').selectOption(sourceIds.gcc);
-        await page.locator('#retrievalAddRelation').click();
-        assert.ok((await page.locator('#retrievalRelationList').innerText()).includes('SCC 高于 GCC'));
-        await page.locator('#retrievalPreviewQuery').fill('不应进入检索的专属校验词');
-        await page.locator('#retrievalPreviewButton').click();
-        await page.waitForFunction(() => document.getElementById('retrievalPreviewButton')?.disabled === false);
-        const previewText = await page.locator('#retrievalPreviewResult').innerText();
+        const allOthers = { label: '所有其他文件' };
+        const addRelation = async (from, type, to) => {
+            await page.locator('#retrievalRelationFrom').selectOption(from);
+            await page.locator('#retrievalRelationType').selectOption(type);
+            await page.locator('#retrievalRelationTo').selectOption(to);
+            await page.locator('#retrievalAddRelation').click();
+        };
+        const relationRows = page.locator('.retrieval-relation-row > span');
+        const relationError = page.locator('#retrievalRelationError');
+        await addRelation(sourceIds.scc, 'higher', sourceIds.gcc);
+        assert.deepStrictEqual(await relationRows.allTextContents(), ['SCC 高于 GCC']);
+        await addRelation(allOthers, 'higher', sourceIds.scc);
+        assert.match(await relationError.innerText(), /GCC.*第 2 级.*SCC.*第 1 级.*应为/);
+        assert.deepStrictEqual(await relationRows.allTextContents(), ['SCC 高于 GCC'], 'a failed batch must preserve every previous rule');
+        await addRelation(allOthers, 'lower', sourceIds.scc);
+        assert.deepStrictEqual((await relationRows.allTextContents()).sort(), ['SCC 高于 GCC', `SCC 高于 ${renamedSource}`].sort());
+        await addRelation(sourceIds.gcc, 'lower', allOthers);
+        assert.deepStrictEqual((await relationRows.allTextContents()).sort(), [
+            'SCC 高于 GCC', `SCC 高于 ${renamedSource}`, `${renamedSource} 高于 GCC`
+        ].sort());
+        await page.getByLabel(`${renamedSource} 的适用等级`).selectOption('3');
+        await page.getByRole('button', { name: /保存设置/ }).click();
+        assert.match(await page.locator('#settingsStatus').innerText(), /第 3 级.*高于.*GCC.*第 2 级/);
+        await page.getByLabel(`${renamedSource} 的适用等级`).selectOption('');
+        const previewText = await preview();
         assert.ok(previewText.includes('检索范围：GCC、SCC'), 'preview must display the enabled scope');
         assert.ok(previewText.includes('命中 0 条'), 'disabled arbitrary sources must not leak into retrieval results');
         const retrievalModal = page.locator('#settingsModal .settings-modal-content');
         await retrievalModal.screenshot({ path: path.join(output, 'retrieval-settings-preview.png') });
         await page.locator('#settingsModalBody').evaluate(element => { element.scrollTop = 0; });
         await retrievalModal.screenshot({ path: path.join(output, 'retrieval-settings.png') });
-        await page.getByRole('button', { name: /保存设置/ }).click();
-        await page.locator('#settingsModal').waitFor({ state: 'hidden' });
-        await page.locator('button[title="AI 设置"]').click();
-        await page.locator('#tabRetrievalSettings').click();
-        assert.strictEqual(await page.locator('.retrieval-source-card').filter({ hasText: "资料 A+B's" }).locator('.retrieval-source-toggle').isChecked(), false, 'source scope must persist after reopening settings');
+        await saveSettings();
+        // The status center keeps errors visible until dismissed.
+        await page.locator('#statusText').filter({ hasText: '请修正检索设置' }).waitFor();
+        await page.locator('#statusBubbleClose').click();
+        assert.deepStrictEqual(await page.evaluate(query => findRelevantClauses(query), query), [], 'saved uncheck must exclude the source from assistant retrieval');
+        await openRetrievalSettings();
+        assert.strictEqual(await importedToggle.isChecked(), false, 'source scope must persist after reopening settings');
         assert.strictEqual(await page.getByLabel('SCC 的适用等级').inputValue(), '1', 'source level must persist after reopening settings');
-        assert.ok((await page.locator('#retrievalRelationList').innerText()).includes('SCC 高于 GCC'), 'source relation must persist after reopening settings');
+        assert.deepStrictEqual((await relationRows.allTextContents()).sort(), [
+            'SCC 高于 GCC', `SCC 高于 ${renamedSource}`, `${renamedSource} 高于 GCC`
+        ].sort(), 'batch relations must persist after reopening settings');
         await page.setViewportSize({ width: 390, height: 844 });
         const mobileLayout = await page.evaluate(() => {
             const modal = document.querySelector('#settingsModal .settings-modal-content');
@@ -106,6 +188,12 @@ async function run() {
         await page.locator('#settingsModalBody').evaluate(element => { element.scrollTop = 0; });
         await page.locator('#settingsModal .settings-modal-content').screenshot({ path: path.join(output, 'retrieval-settings-mobile.png') });
         await page.setViewportSize({ width: 1280, height: 720 });
+        await page.locator('#tabContractSettings').click();
+        page.once('dialog', dialog => dialog.accept());
+        await page.locator('.cm-row').filter({ hasText: renamedSource }).locator('.cm-delete-btn').click();
+        await assertSourceListsMatch();
+        assert.strictEqual(await importedToggle.count(), 0, 'deleted contract must disappear from retrieval settings');
+        console.log('Retrieval settings browser checks passed (scope, preview, persistence, batch relations and conflict validation)');
         await page.getByRole('button', { name: '取消', exact: true }).click();
         await page.getByRole('button', { name: '管理助手', exact: true }).click();
         assert.ok(await page.locator('#sendBtn').evaluate(button => button.parentElement?.classList.contains('input-tools')), 'send button must be inside the input toolbar');
@@ -118,9 +206,11 @@ async function run() {
         assert.ok(Math.abs(inputToolLayout.toolsRight - inputToolLayout.sendRight) < 2, 'send button must align to the right edge of the input toolbar');
         assert.ok(Math.abs(inputToolLayout.sendCenterY - inputToolLayout.clearCenterY) < 6, 'send button must share the input action row');
         await page.locator('#btnThinkingMode').click(); await page.locator('#btnKnowledgeBase').click();
-        await page.locator('#statusBar').getByText('加载 4 条正文', { exact: false }).waitFor();
-        assert.strictEqual(await page.locator('#statusBar').getAttribute('aria-live'), 'polite', 'knowledge-base status must be announced without moving focus');
-        assert.match(await page.locator('#btnUpdateIndex').getAttribute('aria-label'), /有效语义向量 0\/4/, 'knowledge-base action must report the valid index count');
+        await page.locator('#statusText').filter({ hasText: '加载 4 条正文' }).waitFor();
+        assert.strictEqual(await page.locator('#statusAnnouncement').getAttribute('aria-live'), 'polite', 'knowledge-base status must be announced without moving focus');
+        assert.match(await page.locator('#statusText').innerText(), /有效语义向量 0\/4/);
+        assert.strictEqual(await page.locator('#btnKnowledgeBase').getAttribute('aria-pressed'), 'true');
+        assert.strictEqual(await page.locator('#btnUpdateIndex').count(), 0);
         const send = async query => { await page.locator('#chatInput').fill(query); await page.locator('#sendBtn').click(); await page.waitForFunction(() => !isStreaming); };
         await send('SCC Clause 34');
         assert.strictEqual(requests.length, 1); assert.deepStrictEqual(requests[0].thinking, { type: 'enabled' });
@@ -313,21 +403,87 @@ async function run() {
         await page.locator('.modal-overlay:visible').getByRole('button', { name: '确定', exact: true }).click();
         await page.waitForFunction(() => document.getElementById('assistantArchiveCount').textContent === '0');
         assert.ok(await page.evaluate(() => typeof AIRetrieval.retrieve === 'function'));
+        await openRetrievalSettings();
+        await page.getByLabel('将 SCC 加入检索范围').uncheck();
+        await page.evaluate(() => {
+            document.getElementById('settingEmbeddingEndpoint').value = 'https://example.test/v1';
+            document.getElementById('settingEmbeddingApiKey').value = 'dummy-key';
+            document.getElementById('settingEmbeddingModel').value = 'browser-vector';
+        });
+        await saveSettings();
+        const buildRequests = [], queryRequests = [];
+        let releaseScc, shouldFailScc = true;
+        const blockedScc = new Promise(resolve => { releaseScc = resolve; });
+        await page.route('**/api/retrieval', async route => {
+            const { kind, body } = route.request().postDataJSON();
+            assert.strictEqual(kind, 'embedding');
+            if (/^(GCC|SCC) Clause /u.test(body.input)) buildRequests.push(body.input);
+            else queryRequests.push(body.input);
+            if (shouldFailScc && body.input.startsWith('SCC Clause ')) {
+                await blockedScc;
+                await route.fulfill({ status: 502 });
+            } else await route.fulfill({ json: { data: [{ embedding: [1, 0] }] } });
+        });
+        const knowledge = page.getByRole('button', { name: '知识库', exact: true });
+        await knowledge.click();
+        await page.locator('#statusText').filter({ hasText: '有效语义向量 0/3' }).waitFor();
+        assert.deepStrictEqual(buildRequests, [], 'the knowledge switch must not start index generation');
+        await openRetrievalSettings();
+        await page.locator('#tabContractSettings').click();
+        const vectorize = page.getByRole('button', { name: '向量化', exact: true });
+        const vectorState = (label, state) => page.locator(`.cm-row[data-key="${label}"] .cm-vector-status[data-state="${state}"]`);
+        await vectorState('GCC', 'pending').waitFor();
+        await vectorState('SCC', 'pending').waitFor();
+        await vectorize.click();
+        await vectorState('GCC', 'ready').waitFor();
+        await vectorState('SCC', 'pending').waitFor();
+        assert.ok(await vectorize.isDisabled());
+        releaseScc();
+        await page.waitForFunction(() => !document.getElementById('btnVectorizeContracts').disabled);
+        assert.match(await page.locator('#statusText').innerText(), /失败 1 条.*HTTP 502/u);
+        assert.strictEqual(buildRequests.length, 4);
+        shouldFailScc = false;
+        await vectorize.click();
+        await vectorState('SCC', 'ready').waitFor();
+        await page.waitForFunction(() => !document.getElementById('btnVectorizeContracts').disabled);
+        assert.strictEqual(buildRequests.length, 5, 'retry must only embed the failed clause');
+        assert.match(buildRequests.at(-1), /^SCC Clause /u);
+        await vectorize.click();
+        await page.waitForFunction(() => !document.getElementById('btnVectorizeContracts').disabled);
+        assert.strictEqual(buildRequests.length, 5, 'already-covered contracts require no further embeddings');
+        await page.setViewportSize({ width: 390, height: 844 });
+        assert.ok(await vectorize.evaluate(button => {
+            const row = button.closest('.cm-header-row');
+            const cell = button.closest('.cm-cell-vector');
+            return cell === row.lastElementChild && cell.previousElementSibling.textContent.trim() === '条款数'
+                && button.getBoundingClientRect().right <= row.getBoundingClientRect().right;
+        }), 'the vectorization button must fit in the last column on mobile');
+        await page.setViewportSize({ width: 1280, height: 720 });
+        await page.getByRole('button', { name: '取消', exact: true }).click();
+        await send('工程设施和施工许可有哪些规定？');
+        const indexedChat = requests.find(body => body.messages.at(-1)?.content === '工程设施和施工许可有哪些规定？');
+        assert.ok(indexedChat?.messages[0].content.includes('<<<GCC Clause'));
+        assert.ok(!indexedChat.messages[0].content.includes('<<<SCC Clause'), 'indexed but unchecked contracts must stay outside the evidence scope');
+        assert.strictEqual(queryRequests.length, 1);
+        await knowledge.click();
+        assert.strictEqual(await knowledge.getAttribute('aria-pressed'), 'false');
+        await send('关闭知识库后的普通问答');
+        const ordinaryChat = requests.find(body => body.messages.at(-1)?.content === '关闭知识库后的普通问答');
+        assert.ok(ordinaryChat && !ordinaryChat.messages[0].content.includes('<<<'));
+        assert.strictEqual(queryRequests.length, 1, 'ordinary chat must not request a query embedding');
+
         const indexCheck = await page.evaluate(async () => {
-            Object.assign(AI_CONFIG, { embeddingEndpoint: 'https://example.test/v1', embeddingApiKey: 'dummy-key', embeddingModel: 'browser-vector' });
-            RAG.getEmbedding = async () => [1, 0];
-            const summary = await RAG.buildIndex(contracts, AI_CONFIG);
             const records = await RAG.readRecords();
             const ready = records.filter(row => RAG.validateRecord(row, AI_CONFIG, contracts) === 'ready');
-            contracts.GCC.data['50'].content += ' Changed original.';
-            const stale = records.find(row => row.sourceId === contracts.GCC.sourceId && row.clauseId === '50');
-            const code = RAG.validateRecord(stale, AI_CONFIG, contracts);
-            window.PREBUILT_VECTORS = { embeddingModel: 'legacy', vectors: { legacy: { type: 'GCC', clauseId: '50', title: 'Legacy', vector: [1, 0] } } };
+            const compatible = ready.find(row => row.sourceId === contracts.GCC.sourceId && row.clauseId === '50');
+            const legacy = { type: 'GCC', clauseId: '50', title: 'Legacy', vector: [1, 0] };
+            window.PREBUILT_VECTORS = { vectors: { compatible, legacy } };
             await RAG.importPrebuiltVectors();
-            const imported = (await RAG.readRecords()).find(row => row.id === 'legacy');
-            return { summary, ready: ready.length, stale: code, legacy: RAG.validateRecord(imported, AI_CONFIG, contracts) };
+            const imported = await RAG.readRecords();
+            return { ready: ready.length, compatible: RAG.validateRecord(imported.find(row => row.id === 'compatible'), AI_CONFIG, contracts),
+                legacy: RAG.validateRecord(imported.find(row => row.id === 'legacy'), AI_CONFIG, contracts) };
         });
-        assert.strictEqual(indexCheck.summary.count, 4); assert.strictEqual(indexCheck.ready, 4); assert.strictEqual(indexCheck.stale, 'source-stale'); assert.strictEqual(indexCheck.legacy, 'legacy-unverified');
+        assert.deepStrictEqual(indexCheck, { ready: 4, compatible: 'ready', legacy: 'legacy-unverified' });
         const downloadPromise = page.waitForEvent('download');
         await page.evaluate(() => RAG.exportVectorsAsJS(AI_CONFIG.embeddingModel));
         const download = await downloadPromise;
@@ -335,7 +491,34 @@ async function run() {
         const exportedGcc = Object.values(exportedContext.window.PREBUILT_VECTORS.vectors).find(vector => vector.sourceId && vector.type === 'GCC' && vector.clauseId === '50');
         assert.ok(exportedGcc.sourceHash); assert.ok(exportedGcc.embeddingSpace);
         await page.screenshot({ path: path.join(output, 'assistant-retrieval.png'), fullPage: true });
-        await page.reload(); await page.evaluate(() => window.contractAppReady); await page.getByRole('button', { name: '管理助手', exact: true }).click();
+        await page.reload(); await page.evaluate(() => window.contractAppReady);
+        await openRetrievalSettings();
+        await page.locator('#tabContractSettings').click();
+        await vectorState('GCC', 'ready').waitFor();
+        await vectorState('SCC', 'ready').waitFor();
+        const gccRow = page.locator('.cm-row[data-key="GCC"]');
+        await gccRow.locator('[data-field="title"]').fill('Updated General Conditions');
+        await gccRow.locator('[data-field="title"]').press('Enter');
+        await gccRow.locator('[data-field="key"]').fill('GCC-Renamed');
+        await gccRow.locator('[data-field="key"]').press('Enter');
+        await vectorState('GCC-Renamed', 'ready').waitFor();
+        await page.evaluate(async () => {
+            contracts['GCC-Renamed'].data['50'].content += ' Changed original.';
+            await saveContractsToStorage();
+        });
+        await vectorState('GCC-Renamed', 'pending').waitFor();
+        await vectorState('SCC', 'ready').waitFor();
+        await page.evaluate(async () => {
+            AI_CONFIG.embeddingModel = 'another-model';
+            await saveContractsToStorage();
+        });
+        await vectorState('SCC', 'pending').waitFor();
+        page.once('dialog', dialog => dialog.accept());
+        await page.locator('.cm-row[data-key="GCC-Renamed"] .cm-delete-btn').click();
+        assert.strictEqual(await page.locator('.cm-row[data-key="GCC-Renamed"]').count(), 0);
+        assert.strictEqual(await page.evaluate(async () => (await RAG.getIndexStatus(AI_CONFIG, contracts)).corpus), 0);
+        await page.getByRole('button', { name: '取消', exact: true }).click();
+        await page.getByRole('button', { name: '管理助手', exact: true }).click();
         await page.locator('#btnAssistantNotebook').click();
         await page.locator('#assistantTopicList .assistant-topic-title').getByText('已编辑笔记', { exact: true }).waitFor();
         assert.ok((await page.locator('#assistantNotebookContent').innerText()).includes('已保存的笔记正文'), 'saved notebook edits must survive a reload');
@@ -345,7 +528,8 @@ async function run() {
         await page.waitForFunction(() => document.getElementById('assistantNotebookCount').textContent === '0');
         assert.strictEqual(await page.locator('#assistantTopicList .assistant-topic-item').count(), 0, 'unfavoriting must remove the notebook entry');
         assert.deepStrictEqual(errors, []);
-        const report = { passed: true, scope: 'isolated localhost with mocked providers', checks: ['existing browser regression', 'retrieval settings replace legacy Firebase UI', 'arbitrary-name source controls and strict disabled-source scope', 'source level/relation persistence and three approved relation choices', 'desktop/mobile retrieval settings layout', 'thinking+knowledge flags', 'knowledge-base status distinguishes loaded corpus from invalid vectors', 'typed SCC evidence', 'Chinese response-deadline query retrieves GCC Clause 5 without semantic vectors', 'multi-file TXT/Markdown/PDF/DOCX local attachment parsing and request hydration', 'followup', 'clause link', 'assistant original/translation and Chinese-variant preference across links', 'regeneration history', 'context break', 'one repair', 'failed repair warning', 'legacy vector feedback', 'stop', 'reload', 'AI topic title with same-model request and length guard', 'assistant reply branching with numbering/truncation/source preservation/no provider call', 'assistant topics title-only rows/outside-click menu/full-row active state/create/rename/archive preview/restore/delete', 'favorite action, notebook source/preview/compare modes, live rendering, scroll sync, editable persistence, and unfavorite deletion', 'send button inside input toolbar', 'native IndexedDB build/import/freshness/export'], providerRequests: 0 };
+        const report = { passed: true, scope: 'isolated localhost with mocked providers', checks: ['existing browser regression', 'retrieval settings replace legacy Firebase UI', 'arbitrary-name source controls and strict disabled-source scope', 'source level precedence, batch relations, conflict messages and persistence', 'desktop/mobile retrieval settings layout', 'thinking+knowledge flags', 'knowledge-base status distinguishes loaded corpus from invalid vectors', 'typed SCC evidence', 'Chinese response-deadline query retrieves GCC Clause 5 without semantic vectors', 'multi-file TXT/Markdown/PDF/DOCX local attachment parsing and request hydration', 'followup', 'clause link', 'assistant original/translation and Chinese-variant preference across links', 'regeneration history', 'context break', 'one repair', 'failed repair warning', 'legacy vector feedback', 'stop', 'reload', 'AI topic title with same-model request and length guard', 'assistant reply branching with numbering/truncation/source preservation/no provider call', 'assistant topics title-only rows/outside-click menu/full-row active state/create/rename/archive preview/restore/delete', 'favorite action, notebook source/preview/compare modes, live rendering, scroll sync, editable persistence, and unfavorite deletion', 'send button inside input toolbar', 'native IndexedDB build/import/freshness/export'], providerRequests: 0 };
+        report.checks.push('contract management vectorizes unchecked sources with per-contract indicators, failure retry and no duplicate requests', 'knowledge switch only retrieves enabled sources', 'vector status after reload, rename, body edit, model change and deletion');
         fs.writeFileSync(path.join(output, 'assistant-browser-report.json'), JSON.stringify(report, null, 2));
         console.log(JSON.stringify(report)); await context.close();
     } finally { if (browser) await browser.close(); await new Promise(resolve => server.close(resolve)); }

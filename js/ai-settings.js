@@ -161,7 +161,7 @@ function openSettings() {
 }
 
 function closeSettings(force = false) {
-    if (!force && window.RetrievalSettings?.isDraftDirty() && !confirm('检索设置尚未保存，确定关闭吗？')) return;
+    if (!force && window.RetrievalSettings?.isDraftDirty(contracts) && !confirm('检索设置尚未保存，确定关闭吗？')) return;
     window.RetrievalSettings?.discardDraft();
     document.getElementById('settingsModal').style.display = 'none';
 }
@@ -214,7 +214,7 @@ async function saveAISettings() {
     if (JSON.stringify(getAISettingsForCloud()) !== previousAISettings) touchAISettings();
     if (typeof saveContractsToStorage === 'function') await saveContractsToStorage();
     if (typeof checkRAGIndexStatus === 'function' && typeof isKnowledgeBaseMode !== 'undefined' && isKnowledgeBaseMode) {
-        knowledgeBaseReady = checkRAGIndexStatus();
+        checkRAGIndexStatus();
     }
     showSettingsStatus('✅ 设置已保存', 'success');
     setTimeout(() => closeSettings(true), 900);
@@ -333,23 +333,23 @@ function renderRetrievalSources() {
         levelLabel.appendChild(level);
         controls.append(roleLabel, levelLabel);
 
-        enabled.addEventListener('change', () => {
-            source.enabled = enabled.checked;
-            source.needsReview = false;
-            card.classList.toggle('is-disabled', !source.enabled);
-            window.RetrievalSettings.setDraft(draft, contracts);
+        const updateSource = changes => {
+            const activeDraft = window.RetrievalSettings.getDraft(contracts);
+            const activeSource = activeDraft.sources[entry.sourceId];
+            if (!activeSource) return;
+            Object.assign(activeSource, changes);
+            window.RetrievalSettings.setDraft(activeDraft, contracts);
             updateRetrievalSummary();
+        };
+        enabled.addEventListener('change', () => {
+            card.classList.toggle('is-disabled', !enabled.checked);
+            updateSource({ enabled: enabled.checked });
         });
         role.addEventListener('change', () => {
-            source.role = role.value;
-            source.needsReview = false;
-            window.RetrievalSettings.setDraft(draft, contracts);
+            updateSource({ role: role.value });
         });
         level.addEventListener('change', () => {
-            source.authorityLevel = level.value ? Number(level.value) : null;
-            source.needsReview = false;
-            window.RetrievalSettings.setDraft(draft, contracts);
-            updateRetrievalSummary();
+            updateSource({ authorityLevel: level.value ? Number(level.value) : null });
         });
 
         card.append(main, controls);
@@ -357,11 +357,14 @@ function renderRetrievalSources() {
     });
 }
 
+const ALL_OTHER_RETRIEVAL_SOURCES = '__all_other_files__';
+
 function fillRetrievalRelationSelect(select, entries) {
     if (!select) return;
     const previous = select.value;
     select.replaceChildren();
     entries.forEach(entry => select.appendChild(retrievalOption(entry.sourceId, entry.label, entry.sourceId === previous)));
+    select.appendChild(retrievalOption(ALL_OTHER_RETRIEVAL_SOURCES, '所有其他文件', previous === ALL_OTHER_RETRIEVAL_SOURCES));
 }
 
 function renderRetrievalRelations() {
@@ -384,7 +387,7 @@ function renderRetrievalRelations() {
     }
 
     const labels = { higher: '高于', same: '同级', none: '无推定关系' };
-    draft.relations.forEach((relation, index) => {
+    draft.relations.forEach(relation => {
         const row = document.createElement('div');
         row.className = 'retrieval-relation-row';
         const text = document.createElement('span');
@@ -395,8 +398,10 @@ function renderRetrievalRelations() {
         remove.textContent = '删除';
         remove.setAttribute('aria-label', `删除关系：${text.textContent}`);
         remove.addEventListener('click', () => {
-            draft.relations.splice(index, 1);
-            window.RetrievalSettings.setDraft(draft, contracts);
+            const activeDraft = window.RetrievalSettings.getDraft(contracts);
+            activeDraft.relations = activeDraft.relations.filter(item =>
+                item.fromSourceId !== relation.fromSourceId || item.toSourceId !== relation.toSourceId);
+            window.RetrievalSettings.setDraft(activeDraft, contracts);
             renderRetrievalRelations();
             updateRetrievalSummary();
         });
@@ -411,23 +416,41 @@ function addRetrievalRelation() {
     const type = document.getElementById('retrievalRelationType')?.value;
     const error = document.getElementById('retrievalRelationError');
     if (error) error.textContent = '';
+    const allFrom = from === ALL_OTHER_RETRIEVAL_SOURCES;
+    const allTo = to === ALL_OTHER_RETRIEVAL_SOURCES;
+    if (allFrom && allTo) {
+        if (error) error.textContent = '“所有其他文件”只能选在一侧，另一侧请选择一份合同文件。';
+        return;
+    }
     if (!from || !to || from === to) {
         if (error) error.textContent = '请选择两个不同的来源。';
         return;
     }
+    const bulk = allFrom || allTo;
+    if (bulk && type !== 'higher' && type !== 'lower') {
+        if (error) error.textContent = '“所有其他文件”仅支持批量设置“高于”或“低于”。';
+        return;
+    }
+    const selected = allFrom ? to : from;
+    const others = new Set(bulk
+        ? retrievalEntries().map(entry => entry.sourceId).filter(id => id !== selected)
+        : [to]);
+    if (!others.size) {
+        if (error) error.textContent = '没有其他合同文件可设置关系。';
+        return;
+    }
     const draft = window.RetrievalSettings.getDraft(contracts);
-    const previous = window.RetrievalSettings.clone(draft.relations);
-    const pair = new Set([from, to]);
-    draft.relations = draft.relations.filter(relation => !(pair.has(relation.fromSourceId) && pair.has(relation.toSourceId)));
-    draft.relations.push({ fromSourceId: from, toSourceId: to, type });
-    window.RetrievalSettings.setDraft(draft, contracts);
-    const validation = window.RetrievalSettings.validate(draft, contracts);
+    const relations = draft.relations.filter(({ fromSourceId, toSourceId }) =>
+        !(fromSourceId === selected && others.has(toSourceId) || toSourceId === selected && others.has(fromSourceId)));
+    for (const other of others) {
+        relations.push({ fromSourceId: allFrom ? other : from, toSourceId: allFrom ? to : other, type });
+    }
+    const validation = window.RetrievalSettings.validate({ ...draft, relations }, contracts);
     if (!validation.valid) {
-        draft.relations = previous;
-        window.RetrievalSettings.setDraft(draft, contracts);
         if (error) error.textContent = validation.errors.join('；');
         return;
     }
+    window.RetrievalSettings.setDraft(validation.settings, contracts);
     renderRetrievalRelations();
     updateRetrievalSummary();
 }
@@ -482,9 +505,7 @@ function bindRetrievalSettingsEvents() {
         const draft = window.RetrievalSettings.getDraft(contracts);
         draft[field] = event.target.value;
         window.RetrievalSettings.setDraft(draft, contracts);
-        if (field === 'newSourcePolicy') renderRetrievalSources();
     });
-    bindSelect('retrievalNewSourcePolicy', 'newSourcePolicy');
     bindSelect('retrievalConflictPolicy', 'conflictPolicy');
     bindSelect('retrievalProfile', 'profile');
     document.getElementById('retrievalAddRelation')?.addEventListener('click', addRetrievalRelation);
@@ -493,7 +514,7 @@ function bindRetrievalSettingsEvents() {
         if (event.key === 'Enter') { event.preventDefault(); runRetrievalPreview(); }
     });
     document.getElementById('retrievalResetButton')?.addEventListener('click', () => {
-        if (!confirm('恢复推荐检索设置？所有来源将启用，层级和来源关系将被清除。')) return;
+        if (!confirm('恢复推荐检索设置？当前来源的勾选状态将保留，角色、等级和来源关系将重置。')) return;
         window.RetrievalSettings.resetDraft(contracts);
         renderRetrievalSettingsTab();
     });
@@ -503,10 +524,8 @@ function renderRetrievalSettingsTab() {
     if (!window.RetrievalSettings) return;
     bindRetrievalSettingsEvents();
     const draft = window.RetrievalSettings.getDraft(contracts);
-    const newSourcePolicy = document.getElementById('retrievalNewSourcePolicy');
     const conflictPolicy = document.getElementById('retrievalConflictPolicy');
     const profile = document.getElementById('retrievalProfile');
-    if (newSourcePolicy) newSourcePolicy.value = draft.newSourcePolicy;
     if (conflictPolicy) conflictPolicy.value = draft.conflictPolicy;
     if (profile) profile.value = draft.profile;
     renderRetrievalSources();
@@ -765,13 +784,92 @@ function initModelSelector() {
 // =======================================================
 // 合同管理 Tab
 // =======================================================
+let contractVectorizing = false;
+let contractVectorStatusRequest = 0;
+
+function isContractManagementVisible() {
+    return document.getElementById('settingsModal')?.style.display === 'flex'
+        && document.getElementById('contractSettingsContent')?.style.display === 'block';
+}
+
+async function refreshContractVectorStatus() {
+    if (!isContractManagementVisible()) return;
+    const request = ++contractVectorStatusRequest;
+    const indicators = document.querySelectorAll('#contractManagementList .cm-vector-status');
+    if (!indicators.length) return;
+    let status;
+    try {
+        status = await RAG.getIndexStatus({ ...AI_CONFIG }, contracts, { allContracts: true });
+    } catch (error) {
+        console.warn('[合同管理] 读取向量状态失败', error);
+    }
+    if (request !== contractVectorStatusRequest || !isContractManagementVisible()) return;
+    for (const indicator of indicators) {
+        const key = indicator.closest('.cm-row').dataset.key;
+        const coverage = status?.coverage.get(contracts[key]?.sourceId);
+        const ready = coverage?.total > 0 && coverage.covered === coverage.total;
+        const label = !status ? '无法读取向量索引状态'
+            : ready ? '已完成向量化'
+            : coverage?.total ? `尚未完成向量化（${coverage.covered}/${coverage.total} 条）`
+            : '没有可向量化的合同正文';
+        indicator.dataset.state = ready ? 'ready' : 'pending';
+        indicator.title = label;
+        indicator.setAttribute('aria-label', label);
+    }
+}
+
+function updateContractVectorButton() {
+    const button = document.getElementById('btnVectorizeContracts');
+    if (!button) return;
+    button.disabled = contractVectorizing;
+    button.setAttribute('aria-busy', String(contractVectorizing));
+}
+
+async function vectorizeContracts() {
+    if (contractVectorizing) return;
+    contractVectorizing = true;
+    updateContractVectorButton();
+    const config = { ...AI_CONFIG };
+    let task;
+    try {
+        const status = await RAG.getIndexStatus(config, contracts, { allContracts: true });
+        if (!status.corpus) {
+            showStatus('warning', '没有可向量化的合同正文。', '📂', 6500);
+            return;
+        }
+        if (!status.uncovered) {
+            showStatus('success', '所有可向量化的合同正文均已有有效向量。', '📚', 6500);
+            return;
+        }
+        if (!RAG.getEmbeddingConfig(config)) {
+            await CustomDialog.alert('请先在 AI 设置中配置 Embedding Base URL、API Key 和 Model Name，并保存设置。', '嵌入模型尚未配置');
+            return;
+        }
+        task = window.StatusCenter?.start('正在向量化合同…', '知识库');
+        const summary = await RAG.buildIndex(contracts, config, (current, total, detail) => {
+            task?.update(`正在向量化合同 ${current}/${total}：${detail}`, total ? current / total * 100 : null);
+        }, { allContracts: true, onContractComplete: refreshContractVectorStatus });
+        const completed = summary.count + summary.skipped;
+        const reasons = summary.errors.map(item => `${item.reason} ${item.count} 条`).join('；');
+        task?.finish(`本次成功更新 ${completed}/${summary.total} 条（新建 ${summary.count} 条，沿用已有 ${summary.skipped} 条）。失败 ${summary.failed} 条。${reasons ? `失败原因：${reasons}。` : ''}`, summary.failed ? 'warning' : 'success');
+    } catch (error) {
+        const message = '合同向量化失败：' + error.message;
+        if (task) task.finish(message, 'error');
+        else showStatus('error', message, '📚', 6500);
+    } finally {
+        await refreshContractVectorStatus();
+        contractVectorizing = false;
+        updateContractVectorButton();
+    }
+}
+
 function renderContractManagementTab() {
     const container = document.getElementById('contractManagementList');
     if (!container) return;
 
-    const keys = typeof contracts !== 'undefined' ? Object.keys(contracts) : [];
+    const entries = retrievalEntries();
 
-    if (keys.length === 0) {
+    if (entries.length === 0) {
         container.innerHTML = `
             <div style="text-align:center; padding:40px 20px; color:#999;">
                 <div style="font-size:40px; margin-bottom:12px;">📂</div>
@@ -785,13 +883,14 @@ function renderContractManagementTab() {
         <div class="cm-header-row">
             <div class="cm-cell cm-cell-label" style="font-weight:600; color:#555; font-size:12px; text-transform:uppercase; letter-spacing:0.05em;">标签名</div>
             <div class="cm-cell cm-cell-name" style="font-weight:600; color:#555; font-size:12px; text-transform:uppercase; letter-spacing:0.05em;">完整名称</div>
-            <div class="cm-cell cm-cell-count" style="font-weight:600; color:#555; font-size:12px; text-transform:uppercase; letter-spacing:0.05em; text-align:center;">条款数</div>
             <div class="cm-cell cm-cell-action"></div>
+            <div class="cm-cell cm-cell-count" style="font-weight:600; color:#555; font-size:12px; text-transform:uppercase; letter-spacing:0.05em; text-align:center;">条款数</div>
+            <div class="cm-cell cm-cell-vector">
+                <button type="button" id="btnVectorizeContracts" onclick="vectorizeContracts()">向量化</button>
+            </div>
         </div>`;
 
-    const rowsHtml = keys.map(key => {
-        const cInfo = contracts[key];
-        const clauseCount = Object.keys(cInfo.data).length;
+    const rowsHtml = entries.map(({ key, title, clauseCount }) => {
         return `
             <div class="cm-row" data-key="${escapeHtml(key)}">
                 <div class="cm-cell cm-cell-label">
@@ -809,13 +908,10 @@ function renderContractManagementTab() {
                         contenteditable="true"
                         spellcheck="false"
                         data-field="title"
-                        data-original="${escapeHtml(cInfo.title)}"
+                        data-original="${escapeHtml(title)}"
                         onblur="handleContractInlineEdit(this)"
                         onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}"
-                        title="点击编辑完整名称">${escapeHtml(cInfo.title)}</span>
-                </div>
-                <div class="cm-cell cm-cell-count">
-                    <span class="cm-clause-badge">${clauseCount}</span>
+                        title="点击编辑完整名称">${escapeHtml(title)}</span>
                 </div>
                 <div class="cm-cell cm-cell-action">
                     <button class="cm-delete-btn" onclick="handleContractDeleteFromModal(decodeURIComponent('${encodeInlineArgument(key)}'))" title="删除合同 ${escapeHtml(key)}">
@@ -826,6 +922,12 @@ function renderContractManagementTab() {
                             <line x1="14" y1="11" x2="14" y2="17"></line>
                         </svg>
                     </button>
+                </div>
+                <div class="cm-cell cm-cell-count">
+                    <span class="cm-clause-badge">${clauseCount}</span>
+                </div>
+                <div class="cm-cell cm-cell-vector">
+                    <span class="cm-vector-status" role="img" aria-label="正在检查向量状态" title="正在检查向量状态"></span>
                 </div>
             </div>`;
     }).join('');
@@ -838,6 +940,8 @@ function renderContractManagementTab() {
             ${headerHtml}
             <div class="cm-rows">${rowsHtml}</div>
         </div>`;
+    updateContractVectorButton();
+    refreshContractVectorStatus();
 }
 
 function handleContractInlineEdit(el) {

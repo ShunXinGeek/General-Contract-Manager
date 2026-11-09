@@ -11,7 +11,6 @@
 // =======================================================
 // 15. AI 管理助手 - 面板切换
 // =======================================================
-let knowledgeBaseReady = Promise.resolve();
 let lastRetrievalEvidence = null;
 let assistantReadOnly = false;
 function messageUid() { return globalThis.crypto?.randomUUID?.() || `message-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
@@ -99,7 +98,6 @@ async function buildMessagesForAPI(historyOverride) {
     if (window.AssistantAttachments?.hydrateForApi) effectiveHistory = await window.AssistantAttachments.hydrateForApi(window.AssistantTopics?.getCurrentTopicId?.() || 'legacy', effectiveHistory);
     let systemPrompt = typeof generateDynamicSystemPrompt === 'function' ? generateDynamicSystemPrompt() : AI_CONFIG.systemPrompt;
     if (isKnowledgeBaseMode) {
-        await knowledgeBaseReady;
         // 检索/嵌入只使用用户问题，不把附件全文发送给知识库服务。
         const lastUserMessage = retrievalHistory.filter(m => m.role === 'user').pop();
         if (lastUserMessage) {
@@ -603,65 +601,36 @@ function toggleAssistantLang() {
 function toggleKnowledgeBaseMode() {
     isKnowledgeBaseMode = !isKnowledgeBaseMode;
     const btn = document.getElementById('btnKnowledgeBase');
-    const icon = document.getElementById('kbModeIcon');
-    const text = document.getElementById('kbModeText');
-    const btnUpdate = document.getElementById('btnUpdateIndex');
-    if (isKnowledgeBaseMode) { btn.classList.add('db-active'); icon.innerText = '📂'; text.innerText = '知识库已开启'; btnUpdate.style.display = 'inline-flex'; knowledgeBaseReady = checkRAGIndexStatus(); }
-    else { btn.classList.remove('db-active'); icon.innerText = '📂'; text.innerText = '打开知识库'; btnUpdate.style.display = 'none'; }
+    btn.setAttribute('aria-pressed', String(isKnowledgeBaseMode));
+    if (isKnowledgeBaseMode) checkRAGIndexStatus();
 }
 
+let knowledgeBaseStatusRequest = 0;
 async function checkRAGIndexStatus() {
+    const request = ++knowledgeBaseStatusRequest;
     try {
         const scope = window.RetrievalSettings ? window.RetrievalSettings.summary(contracts) : { enabled: Object.keys(contracts).length, unconfigured: 0 };
-        const status = await RAG.getIndexStatus(AI_CONFIG, contracts);
-        window.assistantRAGIndexStatus = status;
-        const updateButton = document.getElementById('btnUpdateIndex');
-        if (updateButton) {
-            updateButton.title = status.corpus
-                ? `更新知识库索引：${scope.enabled} 个来源，有效语义向量 ${status.valid}/${status.corpus}`
-                : '更新知识库索引：尚未加载合同正文';
-            updateButton.setAttribute('aria-label', updateButton.title);
-        }
-        if (!isKnowledgeBaseMode) return status;
+        const status = await RAG.getIndexStatus({ ...AI_CONFIG }, contracts);
+        if (!isKnowledgeBaseMode || request !== knowledgeBaseStatusRequest) return;
         if (!status.corpus) {
             showStatus('warning', '当前没有已启用且包含正文的检索来源，请先导入来源或在“检索设置”中启用。', '📂', 6500);
-            return status;
+            return;
         }
         const scopeText = `${scope.enabled} 个检索来源${scope.unconfigured ? `，其中 ${scope.unconfigured} 个层级未设置` : ''}`;
-        const indexDetail = RAG.describeIndexStatus(status);
-        if (status.valid) {
-            showStatus('success', `已启用 ${scopeText}，加载 ${status.corpus} 条正文；有效语义向量 ${status.valid}/${status.corpus}，正在使用混合检索。`, '📚', 6500);
-        } else {
-            const nextStep = isEmbeddingConfigured()
-                ? '当前使用本地检索；如需语义检索，请点击“更新知识库索引”。'
-                : '当前使用本地检索；如需语义检索，请先在设置中配置嵌入模型。';
-            showStatus('warning', `已启用 ${scopeText}，加载 ${status.corpus} 条正文；有效语义向量 0/${status.corpus}。${indexDetail ? indexDetail + '；' : ''}${nextStep}`, '📚', 9000);
-        }
-        return status;
+        const configured = RAG.getEmbeddingConfig(AI_CONFIG);
+        const coverage = `已启用 ${scopeText}，加载 ${status.corpus} 条正文。有效语义向量 ${status.valid}/${status.corpus} 条。`;
+        const mode = configured && status.valid ? '正在使用混合检索。' : '当前在已选来源内使用原文检索。';
+        const nextStep = !configured ? '请先在设置中配置嵌入模型。'
+            : status.uncovered ? '可在“设置 → 合同管理”点击“向量化”补齐。' : '';
+        const details = RAG.describeIndexStatus(status);
+        showStatus(nextStep ? 'warning' : 'success', `${coverage}${mode}${details ? details + '。' : ''}${nextStep}`, '📚', 9000);
     } catch (e) {
         console.error('[知识库] 索引状态检查出错:', e);
-        showStatus('warning', '无法读取语义索引状态，正在使用本地合同检索。', '📂', 6500);
-        return null;
+        if (isKnowledgeBaseMode && request === knowledgeBaseStatusRequest) {
+            showStatus('warning', '无法读取语义索引状态，正在使用本地合同检索。', '📂', 6500);
+        }
     }
 }
-
-async function buildKnowledgeBaseIndex() {
-    if (!isEmbeddingConfigured()) { await CustomDialog.alert('🔗 嵌入模型尚未配置\n请点击设置按钮配置。', '未配置'); openSettings(); return; }
-    const initialStatus = await RAG.getIndexStatus(AI_CONFIG, contracts);
-    if (!initialStatus.corpus) { await CustomDialog.alert('尚未加载可检索的合同正文，无法建立知识库索引。', '没有合同正文'); return; }
-    const task = window.StatusCenter?.start('正在构建知识库索引…', '知识库');
-    const btn = document.getElementById('btnUpdateIndex'); const orig = btn.innerHTML; btn.innerHTML = '⏳'; btn.disabled = true;
-    try {
-        const summary = await RAG.buildIndex(contracts, AI_CONFIG, (c, t, s) => { task?.update(`正在构建索引 ${c}/${t}：${s || ''}`, t ? c / t * 100 : null); });
-        const status = await checkRAGIndexStatus();
-        const succeeded = (summary?.count || 0) + (summary?.skipped || 0);
-        const reasons = (summary?.errors || []).map(item => `${item.reason} ${item.count} 条`).join('；');
-        task?.finish(`本次成功更新 ${succeeded}/${summary?.total || 0} 条（新建 ${summary?.count || 0} 条，沿用已有 ${summary?.skipped || 0} 条）；失败 ${summary?.failed || 0} 条。${reasons ? `失败原因：${reasons}。` : ''}当前有效语义向量 ${status?.valid || 0}/${status?.corpus || 0} 条。`, summary?.failed ? 'warning' : 'success');
-    } catch (e) { task?.finish('构建索引失败: ' + e.message, 'error'); }
-    finally { btn.innerHTML = orig; btn.disabled = false; }
-}
-
-function isEmbeddingConfigured() { return AI_CONFIG.embeddingEndpoint && AI_CONFIG.embeddingApiKey && AI_CONFIG.embeddingModel; }
 
 // 关键词搜索（通用版）
 const keywordTranslation = {

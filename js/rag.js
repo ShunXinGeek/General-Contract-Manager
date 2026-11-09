@@ -85,33 +85,65 @@ const RAG = {
         if (!Array.isArray(item.vector) || item.dimension !== item.vector.length || !item.vector.length || !item.vector.every(Number.isFinite) || !item.vector.some(value => value !== 0)) return 'dimension-invalid';
         const contractEntry = Object.entries(contractsData || {}).find(([, contract]) => contract?.sourceId === item.sourceId);
         const data = contractEntry?.[1]?.data || {};
-        const key = Object.keys(data).find(id => AIRetrieval.number(id, item.type) === AIRetrieval.number(item.clauseId, item.type));
+        const key = this.recordClauseKey(item, data);
         if (key === undefined) return 'source-removed';
         if (item.sourceHash !== AIRetrieval.fingerprint(data[key].content)) return 'source-stale';
         if (item.titleHash !== AIRetrieval.fingerprint(data[key].title)) return 'source-stale';
         return 'ready';
     },
 
-    async getIndexStatus(config, contractsData) {
+    recordClauseKey(item, data) {
+        if (Object.hasOwn(data, item.clauseId)) return String(item.clauseId);
+        const number = AIRetrieval.number(item.clauseId, item.type);
+        const matches = Object.keys(data).filter(id => AIRetrieval.number(id, item.type) === number);
+        return matches.length === 1 ? matches[0] : undefined;
+    },
+
+    async getIndexStatus(config, contractsData, { allContracts = false, retrievalSettings } = {}) {
         const raw = contractsData || (typeof contracts !== 'undefined' ? contracts : {});
-        const data = typeof RetrievalSettings !== 'undefined' ? RetrievalSettings.getEnabledContracts(raw) : raw;
+        const data = !allContracts && typeof RetrievalSettings !== 'undefined' ? RetrievalSettings.getEnabledContracts(raw, retrievalSettings) : raw;
+        const sources = AIRetrieval.rows(data);
+        const coverage = new Map();
+        const eligible = new Map();
+        for (const [key, contract] of Object.entries(data)) {
+            coverage.set(contract.sourceId || key, { total: 0, covered: 0 });
+            eligible.set(contract.sourceId || key, new Set());
+        }
+        for (const row of sources) {
+            coverage.get(row.sourceId).total++;
+            eligible.get(row.sourceId).add(row.id);
+        }
+        const sourcesById = new Map(Object.entries(data).map(([type, contract]) => [contract.sourceId, { type, data: contract.data || {} }]));
+        const knownSources = new Set(Object.values(raw).map(contract => contract.sourceId));
         const records = await this.readRecords();
         const rejected = {}, validRecords = [];
+        const coveredIds = new Set();
         for (const item of records) {
+            if (item.sourceId && knownSources.has(item.sourceId) && !sourcesById.has(item.sourceId)) continue;
             const code = this.validateRecord(item, config || {}, data);
-            if (code === 'ready') validRecords.push(item);
-            else rejected[code] = (rejected[code] || 0) + 1;
+            if (code !== 'ready') {
+                rejected[code] = (rejected[code] || 0) + 1;
+                continue;
+            }
+            const source = sourcesById.get(item.sourceId);
+            const clauseKey = this.recordClauseKey(item, source.data);
+            if (!eligible.get(item.sourceId)?.has(clauseKey)) continue;
+            const id = `${item.sourceId}::${clauseKey}`;
+            if (coveredIds.has(id)) continue;
+            coveredIds.add(id);
+            coverage.get(item.sourceId).covered++;
+            validRecords.push({ ...item, type: source.type, clauseId: clauseKey });
         }
-        const sources = AIRetrieval.rows(data);
-        const indexedSources = new Set(validRecords.map(item => `${item.sourceId}:${AIRetrieval.number(item.clauseId, item.type)}`));
         return {
             schemaVersion: RAG_INDEX_SCHEMA_VERSION,
             corpus: sources.length,
             records: records.length,
             valid: validRecords.length,
-            uncovered: sources.filter(row => !indexedSources.has(AIRetrieval.stableIdentity(row))).length,
+            uncovered: sources.length - coveredIds.size,
             rejected,
-            validRecords
+            validRecords,
+            coverage,
+            coveredIds
         };
     },
 
@@ -187,30 +219,16 @@ const RAG = {
      * @param {Object} config - 包含 apiKey, apiEndpoint, embeddingModel
      * @param {Function} onProgress - 进度回调 (current, total, status)
      */
-    async buildIndex(contractsData, config, onProgress) {
+    async buildIndex(contractsData, config, onProgress, { allContracts = false, onContractComplete } = {}) {
         if (!this.db) await this.init();
-        const enabledContracts = typeof RetrievalSettings !== 'undefined'
-            ? RetrievalSettings.getEnabledContracts(contractsData || {}) : (contractsData || {});
-
-        // 动态遍历所有合同类型（不再硬编码 GCC/SCC）
-        let tasks = [];
-        Object.keys(enabledContracts).forEach(type => {
-            if (enabledContracts[type] && enabledContracts[type].data) {
-                Object.entries(enabledContracts[type].data).forEach(([id, clause]) => {
-                    if (/not\s+used|未使用/i.test(clause.title || '') || !AIRetrieval.plain(clause.content)) return;
-                    const plainContent = clause.content.replace(/<[^>]*>/g, ' ');
-                    const text = `${type} Clause ${id}: ${clause.title}\n${plainContent}`;
-                    tasks.push({
-                        id: `${enabledContracts[type].sourceId || type}::${id}`,
-                        sourceId: enabledContracts[type].sourceId || type,
-                        type: type,
-                        clauseId: id,
-                        text: text,
-                         title: clause.title
-                    });
-                });
-            }
-        });
+        const raw = contractsData || {};
+        const data = !allContracts && typeof RetrievalSettings !== 'undefined' ? RetrievalSettings.getEnabledContracts(raw) : raw;
+        const tasks = AIRetrieval.rows(data).map(row => ({
+            ...row,
+            clauseId: row.id,
+            id: `${row.sourceId}::${row.id}`,
+            text: `${row.type} Clause ${row.id}: ${row.title}\n${row.content}`
+        }));
 
         const total = tasks.length;
         console.log(`[RAG] Starting index build for ${total} clauses...`);
@@ -221,18 +239,17 @@ const RAG = {
             return { count: 0, skipped: 0, total: 0, failed: 0, errors: [] };
         }
 
-        const status = await this.getIndexStatus(config, enabledContracts);
-        const validIds = new Set(status.validRecords.map(item => item.id));
+        const status = await this.getIndexStatus(config, raw, { allContracts });
         let successCount = 0, skipped = 0, lastRequestAt = 0;
         const failures = new Map();
         for (let i = 0; i < total; i++) {
             const task = tasks[i];
-            if (validIds.has(task.id)) {
-                skipped++;
-                if (onProgress) onProgress(i + 1, total, `已有有效向量 ${task.type} ${task.clauseId}`);
-                continue;
-            }
             try {
+                if (status.coveredIds.has(task.id)) {
+                    skipped++;
+                    if (onProgress) onProgress(i + 1, total, `已有有效向量 ${task.type} ${task.clauseId}`);
+                    continue;
+                }
                 if (onProgress) onProgress(i + 1, total, `Processing ${task.type} ${task.clauseId}...`);
 
                 const embeddingConfig = this.getEmbeddingConfig(config);
@@ -255,11 +272,12 @@ const RAG = {
                         await this.pauseIndex(65000);
                     }
                 }
+                if (!vector.some(value => value !== 0)) throw new Error('Embedding 返回零向量');
 
                 await new Promise((resolve, reject) => {
                     const transaction = this.db.transaction([RAG_STORE_NAME], 'readwrite');
                     const store = transaction.objectStore(RAG_STORE_NAME);
-                    const req = store.put({
+                    store.put({
                         id: task.id,
                         sourceId: task.sourceId,
                         type: task.type,
@@ -268,23 +286,23 @@ const RAG = {
                         vector: vector,
                         embeddingModel: embeddingConfig.model,
                         schemaVersion: RAG_INDEX_SCHEMA_VERSION,
-                        sourceHash: AIRetrieval.fingerprint(task.text.slice(task.text.indexOf('\n') + 1)),
+                        sourceHash: task.sourceHash,
                         titleHash: AIRetrieval.fingerprint(task.title),
                         embeddingSpace: this.embeddingSpace(embeddingConfig.apiEndpoint, embeddingConfig.model),
                         dimension: vector.length,
                         timestamp: Date.now()
                     });
-                    req.onsuccess = () => { successCount++; resolve(); };
-                    req.onerror = (e) => {
-                        console.error(`[RAG] IndexedDB write error for ${task.id}:`, e.target.error);
-                        reject(e.target.error);
-                    };
+                    transaction.oncomplete = resolve;
+                    transaction.onabort = () => reject(transaction.error || new Error('本机向量索引写入失败'));
                 });
+                successCount++;
             } catch (err) {
                 console.error(`[RAG] Failed to index ${task.id}:`, err);
                 const reason = err.status ? `HTTP ${err.status}` : (err.message || '未知错误');
                 failures.set(reason, (failures.get(reason) || 0) + 1);
                 if (onProgress) onProgress(i + 1, total, `Error on ${task.id}: ${err.message}`);
+            } finally {
+                if (task.sourceId !== tasks[i + 1]?.sourceId) await onContractComplete?.();
             }
         }
 
@@ -299,8 +317,7 @@ const RAG = {
      */
     async findMostRelevant(query, config, topK = 5, contractsData, options = {}) {
         const raw = contractsData || (typeof contracts !== 'undefined' ? contracts : {});
-        const data = typeof RetrievalSettings !== 'undefined' ? RetrievalSettings.getEnabledContracts(raw, options.retrievalSettings) : raw;
-        const status = await this.getIndexStatus(config, data);
+        const status = await this.getIndexStatus(config, raw, { retrievalSettings: options.retrievalSettings });
         this.lastIndexStatus = status;
         const rejectedMessage = this.describeIndexStatus(status);
         if (!status.valid) {
@@ -467,6 +484,7 @@ window.PREBUILT_VECTORS = PREBUILT_VECTORS;
                 batch.forEach(([id, item]) => {
                     const req = store.put({
                         id: id,
+                        sourceId: item.sourceId || null,
                         type: item.type,
                         clauseId: item.clauseId,
                         title: item.title,

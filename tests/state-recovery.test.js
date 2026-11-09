@@ -50,12 +50,16 @@ async function run() {
     evaluate(app, `registerContract('TEST', 'Test', { '1': { title: 'One', content: 'original' } });`);
     const originalSourceId = evaluate(app, `contracts.TEST.sourceId`);
     assert.match(originalSourceId, /^src_/, 'new contracts receive a stable retrieval source id');
+    assert.strictEqual(evaluate(app, 'RetrievalSettings.summary(contracts).enabled'), 0, 'new contracts are listed but excluded until checked');
     evaluate(app, `
         const retrieval = RetrievalSettings.get(contracts);
         retrieval.sources[contracts.TEST.sourceId].authorityLevel = 2;
         retrieval.sources[contracts.TEST.sourceId].role = 'base';
+        retrieval.sources[contracts.TEST.sourceId].enabled = true;
         RetrievalSettings.persist(retrieval, contracts, true);
+        registerContract('TEST', 'Test', { '1': { title: 'One', content: 'original' } });
     `);
+    assert.strictEqual(evaluate(app, 'RetrievalSettings.summary(contracts).enabled'), 1, 'reimport must preserve the checked state');
     assert.strictEqual(evaluate(app, `checkClauseModified('1')`), false);
     evaluate(app, `fullClauseDatabase['1'].content = 'edited'; fullClauseDatabase['1'].modifiedAt = 10;`);
     assert.strictEqual(evaluate(app, `checkClauseModified('1')`), true, 'nested baseline must detect edits');
@@ -101,6 +105,7 @@ async function run() {
     } })]]);
     const legacy = createAppContext(new Map(), legacyDatabase);
     await evaluate(legacy, 'loadContractsFromStorage()');
+    assert.strictEqual(evaluate(legacy, 'RetrievalSettings.summary(contracts).enabled'), 1, 'upgrade must preserve the legacy default scope');
     assert.strictEqual(evaluate(legacy, `contracts.OLD.data['1'].originalContent`), 'only surviving text');
     await evaluate(legacy, 'saveContractsToStorage()');
     const migrated = createAppContext(new Map(), legacyDatabase);
@@ -149,13 +154,17 @@ async function run() {
     const freshStorage = new Map(), freshDatabase = new Map();
     const fresh = createAppContext(freshStorage, freshDatabase);
     fresh.aiSnapshot = aiSnapshot;
+    fresh.retrievalCloud = { ...retrievalCloud, version: 1, newSourcePolicy: 'enabled' };
+    fresh.cloudContract = cloudContract;
     assert.strictEqual(evaluate(fresh, `mergeAISettings(getAISettingsForCloud(), aiSnapshot).apiKey`), 'test-key-two');
     evaluate(fresh, `
         initialized = true; currentUser = { uid: 'test-user' };
-        loadFromCloud = async function () { return { contract_data: {}, bookmarks: {}, modifications: {}, ai_settings: aiSnapshot }; };
+        registerContract('LOCAL', 'New local source', { '1': { content: 'local text' } });
+        loadFromCloud = async function () { return { contract_data: cloudContract, bookmarks: {}, modifications: {}, ai_settings: aiSnapshot, retrieval_settings: retrievalCloud }; };
         saveToCloud = async function () { window.uploaded = getAISettingsForCloud(); return { success: true }; };
     `);
     assert.strictEqual((await evaluate(fresh, 'syncWithCloud()')).success, true);
+    assert.deepStrictEqual(json(fresh, 'RetrievalSettings.summary(contracts).labels'), ['TEST'], 'merge must restore the checked cloud source and keep the new local source unchecked');
     assert.deepStrictEqual(json(fresh, 'uploaded.models.map(m => ({ id: m.id, name: m.name, endpoint: m.endpoint, apiKey: m.apiKey, model: m.model }))'), aiSnapshot.models, 'fresh device cannot upload an empty model list');
     assert.strictEqual(evaluate(fresh, 'uploaded.selectedModelId'), 'm2');
     assert.strictEqual(evaluate(fresh, 'AI_CONFIG.embeddingApiKey'), 'test-embedding-key');

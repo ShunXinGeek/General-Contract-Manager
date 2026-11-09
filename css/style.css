@@ -3219,6 +3219,11 @@ header .icon-btn:disabled {
 
 
 /* 消息区域 */
+#btnKnowledgeBase[aria-pressed="true"] {
+    background: #247449;
+    border-color: #247449;
+    color: #fff;
+}
 
 .chat-messages {
 
@@ -5712,7 +5717,7 @@ body:not(.dark-mode):not(.eye-mode) .chat-message.assistant .message-content h4 
 .cm-header-row,
 .cm-row {
     display: grid;
-    grid-template-columns: 90px 1fr 60px 36px;
+    grid-template-columns: minmax(0, 90px) minmax(0, 1fr) 36px 56px 86px;
     align-items: center;
     gap: 0;
 }
@@ -5759,6 +5764,60 @@ body:not(.dark-mode):not(.eye-mode) .chat-message.assistant .message-content h4 
 
 .cm-cell-action {
     justify-content: center;
+}
+
+.cm-cell-vector {
+    justify-content: center;
+}
+
+#btnVectorizeContracts {
+    padding: 5px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-nav);
+    color: var(--text-body);
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+#btnVectorizeContracts:disabled {
+    cursor: wait;
+    opacity: 0.7;
+}
+
+.cm-vector-status {
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: var(--border-color);
+}
+
+.cm-vector-status[data-state="ready"] {
+    background: #247449;
+}
+
+.cm-vector-status[data-state="pending"] {
+    background: #c73434;
+}
+
+.cm-cell-label .cm-editable,
+.cm-cell-name .cm-editable {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+@media (max-width: 520px) {
+    .cm-header-row,
+    .cm-row {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) 32px 44px 70px;
+        padding-inline: 4px;
+    }
+
+    .cm-cell-count,
+    .cm-cell-action,
+    .cm-cell-vector {
+        padding-inline: 2px;
+    }
 }
 
 /* Inline editable cell */
@@ -6014,6 +6073,10 @@ body:not(.dark-mode):not(.eye-mode) .chat-message.assistant .message-content h4 
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 12px;
+}
+
+.retrieval-form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .retrieval-field {

@@ -104,16 +104,19 @@ const server = http.createServer((request, response) => {
         await open(); await page.locator('#statusClear').click(); await page.keyboard.press('Escape');
         await page.evaluate(() => {
             AI_CONFIG.embeddingEndpoint = 'test'; AI_CONFIG.embeddingApiKey = 'test'; AI_CONFIG.embeddingModel = 'test';
-            RAG.getIndexStatus = async () => ({ corpus: 10, valid: 10 });
-            RAG.buildIndex = async (contracts, config, progress) => { progress(5, 10, '已完成'); return { count: 10, total: 10, failed: 0 }; };
-            return buildKnowledgeBaseIndex();
+            RAG.getIndexStatus = async () => ({ corpus: 10, uncovered: 10 });
+            RAG.buildIndex = async (contracts, config, progress) => {
+                progress(5, 10, '已完成');
+                return { count: 10, skipped: 0, total: 10, failed: 0, errors: [] };
+            };
+            return vectorizeContracts();
         });
         assert((await status.innerText()).includes('本次成功更新 10/10'));
         assert.strictEqual(await page.evaluate(() => StatusCenter.snapshot().filter(item => item.active).length), 0);
         await page.evaluate(() => {
             RAG.buildIndex = async () => ({ count: 0, skipped: 9, total: 10, failed: 1,
                 errors: [{ reason: 'HTTP 429', count: 1 }] });
-            return buildKnowledgeBaseIndex();
+            return vectorizeContracts();
         });
         assert((await status.innerText()).includes('失败原因：HTTP 429 1 条'));
 

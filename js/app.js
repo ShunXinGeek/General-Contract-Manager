@@ -108,7 +108,8 @@ function registerContract(key, title, data) {
         clause.originalBaselineMigrated = false;
     });
 
-    const existingSourceId = contracts[key]?.sourceId || null;
+    const previousContract = contracts[key];
+    const existingSourceId = previousContract?.sourceId || null;
     contracts[key] = {
         sourceId: existingSourceId,
         title: title,
@@ -118,7 +119,9 @@ function registerContract(key, title, data) {
 
     if (window.RetrievalSettings) {
         window.RetrievalSettings.ensureSourceIds(contracts);
-        window.RetrievalSettings.persist(window.RetrievalSettings.get(contracts), contracts, false);
+        const settings = window.RetrievalSettings.get(contracts);
+        if (!previousContract) settings.sources[contracts[key].sourceId].enabled = false;
+        window.RetrievalSettings.persist(settings, contracts, false);
     }
 
     restoreContractOriginals(key);
@@ -252,6 +255,7 @@ function removeContract(key) {
  * 将所有的合同数据序列化并保存到浏览器 IndexedDB 中
  */
 async function saveContractsToStorage() {
+    if (typeof refreshContractVectorStatus === 'function') refreshContractVectorStatus();
     try {
         const snapshot = {
             version: 2,

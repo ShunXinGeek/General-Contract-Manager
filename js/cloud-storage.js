@@ -692,6 +692,7 @@ async function syncWithCloud({ showProgress = true } = {}) {
         }
 
         // 3. 先创建云端独有的合同和条款，随后才应用修改补丁。
+        const localRetrievalSettings = window.RetrievalSettings?.getForCloud(contracts);
         hydrateMissingCloudContracts(cloudData);
 
         // 4. 提取两端修改；云端完整快照中的 modifiedAt 同样参与比较。
@@ -733,7 +734,7 @@ async function syncWithCloud({ showProgress = true } = {}) {
         }
         if (window.RetrievalSettings) {
             const mergedRetrievalSettings = window.RetrievalSettings.merge(
-                window.RetrievalSettings.getForCloud(contracts),
+                localRetrievalSettings,
                 cloudData.retrieval_settings || null,
                 contracts
             );
