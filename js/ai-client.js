@@ -48,6 +48,7 @@
             if (/^qwen3(?:\.[5-9])?(?:-|$)/.test(m) && !/^qwen3-max/.test(m)) return 'switch';
             if (/^qwen-(?:plus|flash)(?:-|$)/.test(m)) return 'switch';
         }
+        if (p === 'zhipu' && /^glm-5\.3(?:-|$)/.test(m)) return 'always';
         if (p === 'zhipu' && /^glm-(?:4\.[567]|5)(?:[.-]|$)/.test(m)) return 'switch';
         if (p === 'kimi-cn' || p === 'kimi-global') {
             if (/^kimi-(?:k3|k2\.7-code|k2-thinking)/.test(m)) return 'always';

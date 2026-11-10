@@ -39,6 +39,12 @@ async function run() {
     assert.ok(validateEndpoint(client.endpoint('https://generativelanguage.googleapis.com/v1beta/openai')).endsWith('/chat/completions'));
     assert.strictEqual(client.instructionRole({ apiEndpoint: 'https://api.openai.com/v1', model: 'gpt-5-mini' }), 'developer');
     assert.ok(client.endpoint({ apiEndpoint: 'https://api.openai.com/v1', protocol: 'openai-responses' }).endsWith('/responses'));
+    const zhipu = 'https://open.bigmodel.cn/api/paas/v4';
+    for (const model of ['glm-5.3', 'glm-5.3-flash', 'glm-5.3-flashx', 'glm-5.3-flashx-legal']) {
+        assert.strictEqual(client.thinkingCapability(zhipu, model), 'always');
+        assert.ok(!('thinking' in body(zhipu, model, false)));
+        assert.ok(!('thinking' in body(zhipu, model, true)));
+    }
     for (const [url, model] of [['https://api.deepseek.com', 'deepseek-chat'], ['https://open.bigmodel.cn', 'glm-4'],
         ['https://api.moonshot.cn', 'moonshot-v1-8k'], ['https://dashscope.aliyuncs.com', 'qwen-max']]) {
         const b = body(url, model, true);
