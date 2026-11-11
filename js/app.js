@@ -319,17 +319,21 @@ function removeContract(key) {
 /**
  * 将所有的合同数据序列化并保存到浏览器 IndexedDB 中
  */
+function writeContractSnapshot(nextContracts, nextOrder, nextActiveKey) {
+    return localforage.setItem(CONTRACTS_DB_KEY, JSON.stringify({
+        version: 2,
+        contracts: nextContracts,
+        contractOrder: nextOrder,
+        activeContractKey: nextActiveKey,
+        savedAt: Date.now()
+    }));
+}
+
 async function saveContractsToStorage() {
+    if (window.ContractBackup?.restoring) await window.ContractBackup.restoring;
     if (typeof refreshContractVectorStatus === 'function') refreshContractVectorStatus();
     try {
-        const snapshot = {
-            version: 2,
-            contracts,
-            contractOrder,
-            activeContractKey,
-            savedAt: Date.now()
-        };
-        await localforage.setItem(CONTRACTS_DB_KEY, JSON.stringify(snapshot));
+        await writeContractSnapshot(contracts, contractOrder, activeContractKey);
         Logger.info('storage', '成功保存所有合同数据到 IndexedDB');
         return true;
     } catch (e) {

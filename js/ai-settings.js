@@ -857,14 +857,15 @@ async function refreshContractVectorStatus() {
 }
 
 function updateContractVectorButton() {
+    window.ContractBackup?.refreshControls();
     const button = document.getElementById('btnVectorizeContracts');
     if (!button) return;
-    button.disabled = contractVectorizing;
+    button.disabled = contractVectorizing || !!window.ContractBackup?.busy;
     button.setAttribute('aria-busy', String(contractVectorizing));
 }
 
 async function vectorizeContracts() {
-    if (contractVectorizing) return;
+    if (contractVectorizing || window.ContractBackup?.busy) return;
     contractVectorizing = true;
     updateContractVectorButton();
     const config = { ...AI_CONFIG };
@@ -907,6 +908,7 @@ function renderContractManagementTab() {
     if (!container) return;
 
     const keys = getOrderedContractKeys();
+    window.ContractBackup?.refreshControls();
 
     if (keys.length === 0) {
         container.innerHTML = `

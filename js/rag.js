@@ -77,14 +77,43 @@ const RAG = {
         });
     },
 
-    validateRecord(item, config, contractsData) {
+    async replaceSourceRecords(sourceIds, records) {
+        if (!this.db) await this.init();
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction(RAG_STORE_NAME, 'readwrite');
+            const store = transaction.objectStore(RAG_STORE_NAME);
+            transaction.oncomplete = resolve;
+            transaction.onabort = () => reject(transaction.error || new Error('本机向量索引写入失败'));
+            const request = store.openCursor();
+            request.onsuccess = () => {
+                const cursor = request.result;
+                if (cursor) {
+                    if (sourceIds.has(cursor.value.sourceId)) cursor.delete();
+                    cursor.continue();
+                    return;
+                }
+                for (const record of records) store.put(record);
+            };
+        });
+    },
+
+    validateRecordMetadata(item) {
         if (!item.sourceId || !item.embeddingModel || !item.sourceHash || !item.titleHash || !item.embeddingSpace) return 'legacy-unverified';
         if (item.schemaVersion !== undefined && item.schemaVersion !== RAG_INDEX_SCHEMA_VERSION) return 'schema-mismatch';
+        return null;
+    },
+
+    validateRecord(item, config, contractsData) {
+        const metadataError = this.validateRecordMetadata(item);
+        if (metadataError) return metadataError;
         if (item.embeddingModel !== config.embeddingModel) return 'model-mismatch';
         if (item.embeddingSpace !== this.embeddingSpace(config.embeddingEndpoint, config.embeddingModel)) return 'space-mismatch';
-        if (!Array.isArray(item.vector) || item.dimension !== item.vector.length || !item.vector.length || !item.vector.every(Number.isFinite) || !item.vector.some(value => value !== 0)) return 'dimension-invalid';
         const contractEntry = Object.entries(contractsData || {}).find(([, contract]) => contract?.sourceId === item.sourceId);
-        const data = contractEntry?.[1]?.data || {};
+        return this.validateSourceRecord(item, contractEntry?.[1]?.data || {});
+    },
+
+    validateSourceRecord(item, data) {
+        if (!Array.isArray(item.vector) || item.dimension !== item.vector.length || !item.vector.length || !item.vector.every(Number.isFinite) || !item.vector.some(value => value !== 0)) return 'dimension-invalid';
         const key = this.recordClauseKey(item, data);
         if (key === undefined) return 'source-removed';
         if (item.sourceHash !== AIRetrieval.fingerprint(data[key].content)) return 'source-stale';

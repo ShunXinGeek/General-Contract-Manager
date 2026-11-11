@@ -477,6 +477,7 @@ async function loadFromCloud() {
  * 应用云端数据到本地
  */
 async function applyCloudDataToLocal(cloudData) {
+    if (window.ContractBackup?.restoring) await window.ContractBackup.restoring;
     if (!cloudData || typeof contracts === 'undefined') return false;
 
     try {
@@ -701,6 +702,7 @@ async function syncWithCloud({ showProgress = true } = {}) {
 
         // 2. 从云端加载数据
         const cloudData = await loadFromCloud();
+        if (window.ContractBackup?.restoring) await window.ContractBackup.restoring;
 
         if (!cloudData) {
             await saveToCloud();

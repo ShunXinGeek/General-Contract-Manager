@@ -6007,6 +6007,14 @@ body:not(.dark-mode):not(.eye-mode) .chat-message.assistant .message-content h4 
     justify-content: center;
 }
 
+.contract-backup-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.contract-backup-actions button,
 #btnVectorizeContracts {
     padding: 5px 8px;
     border: 1px solid var(--border-color);
@@ -6015,6 +6023,43 @@ body:not(.dark-mode):not(.eye-mode) .chat-message.assistant .message-content h4 
     color: var(--text-body);
     white-space: nowrap;
     cursor: pointer;
+}
+
+.contract-backup-actions button:disabled {
+    cursor: default;
+    opacity: 0.6;
+}
+
+#contractRestoreDialog {
+    width: min(480px, calc(100% - 32px));
+    max-height: 80vh;
+    padding: 20px;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: var(--bg-panel);
+    color: var(--text-body);
+    overflow-wrap: anywhere;
+}
+
+#contractRestoreDialog::backdrop {
+    background: rgb(0 0 0 / 45%);
+}
+
+#contractRestoreTitle {
+    margin: 0 0 12px;
+    font-size: 18px;
+}
+
+#contractRestoreConflicts label {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin: 8px 0;
+}
+
+.contract-restore-actions {
+    justify-content: flex-end;
+    margin: 16px 0 0;
 }
 
 #btnVectorizeContracts:disabled {

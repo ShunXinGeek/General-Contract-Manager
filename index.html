@@ -649,6 +649,11 @@
 
                     <!-- 合同管理内容 -->
                     <div id="contractSettingsContent" style="display:none;">
+                        <div class="contract-backup-actions" role="group" aria-label="备份与恢复">
+                            <button type="button" id="backupContractsButton">备份全部合同</button>
+                            <button type="button" id="restoreContractsButton">从备份恢复</button>
+                            <input type="file" id="contractBackupFile" accept=".gz,application/gzip" hidden>
+                        </div>
                         <div id="contractManagementList"></div>
                     </div> <!-- 结束 contractSettingsContent -->
 
@@ -683,6 +688,18 @@
                 </div>
             </div>
         </div>
+
+        <dialog id="contractRestoreDialog" aria-labelledby="contractRestoreTitle">
+            <form method="dialog">
+                <h2 id="contractRestoreTitle">恢复合同备份</h2>
+                <p id="contractRestoreSummary"></p>
+                <div id="contractRestoreConflicts"></div>
+                <div class="contract-backup-actions contract-restore-actions">
+                    <button type="submit" value="cancel" autofocus>取消</button>
+                    <button type="submit" value="restore">恢复</button>
+                </div>
+            </form>
+        </dialog>
 
         <!-- 模型编辑弹窗 -->
         <div id="modelEditModal" class="modal-overlay" style="z-index:2100;">
@@ -823,6 +840,7 @@
         <script src="js/assistant-attachments.js"></script>
         <script src="js/ai-assistant.js"></script>
         <script src="js/cloud-storage.js"></script>
+        <script src="js/contract-backup.js"></script>
         <script src="js/assistant-notebook.js"></script>
         <script src="js/assistant-topics.js"></script>
 
