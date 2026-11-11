@@ -248,7 +248,6 @@
             <!-- 左侧：聊天区域 -->
             <div class="assistant-chat-area">
                 <div class="assistant-toolbar" id="assistantChatToolbar">
-                    <div class="toolbar-left"></div>
                     <div class="toolbar-center">
                         <div class="toolbar-title"><span class="title-icon">🤖</span><span class="title-text">
                                 合同管理助手</span>
@@ -261,15 +260,6 @@
                             <div class="model-dropdown" id="modelDropdown"></div>
                         </div>
                     </div>
-                    <div class="toolbar-right">
-                        <button class="assistant-btn" id="btnThinkingMode" onclick="toggleThinkingMode()" title="思考模式">
-                            <span id="thinkingModeIcon">🧠</span><span id="thinkingModeText" class="btn-text"> 思考</span>
-                        </button>
-                        <button class="assistant-btn" id="btnKnowledgeBase" onclick="toggleKnowledgeBaseMode()"
-                            title="切换知识库检索" aria-pressed="false">
-                            <span aria-hidden="true">📂</span> <span class="btn-text">知识库</span>
-                        </button>
-                    </div>
                 </div>
 
                 <div class="chat-messages" id="chatMessages">
@@ -279,7 +269,7 @@
                         <div class="welcome-text">
                             您好！我是通用合同管理助手。<br>
                             请先导入合同数据，然后我可以帮您分析条款内容。<br>
-                            您可以使用"引用条款"按钮快速引入条款内容。
+                            您可以使用「引用」按钮快速引入条款内容。
                         </div>
                     </div>
                 </div>
@@ -312,32 +302,41 @@
                 </section>
 
                 <div class="chat-input-area" id="assistantChatInputArea">
-                    <div class="input-row">
-                        <div class="chat-input-shell">
-                            <div id="attachmentTray" class="attachment-tray" aria-live="polite" hidden></div>
-                            <textarea id="chatInput" class="chat-input" placeholder="输入您的问题..." rows="1"
-                                onkeydown="handleInputKeydown(event)"></textarea>
-                            <div class="input-tools">
-                                <button class="assistant-btn input-action-btn" onclick="clearChat()" title="清空对话">
-                                    <span>🗑️</span><span class="btn-text"> 清空</span>
-                                </button>
-                                <button class="assistant-btn input-action-btn" id="btnContextBreak"
-                                    onclick="toggleContextBreak()" title="终止上下文">
-                                    <span>✂️</span><span class="btn-text"> 终止上下文</span>
-                                </button>
-                                <button class="assistant-btn input-action-btn" onclick="openClauseSelector()" title="引用条款">
-                                    <span>📋</span><span class="btn-text"> 引用条款</span>
-                                </button>
-                                <button class="assistant-btn input-action-btn upload-btn"
-                                    onclick="document.getElementById('fileUpload').click()" title="添加附件">
-                                    <span>📎</span><span class="btn-text"> 添加附件</span>
-                                </button>
-                                <input type="file" id="fileUpload" multiple accept=".pdf,.docx,.txt,.md,.markdown" style="display:none"
-                                    onchange="handleFileUpload(event)">
-                                <button id="sendBtn" class="send-btn" onclick="sendMessage()" title="发送">
-                                    <span id="sendBtnIcon">➤</span>
-                                </button>
-                            </div>
+                    <div class="chat-resize-handle" id="chatResizeHandle" role="separator" tabindex="0"
+                        aria-label="调整聊天输入框高度" aria-orientation="horizontal" aria-controls="chatInput"
+                        title="拖动或按上下方向键调整高度"></div>
+                    <div id="attachmentTray" class="attachment-tray" aria-live="polite" hidden></div>
+                    <div class="chat-input-shell">
+                        <textarea id="chatInput" class="chat-input" placeholder="输入您的问题..." rows="1"
+                            onkeydown="handleInputKeydown(event)"></textarea>
+                        <div class="input-tools">
+                            <button class="assistant-btn input-action-btn upload-btn"
+                                onclick="document.getElementById('fileUpload').click()" title="附件" aria-label="附件">
+                                <span aria-hidden="true">📎</span><span class="btn-text">附件</span>
+                            </button>
+                            <button class="assistant-btn input-action-btn" onclick="openClauseSelector()" title="引用" aria-label="引用">
+                                <span aria-hidden="true">📋</span><span class="btn-text">引用</span>
+                            </button>
+                            <button class="assistant-btn input-action-btn" onclick="clearChat()" title="清空" aria-label="清空">
+                                <span aria-hidden="true">🗑️</span><span class="btn-text">清空</span>
+                            </button>
+                            <button class="assistant-btn input-action-btn" id="btnKnowledgeBase" onclick="toggleKnowledgeBaseMode()"
+                                title="知识库" aria-label="知识库" aria-pressed="false">
+                                <span aria-hidden="true">📂</span><span class="btn-text">知识库</span>
+                            </button>
+                            <button class="assistant-btn input-action-btn" id="btnThinkingMode" onclick="toggleThinkingMode()"
+                                title="思考" aria-label="思考" aria-pressed="false">
+                                <span id="thinkingModeIcon" aria-hidden="true">🧠</span><span class="btn-text">思考</span>
+                            </button>
+                            <button class="assistant-btn input-action-btn" id="btnContextBreak"
+                                onclick="toggleContextBreak()" title="终止" aria-label="终止">
+                                <span aria-hidden="true">✂️</span><span class="btn-text">终止</span>
+                            </button>
+                            <input type="file" id="fileUpload" multiple accept=".pdf,.docx,.txt,.md,.markdown" style="display:none"
+                                onchange="handleFileUpload(event)">
+                            <button id="sendBtn" class="send-btn" onclick="sendMessage()" title="发送">
+                                <span id="sendBtnIcon">➤</span>
+                            </button>
                         </div>
                     </div>
                     <div class="input-hint">按 Enter 发送，Shift+Enter 换行</div>

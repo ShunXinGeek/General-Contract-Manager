@@ -82,7 +82,7 @@ async function sendMessage() {
         abortController = new AbortController();
         const requestSignal = abortController.signal;
         addMessage('user', text || '请分析以下附件。', { id: messageId, attachments });
-        sent = true; input.value = ''; input.dispatchEvent(new Event('input', { bubbles: true })); autoResizeInput(); showTypingIndicator();
+        sent = true; input.value = ''; input.dispatchEvent(new Event('input', { bubbles: true })); showTypingIndicator();
         const messages = await buildMessagesForAPI(); if (requestSignal.aborted) throw new DOMException('已停止生成', 'AbortError');
         const result = await streamAPIResponse(messages); statusTask?.finish(result ? 'AI 回复已完成' : 'AI 回复已停止', result ? 'success' : 'info'); if (result) { titleModelConfig = { ...AI_CONFIG }; titleModelId = typeof currentSelectedModelId !== 'undefined' ? currentSelectedModelId : null; }
     }
@@ -237,9 +237,9 @@ function toggleThinkingMode() {
     isThinkingMode = !isThinkingMode;
     const btn = document.getElementById('btnThinkingMode');
     const icon = document.getElementById('thinkingModeIcon');
-    const text = document.getElementById('thinkingModeText');
-    if (isThinkingMode) { btn.classList.add('thinking-active'); icon.innerText = '🧠🧠'; text.innerText = ' 思考'; }
-    else { btn.classList.remove('thinking-active'); icon.innerText = '🧠'; text.innerText = ' 思考'; }
+    btn.classList.toggle('thinking-active', isThinkingMode);
+    btn.setAttribute('aria-pressed', String(isThinkingMode));
+    icon.innerText = isThinkingMode ? '🧠🧠' : '🧠';
 }
 
 function toggleThinkingBlock(headerEl) { const block = headerEl.closest('.thinking-block'); if (block) block.classList.toggle('expanded'); }
@@ -362,15 +362,65 @@ async function clearChat() {
     chatMessages = []; hasContextBreak = false; contextBreakIndex = -1;
     await window.AssistantAttachments?.clearDraft?.(window.AssistantTopics?.getCurrentTopicId?.() || 'legacy');
     const contractList = getOrderedContractKeys({ visibleOnly: true }).length > 0 ? '我可以帮您分析已导入的合同条款。' : '请先导入合同数据。';
-    document.getElementById('chatMessages').innerHTML = '<div class="chat-welcome"><div class="welcome-icon">🤖</div><div class="welcome-title">合同管理助手</div><div class="welcome-text">' + contractList + '<br>您可以使用"引用条款"按钮快速引入条款内容。</div></div>';
+    document.getElementById('chatMessages').innerHTML = '<div class="chat-welcome"><div class="welcome-icon">🤖</div><div class="welcome-title">合同管理助手</div><div class="welcome-text">' + contractList + '<br>您可以使用「引用」按钮快速引入条款内容。</div></div>';
     saveChatToStorage();
 }
 
 async function handleFileUpload(event) { try { await window.AssistantAttachments?.addFiles?.(event.target.files); } finally { event.target.value = ''; } }
 
 function handleInputKeydown(event) { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } }
-function autoResizeInput() { const input = document.getElementById('chatInput'); input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 120) + 'px'; }
-window.autoResizeInput = autoResizeInput;
+
+function bindAssistantResize(handle, panel, resize) {
+    let start;
+    handle.addEventListener('pointerdown', event => {
+        if (!event.isPrimary || event.button !== 0) return;
+        start = { x: event.clientX, y: event.clientY, bounds: panel.getBoundingClientRect() };
+        handle.focus({ preventScroll: true });
+        handle.setPointerCapture(event.pointerId);
+        handle.classList.add('is-dragging');
+        event.preventDefault();
+    });
+    handle.addEventListener('pointermove', event => {
+        if (!start || !handle.hasPointerCapture(event.pointerId)) return;
+        resize(start.bounds, event.clientX - start.x, event.clientY - start.y);
+    });
+    handle.addEventListener('lostpointercapture', () => {
+        start = null;
+        handle.classList.remove('is-dragging');
+    });
+}
+
+function initAssistantChatResize() {
+    const handle = document.getElementById('chatResizeHandle');
+    if (!handle) return;
+    const inputShell = document.querySelector('#assistantChatInputArea .chat-input-shell');
+    const messages = document.getElementById('chatMessages');
+    const heightLimits = () => {
+        const min = parseFloat(getComputedStyle(inputShell).minHeight);
+        const messageMin = parseFloat(getComputedStyle(messages).minHeight);
+        return { min, max: Math.max(min, inputShell.offsetHeight + messages.offsetHeight - messageMin) };
+    };
+    const setHeight = height => {
+        const { min, max } = heightLimits();
+        inputShell.style.setProperty('--chat-input-height', Math.min(max, Math.max(min, height)) + 'px');
+    };
+    bindAssistantResize(handle, inputShell, (bounds, _dx, dy) => setHeight(bounds.height - dy));
+    handle.addEventListener('keydown', event => {
+        if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+        event.preventDefault();
+        setHeight(inputShell.offsetHeight + (event.key === 'ArrowUp' ? 24 : -24));
+    });
+    const observer = new ResizeObserver(() => {
+        if (!inputShell.offsetHeight) return;
+        const { min, max } = heightLimits();
+        handle.setAttribute('aria-valuemin', min);
+        handle.setAttribute('aria-valuemax', max);
+        handle.setAttribute('aria-valuenow', inputShell.offsetHeight);
+        handle.setAttribute('aria-valuetext', inputShell.offsetHeight + ' 像素');
+    });
+    observer.observe(inputShell);
+    observer.observe(messages);
+}
 function scheduleTopicTitle(modelConfig, modelId) {
     const topicId = window.AssistantTopics?.getCurrentTopicId?.(); if (!topicId || assistantReadOnly) return;
     const question = chatMessages.find(message => message.role === 'user' && message.content)?.content;
@@ -396,7 +446,7 @@ function renderChatMessages() {
     scrollToBottom();
 }
 
-document.getElementById('chatInput')?.addEventListener('input', autoResizeInput);
+initAssistantChatResize();
 
 // =======================================================
 // 17. Markdown 渲染（通用版）
@@ -506,10 +556,41 @@ function openClauseSelector() {
             const clause = contracts[contractKey].data[id];
             list += '<div class="clause-option" data-title="' + escapeHtml(String(clause.title || '').toLowerCase()) + '" onclick="insertClause(decodeURIComponent(\'' + encodedContractKey + '\'), decodeURIComponent(\'' + encodeInlineArgument(id) + '\'))" style="padding:8px; cursor:pointer; border-bottom:1px solid var(--border-color); transition:background 0.2s;" onmouseover="this.style.background=\'var(--bg-nav-item-hover)\'" onmouseout="this.style.background=\'\'">' + escapeHtml(clause.title || id) + '</div>';
         });
-        columnsHtml += '<div style="flex:1; display:flex; flex-direction:column; min-width:0;"><div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;"><h4 style="margin:0; color:var(--highlight-color); white-space:nowrap;">' + escapeHtml(contractKey) + ' 条款</h4><div class="clause-search-wrapper"><input type="text" class="clause-search-input" placeholder="搜索..." autocomplete="new-password" oninput="filterClauses(this, decodeURIComponent(\'' + encodedContractKey + '\'))"><span class="clause-search-clear" onclick="clearClauseSearch(this, decodeURIComponent(\'' + encodedContractKey + '\'))">✕</span></div></div><div id="' + listId + '" style="flex:1; overflow-y:auto; max-height:400px; border:1px solid var(--border-color); border-radius:4px;">' + list + '</div></div>';
+        columnsHtml += '<div class="clause-selector-column"><div class="clause-selector-column-header"><h4>' + escapeHtml(contractKey) + ' 条款</h4><div class="clause-search-wrapper"><input type="text" class="clause-search-input" placeholder="搜索..." autocomplete="new-password" oninput="filterClauses(this, decodeURIComponent(\'' + encodedContractKey + '\'))"><span class="clause-search-clear" onclick="clearClauseSearch(this, decodeURIComponent(\'' + encodedContractKey + '\'))">✕</span></div></div><div id="' + listId + '" class="clause-selector-list">' + list + '</div></div>';
     });
-    modal.innerHTML = '<div class="modal-content" style="max-width:' + Math.min(750, Math.max(1, keys.length) * 350) + 'px; height:auto; max-height:80%;"><div class="modal-header"><span style="font-size:16px; font-weight:bold;">📋 选择条款引用</span><span class="close-modal" onclick="closeClauseSelector()">✕</span></div><div class="modal-body" style="padding:15px; display:flex; gap:15px;">' + (columnsHtml || '当前没有可引用的合同条款。') + '</div></div>';
+    modal.innerHTML = '<div class="modal-content clause-selector-content" role="dialog" aria-labelledby="clauseSelectorTitle" tabindex="-1">' +
+        '<div class="modal-header"><strong id="clauseSelectorTitle">📋 选择条款引用</strong><button type="button" class="close-modal" onclick="closeClauseSelector()" aria-label="关闭引用弹窗">✕</button></div>' +
+        '<div class="modal-body clause-selector-body">' + (columnsHtml || '当前没有可引用的合同条款。') + '</div>' +
+        '<button type="button" class="clause-selector-resize" aria-label="调整引用弹窗大小" title="拖动或按方向键调整大小"></button></div>';
+    const content = modal.querySelector('.clause-selector-content');
+    const defaultWidth = Math.min(750, Math.max(1, keys.length) * 350) * 4 / 3;
+    content.style.setProperty('--clause-selector-width', defaultWidth + 'px');
+    initClauseSelectorResize(modal, content);
     document.body.appendChild(modal);
+    content.focus({ preventScroll: true });
+}
+
+function initClauseSelectorResize(modal, content) {
+    const handle = modal.querySelector('.clause-selector-resize');
+    const minHeight = content.querySelector('.clause-selector-column') ? 150 : 100;
+    const setSize = (width, height) => {
+        const maxWidth = modal.clientWidth - 24;
+        const maxHeight = modal.clientHeight - 24;
+        content.style.width = Math.min(maxWidth, Math.max(300, width)) + 'px';
+        content.style.height = Math.min(maxHeight, Math.max(minHeight, height)) + 'px';
+        content.classList.add('is-resized');
+    };
+    bindAssistantResize(handle, content, (bounds, dx, dy) => {
+        // The dialog stays centered, so its corner moves half the size change.
+        setSize(bounds.width + dx * 2, bounds.height + dy * 2);
+    });
+    const steps = { ArrowLeft: [-24, 0], ArrowRight: [24, 0], ArrowUp: [0, -24], ArrowDown: [0, 24] };
+    handle.addEventListener('keydown', event => {
+        if (!Object.hasOwn(steps, event.key)) return;
+        event.preventDefault();
+        const [widthStep, heightStep] = steps[event.key];
+        setSize(content.offsetWidth + widthStep, content.offsetHeight + heightStep);
+    });
 }
 
 function closeClauseSelector() { const modal = document.getElementById('clauseSelectorModal'); if (modal) modal.remove(); }
@@ -519,7 +600,7 @@ function insertClause(contractType, clauseId) {
     const clause = contracts[contractType].data[clauseId]; if (!clause) return;
     const input = document.getElementById('chatInput');
     input.value = '请帮我分析这个条款：\n\n【' + contractType + ' ' + clause.title + '】\n\n' + clause.content.replace(/<[^>]*>/g, '') + '\n\n';
-    autoResizeInput(); closeClauseSelector(); input.focus();
+    closeClauseSelector(); input.focus();
 }
 
 function filterClauses(inputEl, type) {

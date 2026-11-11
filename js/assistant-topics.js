@@ -264,7 +264,7 @@
         const messages = await loadMessages(topicId);
         window.applyAssistantTopicChatState?.({ messages, hasContextBreak: !!topic?.hasContextBreak, contextBreakIndex: topic?.contextBreakIndex ?? -1, readOnly: false });
         const draft = state.drafts[topicId] || {};
-        const input = document.getElementById('chatInput'); if (input) { input.value = draft.text || ''; window.autoResizeInput?.(); }
+        const input = document.getElementById('chatInput'); if (input) input.value = draft.text || '';
         await window.AssistantAttachments?.loadDraft?.(topicId);
         const chat = document.getElementById('chatMessages'); if (chat && Number.isFinite(draft.scrollTop)) chat.scrollTop = draft.scrollTop;
         if (typeof toggleAssistantRef === 'function' && document.getElementById('assistantRefPanel')?.style.display !== 'none') toggleAssistantRef();
@@ -289,7 +289,7 @@
         state.messages.set(topic.id, []); state.hashes.set(topic.id, new Map()); state.drafts[topic.id] = { text: '', scrollTop: 0, updatedAt: now() };
         await persistMessages(topic.id); queueTopic(topic); await persistIndex();
         window.applyAssistantTopicChatState?.({ messages: [], hasContextBreak: false, contextBreakIndex: -1 });
-        const input = document.getElementById('chatInput'); if (input) { input.value = ''; input.focus(); window.autoResizeInput?.(); }
+        const input = document.getElementById('chatInput'); if (input) { input.value = ''; input.focus(); }
         await window.AssistantAttachments?.clearDraft?.(topic.id);
         render();
     }
@@ -333,7 +333,7 @@
         await persistIndex();
         window.applyAssistantTopicChatState?.({ messages: copiedMessages, hasContextBreak: branch.hasContextBreak, contextBreakIndex: branch.contextBreakIndex });
         const input = document.getElementById('chatInput');
-        if (input) { input.value = ''; input.focus(); window.autoResizeInput?.(); }
+        if (input) { input.value = ''; input.focus(); }
         await window.AssistantAttachments?.clearDraft?.(branch.id);
         if (typeof toggleAssistantRef === 'function' && document.getElementById('assistantRefPanel')?.style.display !== 'none') toggleAssistantRef();
         render();
@@ -538,7 +538,7 @@
         if (!state.currentTopicId) await createTopic();
         const topic = getTopic(); const messages = await loadMessages(topic.id);
         window.applyAssistantTopicChatState?.({ messages, hasContextBreak: !!topic.hasContextBreak, contextBreakIndex: topic.contextBreakIndex ?? -1, readOnly: false });
-        const draft = state.drafts[topic.id] || {}; const input = document.getElementById('chatInput'); if (input) { input.value = draft.text || ''; window.autoResizeInput?.(); }
+        const draft = state.drafts[topic.id] || {}; const input = document.getElementById('chatInput'); if (input) input.value = draft.text || '';
         await window.AssistantAttachments?.loadDraft?.(topic.id);
         render();
     }

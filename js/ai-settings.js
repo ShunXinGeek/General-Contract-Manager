@@ -933,7 +933,7 @@ function renderContractManagementTab() {
             </div>
         </div>`;
 
-    const rowsHtml = keys.map((key, index) => {
+    const rowsHtml = keys.map(key => {
         const { title, data } = contracts[key];
         const visible = isContractVisible(key);
         const keyText = escapeHtml(key);
@@ -944,10 +944,6 @@ function renderContractManagementTab() {
             <div class="cm-row" data-key="${keyAttribute}">
                 <div class="cm-reorder">
                     <span class="cm-drag-handle" draggable="true" title="拖动调整顺序" aria-hidden="true">⠿</span>
-                    <div class="cm-move-buttons">
-                        <button type="button" data-move="up" title="上移" aria-label="上移 ${keyAttribute}" ${index === 0 ? 'disabled' : ''}>↑</button>
-                        <button type="button" data-move="down" title="下移" aria-label="下移 ${keyAttribute}" ${index === keys.length - 1 ? 'disabled' : ''}>↓</button>
-                    </div>
                 </div>
                 <div class="cm-cell cm-cell-label">
                     <span class="cm-editable"
@@ -993,7 +989,7 @@ function renderContractManagementTab() {
 
     container.innerHTML = `
         <div style="margin-bottom:12px; font-size:13px; color:#888; line-height:1.5;">
-            拖动手柄或使用箭头调整顺序。点击标签名或完整名称可直接编辑。
+            拖动左侧手柄调整顺序。点击标签名或完整名称可直接编辑。
         </div>
         <div class="cm-table">
             ${headerHtml}
@@ -1062,13 +1058,6 @@ function bindContractManagementRows(rows) {
             if (await saved && visible === isContractVisible(key)) {
                 showSettingsStatus(`「${key}」已设为${visible ? '可见' : '不可见'}`, 'success');
             }
-        } else if (button.dataset.move) {
-            const down = button.dataset.move === 'down';
-            const target = down ? row.nextElementSibling : row.previousElementSibling;
-            if (!target || !moveContract(key, target.dataset.key, down)) return;
-            renderContractManagementTab();
-            const movedRow = [...document.querySelectorAll('#contractManagementList .cm-row')].find(item => item.dataset.key === key);
-            (movedRow?.querySelector(`[data-move="${button.dataset.move}"]:enabled`) || movedRow?.querySelector('[data-move]:enabled'))?.focus();
         }
     });
 }
@@ -1112,8 +1101,6 @@ function handleContractInlineEdit(el) {
         row.dataset.key = newValue;
         if (activeContractKey === originalKey) activeContractKey = newValue;
         row.querySelector('.cm-visibility').setAttribute('aria-label', `${newValue} 可见`);
-        row.querySelector('[data-move="up"]').setAttribute('aria-label', `上移 ${newValue}`);
-        row.querySelector('[data-move="down"]').setAttribute('aria-label', `下移 ${newValue}`);
         el.dataset.original = newValue;
         // Update all editables in this row to use new key reference
         row.querySelectorAll('.cm-editable').forEach(e => {

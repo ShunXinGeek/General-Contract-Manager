@@ -11,7 +11,7 @@
 | 页面与样式 | `index.html`、`css/style.css` | DOM 骨架、三栏工作区、弹窗、主题与响应式布局；`index.html` 按依赖顺序加载脚本。 |
 | 消息与进度 | `js/status-center.js`、`js/utils.js` | 顶部动画小猫与消息气泡、统一消息中心、会话历史与筛选、并行任务进度；按通知形式决定气泡是否弹出，保留确认和输入弹窗。 |
 | 应用核心 | `js/app.js` | 合同集合、稳定来源 ID 对应的显示顺序、逐合同可见状态、当前合同与每合同 UI 状态；标签渲染、切换、自动保存、引用导航。 |
-| 合同工作区 | `import.js`、`editor.js`、`bookmark.js`、`search.js`、`sync.js`、`comparison.js`、`ai-settings.js`、`contract-backup.js` | 导入解析、编辑/批注/导出、书签、全文搜索、双栏同步滚动、版本差异；合同管理页提供拖动及上下按钮排序、可见性切换、逐合同向量覆盖状态、向量化入口及整库备份与恢复。 |
+| 合同工作区 | `import.js`、`editor.js`、`bookmark.js`、`search.js`、`sync.js`、`comparison.js`、`ai-settings.js`、`contract-backup.js` | 导入解析、编辑/批注/导出、书签、全文搜索、双栏同步滚动、版本差异；合同管理页提供排序、可见性、向量化及整库备份与恢复。 |
 | 正文选区 | `js/selection-tools.js`、`js/editor.js`、`js/search.js` | 浮动工具栏、带出处复制、选区搜索、AI 草稿、审阅标签与格式操作。编辑模块统一记录正文、备注、格式和审阅标签的撤销历史。 |
 | AI 与检索 | `ai-assistant.js`、`ai-client.js`、`ai-providers.js`、`rag.js`、`ai-retrieval.js`、`cross-ref.js`、`retrieval-settings.js` | 流式问答、供应商协议适配、向量/证据检索、可见合同范围、检索来源与等级/关系规则、GCC↔SCC 映射与引用校验。 |
 | 助手内容 | `assistant-topics.js`、`assistant-notebook.js`、`assistant-attachments.js` | 话题与分支、收藏笔记、TXT/Markdown/PDF/DOCX 附件解析；均本地优先，登录后可同步。 |
@@ -42,7 +42,7 @@
 
 ```text
 调整合同顺序或可见性（设置 → 合同管理）
-  → 拖动手柄或使用上下按钮调整管理列表顺序；contractOrder 按稳定 sourceId 记录顺序
+  → 拖动手柄调整管理列表顺序；contractOrder 按稳定 sourceId 记录顺序
   → 欢迎页保持在最左侧，可见合同标签按管理列表顺序即时重排
   → 每份合同的 visibility.hidden 控制可见状态；隐藏的合同仍留在管理列表中
   → 隐藏当前合同则返回欢迎页；检索设置、来源下拉菜单、知识库检索及条款引用只使用可见合同

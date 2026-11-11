@@ -4,8 +4,9 @@
  */
 
 const RAG_DB_NAME = 'ContractVectorStore';
-const RAG_DB_VERSION = 1;
+const RAG_DB_VERSION = 2;
 const RAG_STORE_NAME = 'vectors';
+const RAG_SOURCE_INDEX = 'sourceId';
 const RAG_INDEX_SCHEMA_VERSION = 3;
 // Leave room under the Netlify /api/retrieval limit of 60 requests per minute.
 const RAG_INDEX_REQUEST_INTERVAL_MS = 1250;
@@ -33,19 +34,34 @@ const RAG = {
      * 初始化/打开 IndexedDB
      */
     async init() {
+        if (this.db) return this.db;
         return new Promise((resolve, reject) => {
             const request = indexedDB.open(RAG_DB_NAME, RAG_DB_VERSION);
             request.onupgradeneeded = (event) => {
                 const db = event.target.result;
-                if (!db.objectStoreNames.contains(RAG_STORE_NAME)) {
-                    db.createObjectStore(RAG_STORE_NAME, { keyPath: 'id' });
+                const store = db.objectStoreNames.contains(RAG_STORE_NAME)
+                    ? request.transaction.objectStore(RAG_STORE_NAME)
+                    : db.createObjectStore(RAG_STORE_NAME, { keyPath: 'id' });
+                if (!store.indexNames.contains(RAG_SOURCE_INDEX)) {
+                    store.createIndex(RAG_SOURCE_INDEX, 'sourceId');
                 }
             };
             request.onsuccess = (event) => {
-                this.db = event.target.result;
+                const db = event.target.result;
+                if (this.db) {
+                    db.close();
+                    resolve(this.db);
+                    return;
+                }
+                this.db = db;
+                db.onversionchange = () => {
+                    db.close();
+                    this.db = null;
+                };
                 console.log('[RAG] Vector database initialized');
-                resolve(this.db);
+                resolve(db);
             };
+            request.onblocked = () => reject(new Error('向量库升级被其他标签页阻塞，请关闭同站点的其他标签页后重试'));
             request.onerror = (event) => {
                 console.error('[RAG] Database error:', event.target.error);
                 reject(event.target.error);
@@ -67,14 +83,20 @@ const RAG = {
         return normA && normB ? dotProduct / (Math.sqrt(normA) * Math.sqrt(normB)) : null;
     },
 
-    async readRecords() {
+    async readRecords(sourceIds) {
+        if (sourceIds?.length === 0) return [];
         if (!this.db) await this.init();
-        return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([RAG_STORE_NAME], 'readonly');
-            const request = transaction.objectStore(RAG_STORE_NAME).getAll();
+        const transaction = this.db.transaction([RAG_STORE_NAME], 'readonly');
+        const store = transaction.objectStore(RAG_STORE_NAME);
+        const read = request => new Promise((resolve, reject) => {
             request.onsuccess = () => resolve(request.result);
             request.onerror = () => reject(new Error('本机向量索引读取失败'));
         });
+        if (!sourceIds) return read(store.getAll());
+
+        const index = store.index(RAG_SOURCE_INDEX);
+        const batches = await Promise.all(sourceIds.map(sourceId => read(index.getAll(sourceId))));
+        return batches.flat();
     },
 
     async replaceSourceRecords(sourceIds, records) {
@@ -143,12 +165,10 @@ const RAG = {
             eligible.get(row.sourceId).add(row.id);
         }
         const sourcesById = new Map(Object.entries(data).map(([type, contract]) => [contract.sourceId, { type, data: contract.data || {} }]));
-        const knownSources = new Set(Object.values(raw).map(contract => contract.sourceId));
-        const records = await this.readRecords();
+        const records = await this.readRecords(allContracts ? undefined : [...coverage.keys()]);
         const rejected = {}, validRecords = [];
         const coveredIds = new Set();
         for (const item of records) {
-            if (item.sourceId && knownSources.has(item.sourceId) && !sourcesById.has(item.sourceId)) continue;
             const code = this.validateRecord(item, config || {}, data);
             if (code !== 'ready') {
                 rejected[code] = (rejected[code] || 0) + 1;
