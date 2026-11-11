@@ -170,8 +170,14 @@
                 <div class="search-container">
                     <span class="search-icon">🔍</span>
                     <input type="text" class="search-input" name="nav-search" placeholder="搜索条款..." autocomplete="off"
-                        oninput="filterNav(this.value); toggleSearchClear(this)">
+                        oninput="handleNavSearchInput(this)">
                     <span class="search-clear" onclick="clearSearchInput(this)" title="清除搜索">×</span>
+                    <button id="openReviewTags" type="button" class="review-tags-button" title="查看审阅标签"
+                        aria-label="查看审阅标签" aria-controls="selectionResultPanel" aria-expanded="false">
+                        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8">
+                            <path d="M3 5v6l8 8 8-8-8-8H5a2 2 0 0 0-2 2Z"/><circle cx="7.5" cy="7.5" r="1"/>
+                        </svg>
+                    </button>
                 </div>
             </div>
             <div class="nav-list" id="navList"></div>
@@ -366,44 +372,64 @@
 
         <div id="noteTooltip"></div>
 
-        <div id="floatingToolbar" onmousedown="event.preventDefault()">
-            <button class="toolbar-btn" onmousedown="event.preventDefault(); addOrEditNote()"
-                title="添加/编辑备注">📝</button>
-            <div class="toolbar-divider"></div>
-            <div class="toolbar-group">
-                <button class="toolbar-btn" onmousedown="event.preventDefault(); toggleDropdown('highlightMenu', this)"
-                    title="高亮颜色">🖍️</button>
-                <div id="highlightMenu" class="color-dropdown" onmousedown="event.preventDefault()">
-                    <div class="color-swatch" style="background:#ffcc80;"
-                        onmousedown="event.preventDefault(); applyFormat('hiliteColor', '#ffcc80')"></div>
-                    <div class="color-swatch" style="background:#ccff90;"
-                        onmousedown="event.preventDefault(); applyFormat('hiliteColor', '#ccff90')"></div>
-                    <div class="color-swatch" style="background:#81d4fa;"
-                        onmousedown="event.preventDefault(); applyFormat('hiliteColor', '#81d4fa')"></div>
-                    <div class="color-swatch" style="background:#ce93d8;"
-                        onmousedown="event.preventDefault(); applyFormat('hiliteColor', '#ce93d8')"></div>
+        <div id="floatingToolbar" role="group" aria-label="选中文字工具">
+            <div class="toolbar-group" data-toolbar-option="copy" data-toolbar-label="复制">
+                <button type="button" class="toolbar-btn toolbar-text" data-action="copy-source" title="带出处复制">复制</button>
+                <button type="button" class="toolbar-btn toolbar-caret" data-menu="selectionCopyMenu" aria-controls="selectionCopyMenu"
+                    aria-expanded="false" aria-label="复制选项">▾</button>
+                <div id="selectionCopyMenu" class="selection-menu" hidden>
+                    <button type="button" data-action="copy-source">带出处复制</button>
+                    <button type="button" data-action="copy-text">仅复制文字</button>
                 </div>
             </div>
-            <button class="toolbar-btn" onmousedown="event.preventDefault(); applyFormat('bold')"
-                title="Bold"><strong>B</strong></button>
-            <div class="toolbar-group">
-                <button class="toolbar-btn" onmousedown="event.preventDefault(); toggleDropdown('fontColorMenu', this)"
-                    title="文字颜色" style="text-decoration: underline; text-decoration-color: red;">A</button>
-                <div id="fontColorMenu" class="color-dropdown" onmousedown="event.preventDefault()">
-                    <div class="color-swatch" style="background:#e74c3c;"
-                        onmousedown="event.preventDefault(); applyFormat('foreColor', '#e74c3c')"></div>
-                    <div class="color-swatch" style="background:#f1c40f;"
-                        onmousedown="event.preventDefault(); applyFormat('foreColor', '#f1c40f')"></div>
-                    <div class="color-swatch" style="background:#3498db;"
-                        onmousedown="event.preventDefault(); applyFormat('foreColor', '#3498db')"></div>
-                    <div class="color-swatch" style="background:#9b59b6;"
-                        onmousedown="event.preventDefault(); applyFormat('foreColor', '#9b59b6')"></div>
+            <button type="button" class="toolbar-btn" data-toolbar-option="note" data-toolbar-label="添加/编辑备注"
+                data-action="note" title="添加/编辑备注" aria-label="添加/编辑备注">📝</button>
+            <div class="toolbar-group" data-toolbar-option="highlight" data-toolbar-label="高亮颜色">
+                <button type="button" class="toolbar-btn" data-menu="highlightMenu" aria-controls="highlightMenu"
+                    aria-expanded="false" aria-label="高亮颜色" title="高亮颜色">🖍️</button>
+                <div id="highlightMenu" class="selection-menu selection-palette" aria-label="高亮颜色" hidden></div>
+            </div>
+            <button type="button" class="toolbar-btn" data-toolbar-option="bold" data-toolbar-label="加粗"
+                data-format="bold" title="加粗" aria-label="加粗"><strong>B</strong></button>
+            <div class="toolbar-group" data-toolbar-option="font-color" data-toolbar-label="文字颜色">
+                <button type="button" class="toolbar-btn" data-menu="fontColorMenu" aria-controls="fontColorMenu"
+                    aria-expanded="false" aria-label="文字颜色" title="文字颜色" style="text-decoration: underline; text-decoration-color: red;">A</button>
+                <div id="fontColorMenu" class="selection-menu selection-palette" aria-label="文字颜色" hidden></div>
+            </div>
+            <div class="toolbar-group" data-toolbar-option="ai" data-toolbar-label="发送给 AI">
+                <button type="button" class="toolbar-btn toolbar-text" data-menu="selectionAiMenu" aria-controls="selectionAiMenu"
+                    aria-expanded="false" aria-label="发送给 AI">AI ▾</button>
+                <div id="selectionAiMenu" class="selection-menu" hidden>
+                    <button type="button" data-ai="解释这段">解释这段</button>
+                    <button type="button" data-ai="分析风险">分析风险</button>
+                    <button type="button" data-ai="拟修改建议">拟修改建议</button>
                 </div>
             </div>
-            <div class="toolbar-divider"></div>
-            <button class="toolbar-btn" onmousedown="event.preventDefault(); applyFormat('removeFormat')"
-                title="Clear">✕</button>
+            <button type="button" class="toolbar-btn toolbar-text" data-toolbar-option="search" data-toolbar-label="搜索选中文字"
+                data-toolbar-default="more" data-action="search" aria-label="搜索选中文字">搜索</button>
+            <div class="toolbar-group" data-toolbar-option="review-tags" data-toolbar-label="审阅标签" data-toolbar-default="more">
+                <button type="button" class="toolbar-btn toolbar-text" data-menu="selectionTagMenu" aria-controls="selectionTagMenu"
+                    aria-expanded="false" aria-label="审阅标签">标签 ▾</button>
+                <div id="selectionTagMenu" class="selection-menu" aria-label="审阅标签" hidden></div>
+            </div>
+            <button type="button" class="toolbar-btn toolbar-text" data-toolbar-option="clear-format" data-toolbar-label="清除格式"
+                data-toolbar-default="more" data-action="clear-format">清除格式</button>
+            <button type="button" class="toolbar-btn toolbar-text" data-toolbar-option="delete-note" data-toolbar-label="删除备注"
+                data-toolbar-default="more" data-action="delete-note" hidden>删除备注</button>
+            <div class="toolbar-group">
+                <button type="button" class="toolbar-btn toolbar-text" data-menu="selectionMoreMenu" aria-controls="selectionMoreMenu"
+                    aria-expanded="false" aria-label="更多">更多 ⋯</button>
+                <div id="selectionMoreMenu" class="selection-menu" hidden></div>
+            </div>
         </div>
+        <section id="selectionResultPanel" class="selection-result-panel" aria-labelledby="selectionResultTitle" hidden>
+            <header>
+                <strong id="selectionResultTitle"></strong>
+                <button type="button" data-close-results aria-label="关闭结果面板">×</button>
+            </header>
+            <div id="selectionResultFilters" class="selection-result-filters"></div>
+            <div id="selectionResultList" class="selection-result-list"></div>
+        </section>
 
         <!-- 设置弹窗 -->
         <div id="settingsModal" class="modal-overlay">
@@ -416,14 +442,16 @@
                 <!-- 标签页导航 -->
                 <div class="settings-tabs" style="display:flex; border-bottom:1px solid #ddd;">
                     <button class="settings-tab active" id="tabAISettings" onclick="switchSettingsTab('AI')"
-                        style="flex:1; padding:12px; background:none; border:none; border-bottom:3px solid #3498db; cursor:pointer; font-weight:bold; color:#3498db; font-size:14px;">AI
+                        style="flex:1; background:none; border:none; border-bottom:3px solid #3498db; cursor:pointer; font-weight:bold; color:#3498db; font-size:14px;">AI
                         助手设置</button>
                     <button class="settings-tab" id="tabRetrievalSettings" onclick="switchSettingsTab('Retrieval')"
-                        style="flex:1; padding:12px; background:none; border:none; border-bottom:3px solid transparent; cursor:pointer; font-weight:normal; color:#666; font-size:14px;">🔎
+                        style="flex:1; background:none; border:none; border-bottom:3px solid transparent; cursor:pointer; font-weight:normal; color:#666; font-size:14px;">🔎
                         检索设置</button>
                     <button class="settings-tab" id="tabContractSettings" onclick="switchSettingsTab('Contract')"
-                        style="flex:1; padding:12px; background:none; border:none; border-bottom:3px solid transparent; cursor:pointer; font-weight:normal; color:#666; font-size:14px;">📁
+                        style="flex:1; background:none; border:none; border-bottom:3px solid transparent; cursor:pointer; font-weight:normal; color:#666; font-size:14px;">📁
                         合同管理</button>
+                    <button type="button" class="settings-tab" id="tabGeneralSettings" onclick="switchSettingsTab('General')"
+                        style="flex:1; background:none; border:none; border-bottom:3px solid transparent; cursor:pointer; font-weight:normal; color:#666; font-size:14px;">通用设置</button>
                 </div>
 
                 <div class="modal-body" id="settingsModalBody" style="padding:20px; overflow-y:auto; flex:1;">
@@ -624,6 +652,24 @@
                         <div id="contractManagementList"></div>
                     </div> <!-- 结束 contractSettingsContent -->
 
+                    <div id="generalSettingsContent" style="display:none;">
+                        <section class="general-settings-panel" aria-labelledby="toolbarSettingsTitle">
+                            <h3 id="toolbarSettingsTitle">浮动工具栏</h3>
+                            <p id="toolbarSettingsHint">勾选的操作直接显示在工具栏，其余操作收在「更多」。</p>
+                            <div id="toolbarSettingsOptions" role="group" aria-labelledby="toolbarSettingsTitle"
+                                aria-describedby="toolbarSettingsHint"></div>
+                        </section>
+                        <section class="general-settings-panel" aria-labelledby="notificationModeLabel">
+                            <h3><label id="notificationModeLabel" for="settingNotificationMode">通知形式</label></h3>
+                            <p id="notificationModeHint">静默只显示未读标记。普通只为错误和警告弹窗。全部弹出各类消息。消息中心照常记录消息。</p>
+                            <select id="settingNotificationMode" aria-describedby="notificationModeHint">
+                                <option value="silent">静默通知</option>
+                                <option value="normal">普通通知</option>
+                                <option value="all">全部通知</option>
+                            </select>
+                        </section>
+                    </div>
+
                     <!-- 底部按钮 -->
                     <div class="settings-footer" style="display:flex; gap:10px; margin-top:20px; padding-top:10px; border-top:1px solid #ddd;">
                         <button onclick="saveAISettings()"
@@ -752,6 +798,7 @@
             <div id="statusList" class="status-list"></div>
             <p class="status-panel-footnote">点击消息展开全文 · 保留本次页面会话最近 100 条已完成记录</p>
         </section>
+        <script src="js/general-settings.js"></script>
         <script src="js/status-center.js"></script>
         <script src="js/utils.js"></script>
         <script src="js/logger.js"></script>
@@ -772,6 +819,7 @@
         <script src="js/cross-ref.js"></script>
         <script src="js/ai-settings.js"></script>
         <script src="js/editor.js"></script>
+        <script src="js/selection-tools.js"></script>
         <script src="js/assistant-attachments.js"></script>
         <script src="js/ai-assistant.js"></script>
         <script src="js/cloud-storage.js"></script>

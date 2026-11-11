@@ -125,6 +125,10 @@
         }));
     }
 
+    function getVisibleContracts(data) {
+        return Object.fromEntries(Object.entries(data || {}).filter(([, contract]) => contract?.data && contract.visibility?.hidden !== true));
+    }
+
     function normalize(raw, data) {
         const base = defaults();
         const input = raw && typeof raw === 'object' ? raw : {};
@@ -237,9 +241,11 @@
     function resetDraft(data) {
         const previous = getDraft(data);
         const reset = defaults();
+        const visibleIds = new Set(sourceEntries(getVisibleContracts(data || root.contracts || {})).map(entry => entry.sourceId));
         for (const [sourceId, source] of Object.entries(previous.sources)) {
-            reset.sources[sourceId] = { enabled: source.enabled, aliases: source.aliases };
+            reset.sources[sourceId] = visibleIds.has(sourceId) ? { enabled: source.enabled, aliases: source.aliases } : source;
         }
+        reset.relations = previous.relations.filter(({ fromSourceId, toSourceId }) => !visibleIds.has(fromSourceId) || !visibleIds.has(toSourceId));
         draft = normalize(reset, data || root.contracts || {});
         return draft;
     }
@@ -316,8 +322,9 @@
     }
 
     function validate(settings, data) {
-        const normalized = normalize(settings, data || root.contracts || {});
-        const { sources, relations } = normalized;
+        const allContracts = data || root.contracts || {};
+        const normalized = normalize(settings, allContracts);
+        const { sources, relations } = normalize(normalized, getVisibleContracts(allContracts));
         const errors = [];
         for (const relation of relations) {
             const expected = levelConflict(relation, sources);
@@ -357,7 +364,7 @@
         const active = normalize(settings || get(source), source);
         const filtered = {};
         for (const entry of sourceEntries(source)) {
-            if (active.sources[entry.sourceId]?.enabled) filtered[entry.key] = entry.contract;
+            if (entry.contract.visibility?.hidden !== true && active.sources[entry.sourceId]?.enabled) filtered[entry.key] = entry.contract;
         }
         return filtered;
     }
@@ -395,7 +402,7 @@
     }
 
     function summary(data, settings) {
-        const source = data || root.contracts || {};
+        const source = getVisibleContracts(data || root.contracts || {});
         const active = normalize(settings || get(source), source);
         const entries = sourceEntries(source);
         const enabled = entries.filter(entry => active.sources[entry.sourceId]?.enabled);
@@ -433,6 +440,7 @@
         resetDraft,
         validate,
         saveDraft,
+        getVisibleContracts,
         getEnabledContracts,
         getSourceMeta,
         relationBetween,

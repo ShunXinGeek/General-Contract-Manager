@@ -15,6 +15,11 @@
     const bubble = $('statusBubble');
     if (!display || !panel) return;
 
+    function allowsPopup(type, isSearchContext = false) {
+        const mode = window.GeneralSettings.notificationMode();
+        return mode === 'all' || (mode === 'normal' && !isSearchContext && (type === 'error' || type === 'warning'));
+    }
+
     function trim() {
         const completed = records.filter(item => !item.active).sort((a, b) => a.time - b.time || a.order - b.order);
         const remove = new Set(completed.slice(0, Math.max(0, completed.length - 100)));
@@ -33,7 +38,7 @@
         const duration = options.duration ?? (type === 'error' || type === 'warning' ? 8000 : 4000);
         Object.assign(item, { type, message: String(message), source, time: now, order: ++sequence, read: opened,
             active: type === 'loading', progress: options.progress ?? null,
-            dismissed: opened, noticeUntil: type === 'error' || duration === 0 ? Infinity : now + duration,
+            dismissed: opened || !allowsPopup(type), noticeUntil: type === 'error' || duration === 0 ? Infinity : now + duration,
             expires: duration === 0 || type === 'loading' ? Infinity : now + duration,
             action: options.action || null });
         trim();
@@ -86,12 +91,11 @@
         if (holds.size && heldItem !== currentNotice) { heldItem = currentNotice; heldSince = Date.now(); }
         const item = currentNotice || choose();
         const unread = records.filter(row => !row.read).length;
-        const important = records.some(row => !row.read && ['warning', 'error'].includes(row.type));
         const active = records.filter(row => row.active).length;
         display.className = `status-mascot status-${item.type}`;
         display.setAttribute('aria-label', `小猫助手：查看消息中心${unread ? `，${unread} 条未读消息` : ''}${active ? `，${active} 项任务进行中` : ''}。${item.message}`);
         display.title = `小猫助手 · 点击查看消息中心${item.message !== '就绪' ? '\n' + item.message : ''}`;
-        $('statusUnread').hidden = !important;
+        $('statusUnread').hidden = unread === 0;
         $('statusTaskCount').hidden = active < 2;
         $('statusTaskCount').textContent = active > 1 ? String(active) : '';
         $('statusText').textContent = item.message;
@@ -246,7 +250,15 @@
     window.StatusCenter = Object.freeze({ post, start, open: () => toggle(true),
         setContext(type, message) {
             if (context.type === type && context.message === message) return;
-            context = { id: 'context', type, message, source: '搜索', time: Date.now(), order: ++sequence, noticeUntil: message === '就绪' || opened ? 0 : Date.now() + 4000 };
+            context = { id: 'context', type, message, source: '搜索', time: Date.now(), order: ++sequence,
+                dismissed: opened || !allowsPopup(type, true), noticeUntil: message === '就绪' ? 0 : Date.now() + 4000 };
+            render();
+        },
+        refreshNotifications() {
+            for (const item of [...records, context]) {
+                if (!allowsPopup(item.type, item === context)) item.dismissed = true;
+            }
+            if (currentNotice?.dismissed) { holds.clear(); heldItem = null; }
             render();
         },
         snapshot: () => records.map(({ action, ...item }) => ({ ...item })) });

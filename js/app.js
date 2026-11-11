@@ -10,6 +10,7 @@
 // 1. 全局状态（全部动态初始化，无硬编码合同）
 // =======================================================
 let contracts = {};                    // 动态合同数据库（空初始化）
+let contractOrder = null;
 const CONTRACTS_DB_KEY = 'general_contract_db'; // IndexedDB 存储键名
 let fullClauseDatabase = {};           // 当前激活合同的数据引用
 let savedBookmarks = null;
@@ -70,10 +71,8 @@ let lastSavedTime = 0;
 let resolveContractAppReady;
 window.contractAppReady = new Promise(resolve => { resolveContractAppReady = resolve; });
 
-// 撤销/重做
+// 每份合同保留的撤销步数
 const MAX_HISTORY_SIZE = 50;
-let editHistory = {};
-let currentEditingClause = null;
 
 // AI 设置 localStorage 键
 const AI_SETTINGS_KEYS = {
@@ -112,6 +111,7 @@ function registerContract(key, title, data) {
     const existingSourceId = previousContract?.sourceId || null;
     contracts[key] = {
         sourceId: existingSourceId,
+        visibility: previousContract?.visibility || null,
         title: title,
         data: data,
         bookmarks: null
@@ -156,6 +156,64 @@ function getContractDomId(key) {
     return contracts[key]?.sourceId || `legacy_${encodeURIComponent(String(key || ''))}`;
 }
 
+function isContractVisible(key) {
+    return typeof key === 'string' && Object.hasOwn(contracts, key) && contracts[key].visibility?.hidden !== true;
+}
+
+function getOrderedContractKeys({ visibleOnly = false } = {}) {
+    const keys = Object.keys(contracts);
+    const byId = new Map(keys.map(key => [getContractDomId(key), key]));
+    const ordered = new Set();
+    for (const id of contractOrder?.sourceIds || []) {
+        if (byId.has(id)) ordered.add(byId.get(id));
+    }
+    keys.forEach(key => ordered.add(key));
+    return [...ordered].filter(key => !visibleOnly || isContractVisible(key));
+}
+
+function moveContract(key, targetKey, after) {
+    const keys = getOrderedContractKeys();
+    if (key === targetKey || !keys.includes(key) || !keys.includes(targetKey)) return false;
+    const next = keys.filter(item => item !== key);
+    next.splice(next.indexOf(targetKey) + Number(after), 0, key);
+    if (next.every((item, index) => item === keys[index])) return false;
+    contractOrder = { sourceIds: next.map(getContractDomId), modifiedAt: Math.max(Date.now(), (contractOrder?.modifiedAt || 0) + 1) };
+    renderTabs();
+    if (document.getElementById('tab-Welcome')?.classList.contains('active')) showWelcomePage();
+    saveContractsToStorage();
+    return true;
+}
+
+function refreshContractVisibility() {
+    if (isViewingCrossContractRef && !isContractVisible(crossRefContractKey)) {
+        resetCrossRefState();
+        currentRefId = null;
+        document.getElementById('refContent')?.replaceChildren();
+        const header = document.getElementById('refFixedHeader');
+        if (header) header.style.display = 'none';
+        updateNavButtons();
+    }
+    if (typeof refreshAssistantContractVisibility === 'function') refreshAssistantContractVisibility();
+    window.SelectionTools?.visibilityChanged();
+}
+
+async function setContractVisibility(key, visible) {
+    if (!Object.hasOwn(contracts, key) || visible === isContractVisible(key)) return;
+    const previous = contracts[key].visibility?.modifiedAt || 0;
+    contracts[key].visibility = { hidden: !visible, modifiedAt: Math.max(Date.now(), previous + 1) };
+    renderTabs();
+    if ((activeContractKey === key && !visible) || document.getElementById('tab-Welcome')?.classList.contains('active')) {
+        showWelcomePage();
+    } else if (activeContractKey) {
+        // 保留编辑区和滚动位置，只重新生成条款链接。
+        document.querySelectorAll('#panelMain .clause-ref').forEach(link => link.replaceWith(link.textContent));
+        autoLinkClauses();
+    }
+    refreshContractVisibility();
+    if (typeof clearRetrievalPreview === 'function') clearRetrievalPreview();
+    return saveContractsToStorage();
+}
+
 function encodeInlineArgument(value) {
     return encodeURIComponent(String(value ?? '')).replace(/'/g, '%27');
 }
@@ -168,7 +226,7 @@ function renderTabs() {
     if (!tabContainer) return;
 
     // 清空现有合同标签（保留助手标签）
-    tabContainer.querySelectorAll('.header-tab.contract-tab').forEach(el => el.remove());
+    tabContainer.querySelectorAll('.header-tab.contract-tab:not(#tab-Welcome)').forEach(el => el.remove());
     // 如果没有欢迎页标签，先创建一个并插入到最前面
     let welcomeTab = document.getElementById('tab-Welcome');
     if (!welcomeTab) {
@@ -183,7 +241,7 @@ function renderTabs() {
 
     // 在助手标签前插入合同标签
     const assistantTab = document.getElementById('tab-Assistant');
-    const keys = Object.keys(contracts);
+    const keys = getOrderedContractKeys({ visibleOnly: true });
 
     keys.forEach(key => {
         const btn = document.createElement('button');
@@ -210,6 +268,13 @@ function renderTabs() {
  */
 function removeContract(key) {
     if (!contracts[key]) return;
+    const sourceId = getContractDomId(key);
+    if (contractOrder?.sourceIds.includes(sourceId)) {
+        contractOrder = {
+            sourceIds: contractOrder.sourceIds.filter(id => id !== sourceId),
+            modifiedAt: Math.max(Date.now(), (contractOrder.modifiedAt || 0) + 1)
+        };
+    }
     delete contracts[key];
     delete searchStatePerContract[key];
     delete refViewStatePerContract[key];
@@ -223,7 +288,7 @@ function removeContract(key) {
     if (typeof syncStatePerContract !== 'undefined') delete syncStatePerContract[key];
 
     if (activeContractKey === key) {
-        const remainingKeys = Object.keys(contracts);
+        const remainingKeys = getOrderedContractKeys({ visibleOnly: true });
         if (remainingKeys.length > 0) {
             switchContract(remainingKeys[0]);
         } else {
@@ -260,6 +325,7 @@ async function saveContractsToStorage() {
         const snapshot = {
             version: 2,
             contracts,
+            contractOrder,
             activeContractKey,
             savedAt: Date.now()
         };
@@ -300,6 +366,7 @@ async function loadContractsFromStorage() {
                             const modification = autoSnapshot.modifications[contractKey][clauseId];
                             storedContracts[contractKey].data[clauseId].content = modification.content;
                             storedContracts[contractKey].data[clauseId].modifiedAt = modification.modifiedAt || autoSnapshot.timestamp || Date.now();
+                            if (Array.isArray(modification.reviewTags)) storedContracts[contractKey].data[clauseId].reviewTags = modification.reviewTags;
                         });
                     });
                     Object.keys(autoSnapshot.bookmarks || {}).forEach(contractKey => {
@@ -312,6 +379,8 @@ async function loadContractsFromStorage() {
 
             if (Object.keys(storedContracts).length > 0) {
                 contracts = storedContracts;
+                contractOrder = parsed.version === 2 && Array.isArray(parsed.contractOrder?.sourceIds)
+                    ? parsed.contractOrder : null;
                 if (window.RetrievalSettings) {
                     const sourceIdsAdded = window.RetrievalSettings.ensureSourceIds(contracts);
                     window.RetrievalSettings.persist(window.RetrievalSettings.get(contracts), contracts, false);
@@ -319,6 +388,7 @@ async function loadContractsFromStorage() {
                         await localforage.setItem(CONTRACTS_DB_KEY, JSON.stringify({
                             version: 2,
                             contracts,
+                            contractOrder,
                             activeContractKey: storedActiveContractKey,
                             savedAt: Date.now()
                         }));
@@ -395,6 +465,7 @@ function restoreContractPanelState(key) {
 }
 
 function showWelcomePage() {
+    window.SelectionTools?.leaveContract();
     // 强制清理活动全局变量
     if (activeContractKey) {
         captureCurrentContent();
@@ -413,7 +484,7 @@ function showWelcomePage() {
     if (!main) return;
 
     let listHtml = "";
-    const contractKeys = Object.keys(contracts);
+    const contractKeys = getOrderedContractKeys({ visibleOnly: true });
 
     if (contractKeys.length === 0) {
         listHtml = `<div class="empty-state">目前还没有导入任何合同哦。请点击右上角 📥 导入合同数据。</div>`;
@@ -699,7 +770,7 @@ function applyTheme(idx) {
 // 6. 合同切换（通用版）
 // =======================================================
 function switchContract(key) {
-    if (!contracts[key]) return;
+    if (!isContractVisible(key)) return;
     setDocumentPanelToggleAvailability(true);
 
     // 更新标签高亮
@@ -720,7 +791,7 @@ function switchContract(key) {
             syncStatePerContract[activeContractKey] = isSyncMode;
         }
         const searchInput = document.querySelector('.search-input');
-        searchStatePerContract[activeContractKey] = searchInput ? searchInput.value : '';
+        if (!window.SelectionTools?.searchActive()) searchStatePerContract[activeContractKey] = searchInput ? searchInput.value : '';
         if (typeof clearSearchHighlights === 'function') clearSearchHighlights();
         if (isSyncMode && typeof disableSyncModeInternal === 'function') disableSyncModeInternal();
         captureCurrentContent();
@@ -836,6 +907,7 @@ function switchContract(key) {
     }
 
     document.querySelector('.nav-title').innerText = `${key} NAVIGATOR`;
+    window.SelectionTools?.contractChanged();
 }
 
 // =======================================================
@@ -865,11 +937,11 @@ function renderMainDocument() {
 function buildReverseIndex() {
     reverseRefIndex = {};
     Object.keys(fullClauseDatabase).forEach(src => {
-        const regex = /Clause\s+(\d+)/gi;
+        const regex = getClauseReferencePattern(src);
         let match;
         while ((match = regex.exec(fullClauseDatabase[src].content)) !== null) {
             const target = match[1];
-            if (target !== src && fullClauseDatabase[target]) {
+            if (!target.includes('.') && target !== src && fullClauseDatabase[target]) {
                 if (!reverseRefIndex[target]) reverseRefIndex[target] = new Set();
                 reverseRefIndex[target].add(src);
             }
@@ -888,14 +960,70 @@ function getReverseRefHTML(id) {
 // =======================================================
 // 9. 自动条款链接（通用版 - 动态生成）
 // =======================================================
-function autoLinkClauses() {
+function getClauseReferencePattern(sourceId, allowLetterSuffix = false) {
+    const clauseNumber = allowLetterSuffix ? '\\d+[A-Za-z]?' : '\\d+';
+    // 附表内明确指向上文或下文的点号编号属于本附表。
+    const scheduleItem = /^SCHEDULE-\d+$/i.test(sourceId)
+        ? '\\d+(?:\\.\\d+)+[A-Za-z]?(?=\\s+(?:above|below)\\b)|'
+        : '';
+    return new RegExp(`Clause\\s+(${scheduleItem}${clauseNumber})`, 'gi');
+}
+
+function linkScheduleItems(body, sourceId, linkClass) {
+    if (!/^SCHEDULE-\d+$/i.test(sourceId)) return;
+    const items = new Map();
+    body.querySelectorAll('p').forEach(paragraph => {
+        const match = paragraph.textContent.trimStart().match(/^(\d+(?:\.\d+)+[A-Za-z]?)[.)]?(?=\s|$)/);
+        if (match) items.set(match[1], items.has(match[1]) ? null : paragraph);
+    });
+    if (!items.size) return;
+
+    const panel = body.closest('#panelMain, #refContent');
+    const pattern = getClauseReferencePattern(sourceId);
+    const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    nodes.forEach(node => {
+        if (node.parentElement.closest('a, .clause-ref, .ref-internal-link')) return;
+        const matches = Array.from(node.data.matchAll(pattern)).filter(match => items.get(match[1]));
+        if (!matches.length) return;
+
+        const fragment = document.createDocumentFragment();
+        let offset = 0;
+        matches.forEach(match => {
+            const target = items.get(match[1]);
+            const link = document.createElement('span');
+            link.className = linkClass;
+            link.contentEditable = 'false';
+            link.textContent = match[0];
+            link.addEventListener('click', () => {
+                panel.scrollTop += target.getBoundingClientRect().top - panel.getBoundingClientRect().top;
+            });
+            fragment.append(node.data.slice(offset, match.index), link);
+            offset = match.index + match[0].length;
+        });
+        fragment.append(node.data.slice(offset));
+        node.replaceWith(fragment);
+    });
+}
+
+function autoLinkClauses(target = null) {
     const div = document.getElementById('panelMain');
     if (!div) return;
-    const textDivs = div.querySelectorAll('.clause-text');
+    const textDivs = target ? [target] : div.querySelectorAll('.clause-text');
+    const contractKeys = Object.keys(contracts);
+    const visibleKeys = contractKeys.filter(isContractVisible);
+    const hiddenPrefixes = contractKeys.filter(key => !isContractVisible(key)).map(key =>
+        key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    const gccKey = contractKeys.find(key => key === 'GCC' || contracts[key].title?.toLowerCase().includes('general conditions'));
+    if (gccKey && !isContractVisible(gccKey)) hiddenPrefixes.push('General\\s+Conditions\\s+of\\s+Contract');
+    const hiddenReference = hiddenPrefixes.length
+        ? new RegExp('(?:^|[^\\p{L}\\p{N}_])(?:' + hiddenPrefixes.join('|') + ')\\s+$', 'iu') : null;
     textDivs.forEach(textDiv => {
+        const sourceId = textDiv.parentElement.id.slice('clause-'.length);
         let html = textDiv.innerHTML;
         // 动态为每种已导入合同类型生成跨合同链接
-        Object.keys(contracts).forEach(contractKey => {
+        visibleKeys.forEach(contractKey => {
             if (contractKey !== activeContractKey) {
                 // 匹配 "ContractKey Clause X" 格式
                 const regex = new RegExp(contractKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s+[Cc]lause\\s+(\\d+[A-Za-z]?)', 'gi');
@@ -909,11 +1037,7 @@ function autoLinkClauses() {
         });
         // 专用：匹配 "General Conditions of Contract Clause N" 并链接到 GCC 合同对应条款
         // 动态查找 GCC 合同键（键名为 "GCC"，或标题包含 "General Conditions"）
-        const gccKey = Object.keys(contracts).find(k =>
-            k === 'GCC' ||
-            (contracts[k].title && contracts[k].title.toLowerCase().includes('general conditions'))
-        );
-        if (gccKey && gccKey !== activeContractKey) {
+        if (isContractVisible(gccKey) && gccKey !== activeContractKey) {
             const gccRegex = /General\s+Conditions\s+of\s+Contract\s+Clause\s+(\d+)/gi;
             html = html.replace(gccRegex, (match, num) => {
                 if (contracts[gccKey].data[num]) {
@@ -923,12 +1047,15 @@ function autoLinkClauses() {
             });
         }
         // 通用 Clause X 链接（当前合同）
-        html = html.replace(/Clause\s+(\d+[A-Za-z]?)/gi, (match, num) => {
+        html = html.replace(getClauseReferencePattern(sourceId, true), (match, num, offset) => {
+            if (num.includes('.')) return match;
+            if (hiddenReference?.test(html.slice(0, offset))) return match;
             if (html.includes('onclick=\"showCrossContractRef')) return match;
             if (fullClauseDatabase[num]) return "<span class=\"clause-ref\" contenteditable=\"false\" onclick=\"showRef('" + num + "')\">" + match + "</span>";
             return match;
         });
         textDiv.innerHTML = html;
+        linkScheduleItems(textDiv, sourceId, 'clause-ref');
     });
 }
 
@@ -971,8 +1098,11 @@ function updateNavButtons() {
     if (btnPrev) btnPrev.disabled = (idx <= 0);
     if (btnNext) btnNext.disabled = (idx === -1 || idx >= keys.length - 1);
 }
-function processRefLinks(text) {
-    return text.replace(/Clause\s+(\d+)/gi, (match, num) => { if (fullClauseDatabase[num]) return "<span class=\"ref-internal-link\" onclick=\"navigateToRefInternal('" + num + "')\">" + match + "</span>"; return match; });
+function processRefLinks(text, sourceId) {
+    return text.replace(getClauseReferencePattern(sourceId), (match, num) => {
+        if (!num.includes('.') && fullClauseDatabase[num]) return "<span class=\"ref-internal-link\" onclick=\"navigateToRefInternal('" + num + "')\">" + match + "</span>";
+        return match;
+    });
 }
 function renderRefContent(id, mode) {
     currentRefId = id; currentRefMode = mode; updateNavButtons();
@@ -987,7 +1117,8 @@ function renderRefContent(id, mode) {
     if (mode === 'ref') {
         header.classList.add('mode-ref');
         title.innerText = "Referenced: " + dbEntry.title;
-        content.innerHTML = "<div class=\"ref-card-body\"><div style=\"line-height:1.6;\">" + processRefLinks(sanitizeHtml(dbEntry.content)) + "</div>" + getReverseRefHTML(id) + "</div>";
+        content.innerHTML = "<div class=\"ref-card-body\"><div style=\"line-height:1.6;\">" + processRefLinks(sanitizeHtml(dbEntry.content), id) + "</div>" + getReverseRefHTML(id) + "</div>";
+        linkScheduleItems(content.querySelector('.ref-card-body > div'), id, 'ref-internal-link');
     } else {
         header.classList.add('mode-trans');
         const transText = isTraditionalChinese ? (dbEntry.translation_tc || dbEntry.translation) : dbEntry.translation;
@@ -1002,6 +1133,7 @@ function renderRefContent(id, mode) {
 // 11. 跨合同引用（通用版）
 // =======================================================
 function showCrossContractRef(contractKey, clauseId) {
+    if (!isContractVisible(contractKey)) return;
     isViewingCrossContractRef = true;
     crossRefContractKey = contractKey;
     openSidePanel();
@@ -1011,10 +1143,10 @@ function showCrossContractRef(contractKey, clauseId) {
 }
 
 function renderCrossContractRefContent(contractKey, id, mode) {
+    if (!isContractVisible(contractKey)) return;
     currentRefId = id; currentRefMode = mode; updateNavButtons();
     saveReferenceLanguagePreference();
-    const data = contracts[contractKey] ? contracts[contractKey].data : null;
-    const dbEntry = data ? data[id] : null;
+    const dbEntry = contracts[contractKey].data[id];
     if (!dbEntry) return;
     const header = document.getElementById('refFixedHeader');
     const title = document.getElementById('refFixedTitle');
@@ -1023,7 +1155,8 @@ function renderCrossContractRefContent(contractKey, id, mode) {
     if (mode === 'ref') {
         header.classList.add('mode-ref');
         title.innerText = contractKey + " Referenced: " + dbEntry.title;
-        content.innerHTML = "<div class=\"ref-card-body\"><div style=\"line-height:1.6;\">" + processRefLinks(sanitizeHtml(dbEntry.content)) + "</div></div>";
+        content.innerHTML = "<div class=\"ref-card-body\"><div style=\"line-height:1.6;\">" + processRefLinks(sanitizeHtml(dbEntry.content), id) + "</div></div>";
+        linkScheduleItems(content.querySelector('.ref-card-body > div'), id, 'ref-internal-link');
     } else {
         header.classList.add('mode-trans');
         const transText = isTraditionalChinese ? (dbEntry.translation_tc || dbEntry.translation) : dbEntry.translation;
@@ -1176,20 +1309,7 @@ function scrollToClause(id, el) {
 // 12. 浮动工具栏
 // =======================================================
 function checkSelection() {
-    if (!activeContractKey || isAssistantMode || document.getElementById('tab-Welcome')?.classList.contains('active')) {
-        return;
-    }
-
-    const tb = document.getElementById('floatingToolbar');
-    const sel = window.getSelection();
-    if (!sel.rangeCount || sel.toString().trim() === '') return;
-    const rect = sel.getRangeAt(0).getBoundingClientRect();
-    tb.style.display = 'flex';
-    tb.style.top = (rect.top - 50 + window.scrollY) + 'px';
-    const mainRect = document.getElementById('panelMain').getBoundingClientRect();
-    let l = rect.left + (rect.width / 2) - (tb.offsetWidth / 2);
-    if (l < mainRect.left) l = mainRect.left;
-    tb.style.left = l + 'px';
+    window.SelectionTools?.show();
 }
 function toggleDropdown(id, btn) {
     const menu = document.getElementById(id);
@@ -1206,19 +1326,6 @@ function toggleDropdown(id, btn) {
         }
     } else { menu.classList.toggle('show'); btn.classList.toggle('active'); }
 }
-function applyFormat(cmd, val = null) {
-    document.execCommand(cmd, false, val);
-    if (typeof handleEditorMutation === 'function') handleEditorMutation();
-    document.querySelectorAll('.color-dropdown').forEach(d => d.classList.remove('show'));
-    document.querySelectorAll('.toolbar-btn').forEach(b => b.classList.remove('active'));
-}
-document.addEventListener('mousedown', e => {
-    const tb = document.getElementById('floatingToolbar');
-    if (tb && !tb.contains(e.target)) setTimeout(() => {
-        if (window.getSelection().toString().trim() === '') { tb.style.display = 'none'; document.querySelectorAll('.color-dropdown').forEach(d => d.classList.remove('show')); }
-    }, 100);
-});
-
 // 备注系统、编辑模式、剪切板事件（已迁移至 editor.js）
 
 // =======================================================

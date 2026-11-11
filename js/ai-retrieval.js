@@ -220,14 +220,15 @@
     async function retrieve(query, data, config, options = {}) {
         if (options.signal?.aborted) throw new DOMException('已停止生成', 'AbortError');
         const started = Date.now();
-        const rawData = data || {};
+        const rawData = root.RetrievalSettings?.getVisibleContracts(data) || data || {};
         const retrievalSettings = options.retrievalSettings && root.RetrievalSettings
             ? root.RetrievalSettings.normalize(options.retrievalSettings, rawData)
             : (root.RetrievalSettings?.get(rawData) || null);
         const enabledData = root.RetrievalSettings?.getEnabledContracts(rawData, retrievalSettings) || rawData;
         const limits = root.RetrievalSettings?.getLimits(retrievalSettings, rawData) || DEFAULTS;
         const all = rows(enabledData), lookup = new Map(all.map(row => [stableIdentity(row), row]));
-        const prepared = standalone(query, options.history, rawData);
+        // 识别用户明确写出的隐藏来源，防止把其中的条款号误作其他合同的条款号。
+        const prepared = standalone(query, options.history, data || {});
         const scopeSummary = root.RetrievalSettings?.summary(rawData, retrievalSettings) || {
             total: Object.keys(rawData).length, enabled: Object.keys(enabledData).length, unconfigured: 0, relations: 0, labels: Object.keys(enabledData)
         };
@@ -235,7 +236,7 @@
             corpus: { clauses: all.length, lexicalCandidates: 0, semanticCandidates: 0 }, scope: scopeSummary, sourceRules: [], authorityRelations: [],
             conflictPolicy: retrievalSettings?.conflictPolicy || 'evidence-first' };
         const sourceEntries = root.RetrievalSettings?.sourceEntries(rawData) || Object.entries(rawData).map(([key, contract]) => ({ key, label: key, sourceId: contract.sourceId || key }));
-        const disabledRefs = prepared.refs.filter(ref => ref.type && !enabledData[ref.type]);
+        const disabledRefs = prepared.refs.filter(ref => ref.type && rawData[ref.type] && !enabledData[ref.type]);
         for (const ref of disabledRefs) diagnostic.warnings.push(`来源“${ref.type}”未加入当前检索范围，未检索其 Clause ${ref.id}`);
         diagnostic.sourceRules = sourceEntries.filter(entry => enabledData[entry.key]).map(entry => {
             const source = retrievalSettings?.sources?.[entry.sourceId] || {};

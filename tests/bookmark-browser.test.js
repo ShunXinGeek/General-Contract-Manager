@@ -83,6 +83,7 @@ async function clickAndMeasure(page, name, paragraph) {
 
         await page.reload();
         await page.evaluate(() => window.contractAppReady);
+        await page.locator('#contract-tabs [data-key="BOOKMARK_TEST"]').click();
         assert.strictEqual(await page.evaluate(() => savedBookmarks.find(b => b.label === 'TARGET_ONE')?.anchor.kind), 'text');
         const [download] = await Promise.all([page.waitForEvent('download'), page.evaluate(() => exportData())]);
         const snapshot = JSON.parse(fs.readFileSync(await download.path(), 'utf8'));

@@ -83,9 +83,10 @@ async function run() {
     const ref = key => ({ key, collection: name => ({ doc: id => ref(`${key}/${name}/${id}`) }) });
     app.testMainRef = ref('user');
     app.largeData = { data: { '1': { content: 'x'.repeat(300000), originalContent: 'o'.repeat(300000) },
-        '2': { content: 'y'.repeat(300000), originalContent: 'p'.repeat(300000) } } };
+        '2': { content: 'y'.repeat(300000), originalContent: 'p'.repeat(300000) } }, visibility: { hidden: true, modifiedAt: 50 } };
     evaluate(app, `writeContractDataWithBatching(testMainRef, 'LARGE', largeData, 'test-time', testBatch)`);
     assert.strictEqual(batchWrites[0].data.batch_count, 2);
+    assert.deepStrictEqual(batchWrites[0].data.visibility, app.largeData.visibility, 'batch metadata retains contract visibility');
     assert.strictEqual(batchWrites[1].data.data['1'].originalContent.length, 300000, 'batch writes retain baseline');
     assert.strictEqual(batchWrites[2].data.data['2'].originalContent.length, 300000);
     const newDevice = createAppContext();
@@ -99,6 +100,27 @@ async function run() {
     assert.strictEqual(evaluate(newDevice, `fullClauseDatabase['1'].content`), 'original');
     assert.strictEqual(evaluate(newDevice, `checkClauseModified('1')`), false);
     assert.ok(evaluate(newDevice, `fullClauseDatabase['1'].modifiedAt`) > 10, 'revert must synchronize as a newer edit');
+
+    const displaySettings = createAppContext();
+    displaySettings.snapshot = {
+        active_contract_key: 'TEST',
+        contract_data: {
+            TEST: { ...cloudContract.TEST, visibility: { hidden: true, modifiedAt: 50 } },
+            OTHER: { title: 'Other', sourceId: 'other', data: { '1': { content: 'other' } } }
+        },
+        contract_order: { sourceIds: ['other', originalSourceId], modifiedAt: 25 }
+    };
+    await evaluate(displaySettings, 'applyCloudDataToLocal(snapshot)');
+    assert.deepStrictEqual(json(displaySettings, 'getOrderedContractKeys()'), ['OTHER', 'TEST']);
+    assert.deepStrictEqual(json(displaySettings, 'getOrderedContractKeys({ visibleOnly: true })'), ['OTHER']);
+    assert.strictEqual(evaluate(displaySettings, 'activeContractKey'), null, 'a hidden active contract restores to the welcome page');
+    assert.deepStrictEqual(json(displaySettings, 'collectAllContractData().TEST.visibility'), { hidden: true, modifiedAt: 50 });
+    evaluate(displaySettings, `registerContract('TEST', 'Reimported', { '1': { title: 'One', content: 'updated' } });`);
+    assert.strictEqual(evaluate(displaySettings, `isContractVisible('TEST')`), false, 'reimport must preserve visibility');
+    evaluate(displaySettings, `hydrateMissingCloudContracts({ contract_data: { TEST: { visibility: { hidden: false, modifiedAt: 49 } } } });`);
+    assert.strictEqual(evaluate(displaySettings, `isContractVisible('TEST')`), false, 'an older visibility change must be ignored');
+    evaluate(displaySettings, `hydrateMissingCloudContracts({ contract_data: { TEST: { visibility: { hidden: false, modifiedAt: 51 } } } });`);
+    assert.deepStrictEqual(json(displaySettings, 'getOrderedContractKeys({ visibleOnly: true })'), ['OTHER', 'TEST']);
 
     const legacyDatabase = new Map([['general_contract_db', JSON.stringify({ OLD: {
         title: 'Old', data: { '1': { title: 'One', content: 'only surviving text' } }, bookmarks: []

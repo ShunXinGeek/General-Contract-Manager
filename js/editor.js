@@ -33,30 +33,39 @@ function isCapturedNoteSelectionValid(snapshot) {
         getClauseTextForNode(range.endContainer) === clauseText;
 }
 
-async function addOrEditNote() {
-    const sel = window.getSelection();
-    if (!sel.rangeCount) return;
-    const node = sel.anchorNode?.nodeType === 3 ? sel.anchorNode.parentElement : sel.anchorNode;
-    const noteSpan = node?.closest?.('.note-span');
+function getNoteInSelection(snapshot) {
+    if (!isCapturedNoteSelectionValid(snapshot)) return null;
+    const { range, clauseText } = snapshot;
+    const notes = [...(clauseText.querySelectorAll?.('.note-span') || [])].filter(note => range.intersectsNode(note));
+    return notes.length === 1 ? notes[0] : null;
+}
+
+function deleteNote(noteSpan) {
+    if (!noteSpan?.isConnected) return;
+    const clauseText = noteSpan.closest('.clause-text');
+    noteSpan.replaceWith(...noteSpan.childNodes);
+    clauseText.normalize();
+    handleEditorMutation(clauseText);
+}
+
+async function addOrEditNote(snapshot = captureNoteSelection()) {
+    if (!snapshot) {
+        showError('请选择同一条款中的连续文本后再添加备注。');
+        return;
+    }
+    const noteSpan = getNoteInSelection(snapshot);
 
     if (noteSpan) {
         const oldText = noteSpan.getAttribute('data-note');
         const newText = await CustomDialog.prompt('编辑备注:', oldText);
-        if (newText === null) return;
+        if (newText === null || !noteSpan.isConnected) return;
         if (newText.trim() === '') {
-            const text = document.createTextNode(noteSpan.innerText);
-            noteSpan.parentNode.replaceChild(text, noteSpan);
+            deleteNote(noteSpan);
         } else {
             noteSpan.setAttribute('data-note', newText);
+            handleEditorMutation(noteSpan);
         }
-        handleEditorMutation(noteSpan);
     } else {
-        // CustomDialog.prompt 会把焦点移到输入框；必须在 await 前冻结正文选区。
-        const snapshot = captureNoteSelection();
-        if (!snapshot) {
-            showError('请选择同一条款中的连续文本后再添加备注。');
-            return;
-        }
         const newText = await CustomDialog.prompt('添加备注:', '');
         if (!newText || newText.trim() === '') return;
         if (!isCapturedNoteSelectionValid(snapshot)) {
@@ -69,7 +78,7 @@ async function addOrEditNote() {
         span.setAttribute('data-note', newText);
         try {
             snapshot.range.surroundContents(span);
-            sel.removeAllRanges();
+            window.getSelection().removeAllRanges();
             handleEditorMutation(span);
         } catch (e) {
             console.warn('备注添加失败:', e);
@@ -137,22 +146,26 @@ document.addEventListener('paste', function (e) {
 // =======================================================
 function getPersistableClauseContent(element) {
     const clone = element.cloneNode(true);
+    clone.querySelectorAll('.search-highlight').forEach(mark => mark.replaceWith(...mark.childNodes));
     clone.querySelectorAll('.clause-ref').forEach(link => {
         link.replaceWith(document.createTextNode(link.textContent));
     });
     return clone.innerHTML;
 }
 
-function captureCurrentContent() {
+function captureCurrentContent({ target = null, recordHistory = false, group = '' } = {}) {
     const now = Date.now();
     let changed = false;
-    document.querySelectorAll('.clause-text').forEach(d => {
+    const bodies = target ? [target] : document.querySelectorAll('.clause-text');
+    bodies.forEach(d => {
         const id = d.parentElement.id.replace('clause-', '');
         if (fullClauseDatabase[id]) {
             const newContent = getPersistableClauseContent(d);
             if (fullClauseDatabase[id].content !== newContent) {
-                fullClauseDatabase[id].content = newContent;
-                fullClauseDatabase[id].modifiedAt = now;
+                const clause = fullClauseDatabase[id];
+                if (recordHistory) recordClauseEdit(id, clause, newContent, clause.reviewTags, group);
+                clause.content = newContent;
+                clause.modifiedAt = Math.max(now, (clause.modifiedAt || 0) + 1);
                 updateModifiedBadge(id);
                 changed = true;
             }
@@ -193,6 +206,7 @@ function extractUserModifications(contractKey) {
         if (clause && clause.content && hasUserModifications(clause.content, clause, contractKey, id)) {
             if (!clause.modifiedAt) clause.modifiedAt = Date.now();
             modifications[id] = { content: clause.content, modifiedAt: clause.modifiedAt };
+            if (Array.isArray(clause.reviewTags)) modifications[id].reviewTags = clause.reviewTags;
         }
     });
     return modifications;
@@ -250,7 +264,14 @@ function handleFileSelect(event) {
                         Object.keys(snapshot.modifications).forEach(key => {
                             if (contracts[key]) {
                                 Object.keys(snapshot.modifications[key]).forEach(id => {
-                                    if (contracts[key].data[id]) contracts[key].data[id].content = snapshot.modifications[key][id].content;
+                                    const clause = contracts[key].data[id];
+                                    if (!clause) return;
+                                    const modification = snapshot.modifications[key][id];
+                                    clause.content = modification.content;
+                                    if (Array.isArray(modification.reviewTags)) {
+                                        clause.reviewTags = modification.reviewTags;
+                                        clause.modifiedAt = Date.now();
+                                    }
                                 });
                             }
                         });
@@ -285,10 +306,84 @@ function initAutoSave() {
 }
 
 let editPersistTimer = null;
+const clauseEditHistory = new WeakMap();
+
+function endTypingGroup() {
+    const last = clauseEditHistory.get(contracts[activeContractKey])?.at(-1);
+    if (last) last.group = '';
+}
+
+function recordClauseEdit(id, clause, nextContent, nextTags, group = '') {
+    const contract = contracts[activeContractKey];
+    const history = clauseEditHistory.get(contract) || [];
+    const last = history.at(-1);
+    const now = Date.now();
+    if (group && last?.group === group && last.clause === clause &&
+        last.nextContent === clause.content && last.nextTags === clause.reviewTags && now - last.time < 750) {
+        last.nextContent = nextContent;
+        last.time = now;
+    } else {
+        history.push({ id, clause, content: clause.content, tags: clause.reviewTags, nextContent, nextTags, group, time: now });
+        if (history.length > MAX_HISTORY_SIZE) history.shift();
+    }
+    clauseEditHistory.set(contract, history);
+}
+
+function updateClauseReviewTags(id, tags) {
+    const clause = fullClauseDatabase[id];
+    if (!clause || !activeContractKey) return;
+    recordClauseEdit(id, clause, clause.content, tags);
+    clause.reviewTags = tags;
+    clause.modifiedAt = Math.max(Date.now(), (clause.modifiedAt || 0) + 1);
+    updateLocalModificationTime();
+    scheduleEditorSave(true);
+}
+
+function sameClauseContent(left, right) {
+    if (left === right) return true;
+    // Rendering a restored clause can reorder attributes without changing the document.
+    const current = document.createElement('template');
+    const recorded = document.createElement('template');
+    current.innerHTML = sanitizeHtml(left);
+    recorded.innerHTML = sanitizeHtml(right);
+    return current.content.isEqualNode(recorded.content);
+}
+
+function undoClauseEdit() {
+    const history = clauseEditHistory.get(contracts[activeContractKey]);
+    const entry = history?.pop();
+    if (!entry) return;
+    endTypingGroup();
+    const { id, clause, content, tags, nextContent, nextTags } = entry;
+    if (fullClauseDatabase[id] !== clause || !sameClauseContent(clause.content, nextContent) ||
+        JSON.stringify(clause.reviewTags || []) !== JSON.stringify(nextTags || [])) {
+        history.length = 0;
+        showError('条款已被其他操作更新，无法安全撤销。');
+        return;
+    }
+    if (tags || nextTags) clause.reviewTags = tags || [];
+    clause.content = content;
+    clause.modifiedAt = Math.max(Date.now(), (clause.modifiedAt || 0) + 1);
+    if (content !== nextContent) {
+        const body = document.getElementById('clause-' + id)?.querySelector('.clause-text');
+        if (body) {
+            body.innerHTML = sanitizeHtml(content);
+            delete body.dataset.highlighted;
+            autoLinkClauses(body);
+            updateModifiedBadge(id);
+            buildReverseIndex();
+            if (currentSearchTerm) highlightInElement(body, currentSearchTerm);
+        }
+    }
+    window.SelectionTools?.afterUndo();
+    updateLocalModificationTime();
+    scheduleEditorSave(true);
+    showSuccess('已撤销上一次修改');
+}
 
 function markAsUnsaved() { hasUnsavedChanges = true; }
 
-function handleEditorMutation(target = null) {
+function handleEditorMutation(target = null, group = '') {
     if (!activeContractKey || !contracts[activeContractKey]) return;
 
     let clauseText = target?.closest?.('.clause-text') || null;
@@ -299,14 +394,32 @@ function handleEditorMutation(target = null) {
     }
     if (!clauseText) return;
 
-    captureCurrentContent();
+    if (!captureCurrentContent({ target: clauseText, recordHistory: true, group })) return;
+    scheduleEditorSave();
+}
+
+function scheduleEditorSave(immediate = false) {
     markAsUnsaved();
     clearTimeout(editPersistTimer);
-    editPersistTimer = setTimeout(() => autoSave(), 500);
+    if (immediate) autoSave();
+    else editPersistTimer = setTimeout(() => autoSave(), 500);
 }
 
 document.getElementById('panelMain')?.addEventListener('input', event => {
-    if (event.target.closest('.clause-text')) handleEditorMutation(event.target);
+    const group = ['insertText', 'insertCompositionText', 'deleteContentBackward', 'deleteContentForward'].includes(event.inputType)
+        ? event.inputType : '';
+    if (event.target.closest('.clause-text')) handleEditorMutation(event.target, group);
+});
+
+document.addEventListener('pointerdown', endTypingGroup);
+document.addEventListener('keydown', event => {
+    if (event.target.closest?.('.clause-text') && /^(?:Arrow|Home|End|Page)/.test(event.key)) endTypingGroup();
+    if (event.defaultPrevented || event.isComposing || !(event.ctrlKey || event.metaKey) || event.shiftKey ||
+        event.altKey || event.key.toLowerCase() !== 'z' || !activeContractKey || isAssistantMode) return;
+    const field = event.target.closest?.('input, textarea, select, [contenteditable="true"]');
+    if (field && !field.classList.contains('clause-text')) return;
+    event.preventDefault();
+    undoClauseEdit();
 });
 
 async function autoSave() {

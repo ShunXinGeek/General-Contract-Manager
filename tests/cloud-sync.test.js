@@ -60,25 +60,21 @@ function loadEditorContext() {
 
 function loadCloudContext() {
     const context = createBaseContext();
+    vm.runInContext(fs.readFileSync(path.join(root, 'js', 'app.js'), 'utf8'), context);
     vm.runInContext(`
-        let contracts = {};
-        let activeContractKey = null;
-        let fullClauseDatabase = {};
-        let savedBookmarks = null;
-        let currentThemeIndex = 0;
         let ORIGINAL_CONTRACTS = {};
-        function renderTabs() {}
-        function renderMainDocument() {}
+        renderTabs = function () {};
+        renderMainDocument = function () {};
         function initBookmarks() {}
-        function buildReverseIndex() {}
-        function switchContract(key) {
+        buildReverseIndex = function () {};
+        switchContract = function (key) {
             activeContractKey = key;
             fullClauseDatabase = contracts[key].data;
             savedBookmarks = contracts[key].bookmarks;
-        }
-        function showWelcomePage() { activeContractKey = null; }
-        function applyTheme() {}
-        function saveContractsToStorage() { return Promise.resolve(true); }
+        };
+        showWelcomePage = function () { activeContractKey = null; };
+        applyTheme = function () {};
+        saveContractsToStorage = function () { return Promise.resolve(true); };
         function captureCurrentContent() {}
         function extractAllUserModifications() { return {}; }
         function getAISettingsForCloud() { return null; }

@@ -95,19 +95,21 @@ function switchSettingsTab(tabName) {
     const tabAI = document.getElementById('tabAISettings');
     const tabRetrieval = document.getElementById('tabRetrievalSettings');
     const tabContract = document.getElementById('tabContractSettings');
+    const tabGeneral = document.getElementById('tabGeneralSettings');
     const contentAI = document.getElementById('aiSettingsContent');
     const contentRetrieval = document.getElementById('retrievalSettingsContent');
     const contentContract = document.getElementById('contractSettingsContent');
+    const contentGeneral = document.getElementById('generalSettingsContent');
 
     // Reset all tabs
-    [tabAI, tabRetrieval, tabContract].forEach(t => {
+    [tabAI, tabRetrieval, tabContract, tabGeneral].forEach(t => {
         if (!t) return;
         t.classList.remove('active');
         t.style.borderBottom = '3px solid transparent';
         t.style.color = '#666';
         t.style.fontWeight = 'normal';
     });
-    [contentAI, contentRetrieval, contentContract].forEach(c => { if (c) c.style.display = 'none'; });
+    [contentAI, contentRetrieval, contentContract, contentGeneral].forEach(c => { if (c) c.style.display = 'none'; });
 
     if (tabName === 'AI') {
         tabAI.classList.add('active');
@@ -129,12 +131,19 @@ function switchSettingsTab(tabName) {
         tabContract.style.fontWeight = 'bold';
         contentContract.style.display = 'block';
         renderContractManagementTab();
+    } else if (tabName === 'General') {
+        tabGeneral.classList.add('active');
+        tabGeneral.style.borderBottom = '3px solid #3498db';
+        tabGeneral.style.color = '#3498db';
+        tabGeneral.style.fontWeight = 'bold';
+        contentGeneral.style.display = 'block';
     }
 }
 
 function openSettings() {
     const modal = document.getElementById('settingsModal');
     modal.style.display = 'flex';
+    document.body.classList.add('settings-open');
     loadChatModels();
     renderModelCards();
     document.getElementById('settingEmbeddingEndpoint').value = AI_CONFIG.embeddingEndpoint || '';
@@ -149,6 +158,7 @@ function openSettings() {
 
     if (window.RetrievalSettings) window.RetrievalSettings.beginDraft(contracts);
     bindRetrievalSettingsEvents();
+    window.GeneralSettings?.loadForm();
 
     // Default to AI tab
     switchSettingsTab('AI');
@@ -164,6 +174,7 @@ function closeSettings(force = false) {
     if (!force && window.RetrievalSettings?.isDraftDirty(contracts) && !confirm('检索设置尚未保存，确定关闭吗？')) return;
     window.RetrievalSettings?.discardDraft();
     document.getElementById('settingsModal').style.display = 'none';
+    document.body.classList.remove('settings-open');
 }
 
 function toggleSettingsSection(section) {
@@ -212,6 +223,7 @@ async function saveAISettings() {
 
     // 非 AI 设置的保存不能把新设备默认 AI 配置标记为较新快照。
     if (JSON.stringify(getAISettingsForCloud()) !== previousAISettings) touchAISettings();
+    window.GeneralSettings?.saveForm();
     if (typeof saveContractsToStorage === 'function') await saveContractsToStorage();
     if (typeof checkRAGIndexStatus === 'function' && typeof isKnowledgeBaseMode !== 'undefined' && isKnowledgeBaseMode) {
         checkRAGIndexStatus();
@@ -263,7 +275,8 @@ function retrievalOption(value, text, selected) {
 }
 
 function retrievalEntries() {
-    return window.RetrievalSettings?.sourceEntries(contracts) || [];
+    const entries = new Map(window.RetrievalSettings.sourceEntries(contracts).map(entry => [entry.key, entry]));
+    return getOrderedContractKeys({ visibleOnly: true }).map(key => entries.get(key)).filter(Boolean);
 }
 
 function updateRetrievalSummary() {
@@ -284,7 +297,9 @@ function renderRetrievalSources() {
     if (!entries.length) {
         const empty = document.createElement('div');
         empty.className = 'retrieval-empty-state';
-        empty.textContent = '尚未导入任何来源。导入新的标签页后，它会自动出现在这里。';
+        empty.textContent = Object.keys(contracts).length
+            ? '当前没有可见合同。可在「合同管理」中恢复显示。'
+            : '尚未导入任何来源。导入新的标签页后，它会自动出现在这里。';
         container.appendChild(empty);
         return;
     }
@@ -378,7 +393,8 @@ function renderRetrievalRelations() {
     const list = document.getElementById('retrievalRelationList');
     if (!list) return;
     list.replaceChildren();
-    if (!draft.relations.length) {
+    const relations = draft.relations.filter(({ fromSourceId, toSourceId }) => byId.has(fromSourceId) && byId.has(toSourceId));
+    if (!relations.length) {
         const empty = document.createElement('div');
         empty.className = 'retrieval-empty-state';
         empty.textContent = '尚未配置来源关系。层级未设置时，系统不会自行推定高低。';
@@ -387,11 +403,11 @@ function renderRetrievalRelations() {
     }
 
     const labels = { higher: '高于', same: '同级', none: '无推定关系' };
-    draft.relations.forEach(relation => {
+    relations.forEach(relation => {
         const row = document.createElement('div');
         row.className = 'retrieval-relation-row';
         const text = document.createElement('span');
-        text.textContent = `${byId.get(relation.fromSourceId)?.label || '已删除来源'} ${labels[relation.type]} ${byId.get(relation.toSourceId)?.label || '已删除来源'}`;
+        text.textContent = `${byId.get(relation.fromSourceId).label} ${labels[relation.type]} ${byId.get(relation.toSourceId).label}`;
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.className = 'retrieval-remove-relation';
@@ -432,8 +448,10 @@ function addRetrievalRelation() {
         return;
     }
     const selected = allFrom ? to : from;
+    const available = retrievalEntries().map(entry => entry.sourceId);
+    if (!available.includes(selected) || !bulk && !available.includes(to)) return;
     const others = new Set(bulk
-        ? retrievalEntries().map(entry => entry.sourceId).filter(id => id !== selected)
+        ? available.filter(id => id !== selected)
         : [to]);
     if (!others.size) {
         if (error) error.textContent = '没有其他合同文件可设置关系。';
@@ -455,12 +473,21 @@ function addRetrievalRelation() {
     updateRetrievalSummary();
 }
 
+let retrievalPreviewController = null;
+
+function clearRetrievalPreview() {
+    retrievalPreviewController?.abort();
+    const output = document.getElementById('retrievalPreviewResult');
+    output?.replaceChildren();
+    output?.classList.remove('is-visible');
+}
+
 async function runRetrievalPreview() {
     const input = document.getElementById('retrievalPreviewQuery');
     const output = document.getElementById('retrievalPreviewResult');
     const button = document.getElementById('retrievalPreviewButton');
     const query = input?.value.trim();
-    if (!output || !button) return;
+    if (!output || !button || button.disabled) return;
     output.classList.add('is-visible');
     if (!query) {
         output.textContent = '请输入一个测试问题。';
@@ -468,11 +495,14 @@ async function runRetrievalPreview() {
         return;
     }
     button.disabled = true;
+    const controller = new AbortController();
+    retrievalPreviewController = controller;
     output.textContent = '正在检索当前范围…';
     try {
         const evidence = await AIRetrieval.retrieve(query, contracts, AI_CONFIG, {
-            retrievalSettings: window.RetrievalSettings.getDraft(contracts)
+            retrievalSettings: window.RetrievalSettings.getDraft(contracts), signal: controller.signal
         });
+        if (controller.signal.aborted) return;
         output.replaceChildren();
         const summary = document.createElement('div');
         summary.textContent = `检索范围：${evidence.diagnostic.scope.labels.join('、') || '无'}；命中 ${evidence.clauses.length} 条；用时 ${evidence.diagnostic.elapsedMs} ms。`;
@@ -491,8 +521,9 @@ async function runRetrievalPreview() {
             output.appendChild(note);
         }
     } catch (error) {
-        output.textContent = '预览失败：' + error.message;
+        if (!controller.signal.aborted) output.textContent = '预览失败：' + error.message;
     } finally {
+        retrievalPreviewController = null;
         button.disabled = false;
     }
 }
@@ -792,6 +823,13 @@ function isContractManagementVisible() {
         && document.getElementById('contractSettingsContent')?.style.display === 'block';
 }
 
+function refreshContractSettings() {
+    clearRetrievalPreview();
+    if (isContractManagementVisible()) renderContractManagementTab();
+    if (document.getElementById('settingsModal')?.style.display === 'flex'
+        && document.getElementById('retrievalSettingsContent')?.style.display === 'block') renderRetrievalSettingsTab();
+}
+
 async function refreshContractVectorStatus() {
     if (!isContractManagementVisible()) return;
     const request = ++contractVectorStatusRequest;
@@ -832,7 +870,8 @@ async function vectorizeContracts() {
     const config = { ...AI_CONFIG };
     let task;
     try {
-        const status = await RAG.getIndexStatus(config, contracts, { allContracts: true });
+        const visibleContracts = window.RetrievalSettings.getVisibleContracts(contracts);
+        const status = await RAG.getIndexStatus(config, visibleContracts, { allContracts: true });
         if (!status.corpus) {
             showStatus('warning', '没有可向量化的合同正文。', '📂', 6500);
             return;
@@ -846,7 +885,7 @@ async function vectorizeContracts() {
             return;
         }
         task = window.StatusCenter?.start('正在向量化合同…', '知识库');
-        const summary = await RAG.buildIndex(contracts, config, (current, total, detail) => {
+        const summary = await RAG.buildIndex(visibleContracts, config, (current, total, detail) => {
             task?.update(`正在向量化合同 ${current}/${total}：${detail}`, total ? current / total * 100 : null);
         }, { allContracts: true, onContractComplete: refreshContractVectorStatus });
         const completed = summary.count + summary.skipped;
@@ -867,9 +906,9 @@ function renderContractManagementTab() {
     const container = document.getElementById('contractManagementList');
     if (!container) return;
 
-    const entries = retrievalEntries();
+    const keys = getOrderedContractKeys();
 
-    if (entries.length === 0) {
+    if (keys.length === 0) {
         container.innerHTML = `
             <div style="text-align:center; padding:40px 20px; color:#999;">
                 <div style="font-size:40px; margin-bottom:12px;">📂</div>
@@ -881,8 +920,10 @@ function renderContractManagementTab() {
 
     const headerHtml = `
         <div class="cm-header-row">
+            <div></div>
             <div class="cm-cell cm-cell-label" style="font-weight:600; color:#555; font-size:12px; text-transform:uppercase; letter-spacing:0.05em;">标签名</div>
             <div class="cm-cell cm-cell-name" style="font-weight:600; color:#555; font-size:12px; text-transform:uppercase; letter-spacing:0.05em;">完整名称</div>
+            <div class="cm-cell cm-cell-visibility">可见</div>
             <div class="cm-cell cm-cell-action"></div>
             <div class="cm-cell cm-cell-count" style="font-weight:600; color:#555; font-size:12px; text-transform:uppercase; letter-spacing:0.05em; text-align:center;">条款数</div>
             <div class="cm-cell cm-cell-vector">
@@ -890,31 +931,47 @@ function renderContractManagementTab() {
             </div>
         </div>`;
 
-    const rowsHtml = entries.map(({ key, title, clauseCount }) => {
+    const rowsHtml = keys.map((key, index) => {
+        const { title, data } = contracts[key];
+        const visible = isContractVisible(key);
+        const keyText = escapeHtml(key);
+        const titleText = escapeHtml(title);
+        const keyAttribute = keyText.replace(/"/g, '&quot;');
+        const titleAttribute = titleText.replace(/"/g, '&quot;');
         return `
-            <div class="cm-row" data-key="${escapeHtml(key)}">
+            <div class="cm-row" data-key="${keyAttribute}">
+                <div class="cm-reorder">
+                    <span class="cm-drag-handle" draggable="true" title="拖动调整顺序" aria-hidden="true">⠿</span>
+                    <div class="cm-move-buttons">
+                        <button type="button" data-move="up" title="上移" aria-label="上移 ${keyAttribute}" ${index === 0 ? 'disabled' : ''}>↑</button>
+                        <button type="button" data-move="down" title="下移" aria-label="下移 ${keyAttribute}" ${index === keys.length - 1 ? 'disabled' : ''}>↓</button>
+                    </div>
+                </div>
                 <div class="cm-cell cm-cell-label">
                     <span class="cm-editable"
                         contenteditable="true"
                         spellcheck="false"
                         data-field="key"
-                        data-original="${escapeHtml(key)}"
+                        data-original="${keyAttribute}"
                         onblur="handleContractInlineEdit(this)"
                         onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}"
-                        title="点击编辑标签名">${escapeHtml(key)}</span>
+                        title="点击编辑标签名">${keyText}</span>
                 </div>
                 <div class="cm-cell cm-cell-name">
                     <span class="cm-editable"
                         contenteditable="true"
                         spellcheck="false"
                         data-field="title"
-                        data-original="${escapeHtml(title)}"
+                        data-original="${titleAttribute}"
                         onblur="handleContractInlineEdit(this)"
                         onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}"
-                        title="点击编辑完整名称">${escapeHtml(title)}</span>
+                        title="点击编辑完整名称">${titleText}</span>
+                </div>
+                <div class="cm-cell cm-cell-visibility">
+                    <button type="button" class="cm-visibility" role="switch" aria-label="${keyAttribute} 可见" aria-checked="${visible}">${visible ? '可见' : '不可见'}</button>
                 </div>
                 <div class="cm-cell cm-cell-action">
-                    <button class="cm-delete-btn" onclick="handleContractDeleteFromModal(decodeURIComponent('${encodeInlineArgument(key)}'))" title="删除合同 ${escapeHtml(key)}">
+                    <button class="cm-delete-btn" onclick="handleContractDeleteFromModal(decodeURIComponent('${encodeInlineArgument(key)}'))" title="删除合同 ${keyAttribute}">
                         <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
                             <polyline points="3 6 5 6 21 6"></polyline>
                             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -924,7 +981,7 @@ function renderContractManagementTab() {
                     </button>
                 </div>
                 <div class="cm-cell cm-cell-count">
-                    <span class="cm-clause-badge">${clauseCount}</span>
+                    <span class="cm-clause-badge">${Object.keys(data).length}</span>
                 </div>
                 <div class="cm-cell cm-cell-vector">
                     <span class="cm-vector-status" role="img" aria-label="正在检查向量状态" title="正在检查向量状态"></span>
@@ -934,14 +991,84 @@ function renderContractManagementTab() {
 
     container.innerHTML = `
         <div style="margin-bottom:12px; font-size:13px; color:#888; line-height:1.5;">
-            点击标签名或完整名称即可直接编辑，点击其他区域自动保存。
+            拖动手柄或使用箭头调整顺序。点击标签名或完整名称可直接编辑。
         </div>
         <div class="cm-table">
             ${headerHtml}
             <div class="cm-rows">${rowsHtml}</div>
         </div>`;
+    bindContractManagementRows(container.querySelector('.cm-rows'));
     updateContractVectorButton();
     refreshContractVectorStatus();
+}
+
+function bindContractManagementRows(rows) {
+    let draggedRow = null;
+    let dropRow = null;
+    let dropAfter = false;
+
+    function clearDropTarget() {
+        dropRow?.removeAttribute('data-drop');
+        dropRow = null;
+    }
+
+    rows.addEventListener('dragstart', event => {
+        if (!event.target.closest('.cm-drag-handle')) return;
+        draggedRow = event.target.closest('.cm-row');
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', draggedRow.dataset.key);
+        draggedRow.classList.add('cm-dragging');
+    });
+    rows.addEventListener('dragover', event => {
+        if (!draggedRow) return;
+        clearDropTarget();
+        const target = event.target.closest('.cm-row');
+        if (!target || target === draggedRow) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        const bounds = target.getBoundingClientRect();
+        dropRow = target;
+        dropAfter = event.clientY >= bounds.top + bounds.height / 2;
+        dropRow.dataset.drop = dropAfter ? 'after' : 'before';
+    });
+    rows.addEventListener('dragleave', event => {
+        if (!rows.contains(event.relatedTarget)) clearDropTarget();
+    });
+    rows.addEventListener('drop', event => {
+        if (!draggedRow || !dropRow) return;
+        event.preventDefault();
+        const moved = moveContract(draggedRow.dataset.key, dropRow.dataset.key, dropAfter);
+        clearDropTarget();
+        if (moved) renderContractManagementTab();
+    });
+    rows.addEventListener('dragend', () => {
+        clearDropTarget();
+        draggedRow?.classList.remove('cm-dragging');
+        draggedRow = null;
+    });
+
+    rows.addEventListener('click', async event => {
+        const button = event.target.closest('button');
+        const row = button?.closest('.cm-row');
+        if (!row) return;
+        const key = row.dataset.key;
+        if (button.matches('.cm-visibility')) {
+            const visible = !isContractVisible(key);
+            const saved = setContractVisibility(key, visible);
+            button.setAttribute('aria-checked', String(visible));
+            button.textContent = visible ? '可见' : '不可见';
+            if (await saved && visible === isContractVisible(key)) {
+                showSettingsStatus(`「${key}」已设为${visible ? '可见' : '不可见'}`, 'success');
+            }
+        } else if (button.dataset.move) {
+            const down = button.dataset.move === 'down';
+            const target = down ? row.nextElementSibling : row.previousElementSibling;
+            if (!target || !moveContract(key, target.dataset.key, down)) return;
+            renderContractManagementTab();
+            const movedRow = [...document.querySelectorAll('#contractManagementList .cm-row')].find(item => item.dataset.key === key);
+            (movedRow?.querySelector(`[data-move="${button.dataset.move}"]:enabled`) || movedRow?.querySelector('[data-move]:enabled'))?.focus();
+        }
+    });
 }
 
 function handleContractInlineEdit(el) {
@@ -981,6 +1108,10 @@ function handleContractInlineEdit(el) {
             delete ORIGINAL_CONTRACTS[originalKey];
         }
         row.dataset.key = newValue;
+        if (activeContractKey === originalKey) activeContractKey = newValue;
+        row.querySelector('.cm-visibility').setAttribute('aria-label', `${newValue} 可见`);
+        row.querySelector('[data-move="up"]').setAttribute('aria-label', `上移 ${newValue}`);
+        row.querySelector('[data-move="down"]').setAttribute('aria-label', `下移 ${newValue}`);
         el.dataset.original = newValue;
         // Update all editables in this row to use new key reference
         row.querySelectorAll('.cm-editable').forEach(e => {

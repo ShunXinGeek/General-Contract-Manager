@@ -65,7 +65,7 @@ function lookupCrossRef(gccNum) {
     const clauses = [];
 
     // 1. 添加 GCC 基准条款
-    const gccData = contracts['GCC']?.data;
+    const gccData = isContractVisible('GCC') ? contracts.GCC.data : null;
     if (gccData && gccData[key]) {
         clauses.push({
             type: 'GCC',
@@ -79,7 +79,7 @@ function lookupCrossRef(gccNum) {
     }
 
     // 2. 添加所有 SCC 修改条款
-    const sccData = contracts['SCC']?.data;
+    const sccData = isContractVisible('SCC') ? contracts.SCC.data : null;
     if (sccData && entry.sccClauses && entry.sccClauses.length > 0) {
         for (const sccRef of entry.sccClauses) {
             // 解析 SCC 引用格式: "SCC34", "SCC7(1)(b)", "SCC9系列"
@@ -133,7 +133,7 @@ function parseSCCRef(sccRef) {
  * 在 contracts['SCC'].data 中查找条款（支持多种键名格式）
  */
 function findSCCClause(sccId) {
-    const sccData = contracts['SCC']?.data;
+    const sccData = isContractVisible('SCC') ? contracts.SCC.data : null;
     if (!sccData) return null;
 
     // 尝试多种键名格式
@@ -294,7 +294,7 @@ function buildCrossRefPrompt(relevantClauses) {
     if (!relevantClauses || relevantClauses.length === 0) {
         // 回退到通用目录提示
         let allTitles = [];
-        Object.keys(contracts).forEach(type => {
+        getOrderedContractKeys({ visibleOnly: true }).forEach(type => {
             Object.entries(contracts[type].data).sort((a, b) => parseInt(a[0]) - parseInt(b[0])).forEach(([id, c]) => {
                 allTitles.push(type + ' Clause ' + id + ': ' + c.title);
             });

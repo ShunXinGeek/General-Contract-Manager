@@ -292,7 +292,11 @@ function clearSearchInput(clearBtn) {
     if (input) {
         input.value = '';
         input.focus();
-        clearBtn.classList.remove('visible');
-        filterNav('');
+        handleNavSearchInput(input);
     }
+}
+
+function handleNavSearchInput(input) {
+    toggleSearchClear(input);
+    if (!window.SelectionTools?.updateSearch(input.value)) filterNav(input.value);
 }

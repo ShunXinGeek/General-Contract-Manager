@@ -15,6 +15,7 @@ let lastRetrievalEvidence = null;
 let assistantReadOnly = false;
 function messageUid() { return globalThis.crypto?.randomUUID?.() || `message-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
 function switchToAssistant() {
+    window.SelectionTools?.leaveContract();
     isAssistantMode = true;
     if (typeof setSearchStatus === 'function') setSearchStatus('success', '就绪', '✓');
     document.querySelectorAll('.header-tab').forEach(btn => btn.classList.remove('active'));
@@ -27,7 +28,7 @@ function switchToAssistant() {
     document.getElementById('panelAssistant').style.display = 'flex';
     const navigatorButton = document.getElementById('btnToggleNavigator');
     if (navigatorButton) { navigatorButton.disabled = false; navigatorButton.title = '切换侧边栏'; navigatorButton.setAttribute('aria-label', '切换侧边栏'); }
-    if (!isStreaming) loadChatFromStorage();
+    if (!isStreaming) return loadChatFromStorage();
 }
 
 function switchBackToContract() {
@@ -44,6 +45,7 @@ function switchBackToContract() {
 (function () {
     const originalSwitchContract = switchContract;
     switchContract = function (key) {
+        if (!isContractVisible(key)) return;
         const returningToSameContract = isAssistantMode && activeContractKey === key;
         if (isAssistantMode) switchBackToContract();
         originalSwitchContract(key);
@@ -359,7 +361,7 @@ async function clearChat() {
     if (!isClear) return;
     chatMessages = []; hasContextBreak = false; contextBreakIndex = -1;
     await window.AssistantAttachments?.clearDraft?.(window.AssistantTopics?.getCurrentTopicId?.() || 'legacy');
-    const contractList = Object.keys(contracts).length > 0 ? '我可以帮您分析已导入的合同条款。' : '请先导入合同数据。';
+    const contractList = getOrderedContractKeys({ visibleOnly: true }).length > 0 ? '我可以帮您分析已导入的合同条款。' : '请先导入合同数据。';
     document.getElementById('chatMessages').innerHTML = '<div class="chat-welcome"><div class="welcome-icon">🤖</div><div class="welcome-title">合同管理助手</div><div class="welcome-text">' + contractList + '<br>您可以使用"引用条款"按钮快速引入条款内容。</div></div>';
     saveChatToStorage();
 }
@@ -404,7 +406,7 @@ function renderMarkdown(text) {
     if (typeof marked !== 'undefined') {
         marked.setOptions({ breaks: true, gfm: true, headerIds: false, mangle: false });
         let html = marked.parse(text);
-        Object.keys(contracts).forEach(contractKey => {
+        getOrderedContractKeys({ visibleOnly: true }).forEach(contractKey => {
             const escapedContractKey = contractKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             const safeContractKey = escapeHtml(contractKey);
             // 第一轮：匹配“当前来源名 Clause X”格式。
@@ -448,14 +450,14 @@ function renderMarkdown(text) {
 
 document.addEventListener?.('click', event => {
     const link = event.target.closest?.('.chat-clause-link');
-    if (!link) return;
+    if (!link || link.getAttribute('aria-disabled') === 'true') return;
     const clauseId = link.dataset.clauseId;
     if (link.dataset.contractKey) jumpToContractClause(link.dataset.contractKey, clauseId);
     else jumpToClause(clauseId);
 });
 
 function jumpToContractClause(contractKey, clauseId) {
-    if (!contracts[contractKey]) return;
+    if (!isContractVisible(contractKey)) return;
     // 规范化条款号：依次尝试多种键名格式
     // 支持纯条款号和已带当前来源前缀的条款键。
     const cleanId = (clauseId || '').trim();
@@ -476,12 +478,13 @@ function jumpToContractClause(contractKey, clauseId) {
 }
 
 function jumpToClause(clauseId) {
+    const keys = getOrderedContractKeys({ visibleOnly: true });
     if (isAssistantMode) {
-        for (const key of Object.keys(contracts)) { if (contracts[key].data[clauseId]) { showAssistantClause(key, clauseId); return; } }
+        for (const key of keys) { if (contracts[key].data[clauseId]) { showAssistantClause(key, clauseId); return; } }
         return;
     }
     switchBackToContract();
-    for (const key of Object.keys(contracts)) {
+    for (const key of keys) {
         if (contracts[key].data[clauseId]) {
             switchContract(key); setTimeout(() => { document.getElementById('clause-' + clauseId)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 100); return;
         }
@@ -494,7 +497,7 @@ function jumpToClause(clauseId) {
 function openClauseSelector() {
     const modal = document.createElement('div'); modal.className = 'modal-overlay'; modal.id = 'clauseSelectorModal'; modal.style.display = 'flex';
     let columnsHtml = '';
-    const keys = Object.keys(contracts);
+    const keys = getOrderedContractKeys({ visibleOnly: true });
     keys.forEach(contractKey => {
         const encodedContractKey = encodeInlineArgument(contractKey);
         const listId = `clauseList-${getContractDomId(contractKey)}`;
@@ -505,13 +508,14 @@ function openClauseSelector() {
         });
         columnsHtml += '<div style="flex:1; display:flex; flex-direction:column; min-width:0;"><div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;"><h4 style="margin:0; color:var(--highlight-color); white-space:nowrap;">' + escapeHtml(contractKey) + ' 条款</h4><div class="clause-search-wrapper"><input type="text" class="clause-search-input" placeholder="搜索..." autocomplete="new-password" oninput="filterClauses(this, decodeURIComponent(\'' + encodedContractKey + '\'))"><span class="clause-search-clear" onclick="clearClauseSearch(this, decodeURIComponent(\'' + encodedContractKey + '\'))">✕</span></div></div><div id="' + listId + '" style="flex:1; overflow-y:auto; max-height:400px; border:1px solid var(--border-color); border-radius:4px;">' + list + '</div></div>';
     });
-    modal.innerHTML = '<div class="modal-content" style="max-width:' + Math.min(750, keys.length * 350) + 'px; height:auto; max-height:80%;"><div class="modal-header"><span style="font-size:16px; font-weight:bold;">📋 选择条款引用</span><span class="close-modal" onclick="closeClauseSelector()">✕</span></div><div class="modal-body" style="padding:15px; display:flex; gap:15px;">' + columnsHtml + '</div></div>';
+    modal.innerHTML = '<div class="modal-content" style="max-width:' + Math.min(750, Math.max(1, keys.length) * 350) + 'px; height:auto; max-height:80%;"><div class="modal-header"><span style="font-size:16px; font-weight:bold;">📋 选择条款引用</span><span class="close-modal" onclick="closeClauseSelector()">✕</span></div><div class="modal-body" style="padding:15px; display:flex; gap:15px;">' + (columnsHtml || '当前没有可引用的合同条款。') + '</div></div>';
     document.body.appendChild(modal);
 }
 
 function closeClauseSelector() { const modal = document.getElementById('clauseSelectorModal'); if (modal) modal.remove(); }
 
 function insertClause(contractType, clauseId) {
+    if (!isContractVisible(contractType)) return;
     const clause = contracts[contractType].data[clauseId]; if (!clause) return;
     const input = document.getElementById('chatInput');
     input.value = '请帮我分析这个条款：\n\n【' + contractType + ' ' + clause.title + '】\n\n' + clause.content.replace(/<[^>]*>/g, '') + '\n\n';
@@ -555,6 +559,7 @@ function initAssistantResizer() {
 }
 
 function showAssistantClause(type, clauseId, preserveScroll) {
+    if (!isContractVisible(type)) return;
     const clause = contracts[type]?.data[clauseId]; if (!clause) return;
     assistantRefClauseType = type; assistantRefClauseId = clauseId;
     if (!isAssistantRefVisible) toggleAssistantRef();
@@ -580,6 +585,22 @@ function showAssistantClause(type, clauseId, preserveScroll) {
         html += '</div>';
     }
     content.innerHTML = html; if (!preserveScroll) content.scrollTop = 0;
+}
+
+function refreshAssistantContractVisibility() {
+    if (document.getElementById('clauseSelectorModal')) {
+        closeClauseSelector();
+        openClauseSelector();
+    }
+    document.querySelectorAll('.chat-clause-link[data-contract-key]').forEach(link => {
+        link.setAttribute('aria-disabled', String(!isContractVisible(link.dataset.contractKey)));
+    });
+    if (!assistantRefClauseType || isContractVisible(assistantRefClauseType)) return;
+    assistantRefClauseType = null;
+    assistantRefClauseId = null;
+    document.getElementById('assistantRefContent')?.replaceChildren();
+    const header = document.getElementById('assistantRefFixedHeader');
+    if (header) header.style.display = 'none';
 }
 
 function toggleAssistantRefLangMode() {
@@ -641,14 +662,15 @@ const keywordTranslation = {
 };
 
 function extractKeywords(query) {
+    const keys = getOrderedContractKeys({ visibleOnly: true });
     const clausePatterns = [/clause\s*(\d+)/gi, /第\s*(\d+)\s*条/gi, /条款\s*(\d+)/gi];
     const clauseNumbers = []; clausePatterns.forEach(p => { let m; while ((m = p.exec(query)) !== null) clauseNumbers.push(m[1]); });
-    Object.keys(contracts).forEach(key => { const regex = new RegExp(key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*(\\d+)', 'gi'); let m; while ((m = regex.exec(query)) !== null) clauseNumbers.push(m[1]); });
+    keys.forEach(key => { const regex = new RegExp(key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*(\\d+)', 'gi'); let m; while ((m = regex.exec(query)) !== null) clauseNumbers.push(m[1]); });
     let translatedKeywords = [];
     for (const [cn, en] of Object.entries(keywordTranslation)) { if (query.includes(cn)) translatedKeywords.push(...en.toLowerCase().split(' ')); }
     const stopWords = ['the', 'a', 'an', 'is', 'are', 'to', 'of', 'in', 'for', 'on', 'and', 'but', 'or', 'not', 'what', 'which', 'how', 'why', '的', '是', '在', '有', '和', '与', '或', '了', '什么', '怎么', '请', '我', '你'];
     const words = query.toLowerCase().replace(/[^\w\s\u4e00-\u9fff]/g, ' ').split(/\s+/).filter(w => w.length > 1 && !stopWords.includes(w));
-    Object.keys(contracts).forEach(key => { const idx = words.indexOf(key.toLowerCase()); if (idx !== -1) words.splice(idx, 1); });
+    keys.forEach(key => { const idx = words.indexOf(key.toLowerCase()); if (idx !== -1) words.splice(idx, 1); });
 
     return { clauseNumbers: [...new Set(clauseNumbers)], keywords: [...new Set([...translatedKeywords, ...words])] };
 }

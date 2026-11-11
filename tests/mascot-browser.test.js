@@ -195,7 +195,7 @@ const server = http.createServer((request, response) => {
             await page.setViewportSize({ width, height: 800 });
             const box = await bubble.boundingBox();
             assert(box.x >= 0 && box.x + box.width <= width);
-            const bottom = await page.locator('header').evaluate(el => el.getBoundingClientRect().bottom);
+            const bottom = await page.locator('body > header').evaluate(el => el.getBoundingClientRect().bottom);
             assert(box.y >= bottom, 'bubble must not cover header buttons or tabs');
         }
         await page.setViewportSize({ width: 375, height: 800 });
@@ -203,8 +203,55 @@ const server = http.createServer((request, response) => {
         await page.setViewportSize({ width: 800, height: 375 });
         const landscape = await bubble.boundingBox();
         assert(landscape.y + landscape.height <= 375);
+
+        // The settings dropdown changes only automatic popups. Each mode keeps history and unread counts.
+        await page.setViewportSize({ width: 1280, height: 800 });
+        await clear();
+        const unread = page.locator('#statusUnread');
+        const modeSelect = page.getByRole('combobox', { name: '通知形式' });
+        const openGeneralSettings = async () => {
+            await page.getByTitle('AI 设置', { exact: true }).click();
+            await page.getByRole('button', { name: '通用设置', exact: true }).click();
+        };
+        let previousMode = 'all';
+        for (const [mode, allowed] of [
+            ['silent', []], ['all', ['info', 'success', 'warning', 'error']], ['normal', ['warning', 'error']]
+        ]) {
+            await openGeneralSettings();
+            assert.strictEqual(await modeSelect.inputValue(), previousMode);
+            await modeSelect.selectOption(mode);
+            await page.getByRole('button', { name: '保存设置' }).click();
+            await page.locator('#settingsModal').waitFor({ state: 'hidden' });
+            await clear();
+            const messages = { info: '有可用更新', success: '同步完成', warning: '网络异常', error: '导入失败' };
+            for (const [type, message] of Object.entries(messages)) {
+                await page.evaluate(({ type, message }) => StatusCenter.post(type, message, { duration: 0 }), { type, message });
+                assert.strictEqual(await bubble.isVisible(), allowed.includes(type), `${mode} notification for ${type}`);
+                assert(await unread.isVisible(), `${mode} must show an unread dot for ${type}`);
+                if (allowed.includes(type)) {
+                    assert.strictEqual(await page.locator('#statusText').innerText(), message);
+                    await page.locator('#statusBubbleClose').click();
+                }
+            }
+            assert.match(await mascot.getAttribute('aria-label'), /4 条未读消息/);
+            await mascot.click();
+            assert.deepStrictEqual(await page.locator('.status-record-title').allTextContents(), Object.values(messages).reverse());
+            assert(!(await unread.isVisible()), 'opening the center marks messages as read');
+            await clear();
+            previousMode = mode;
+        }
+        await page.reload();
+        await page.evaluate(() => window.contractAppReady);
+        await openGeneralSettings();
+        assert.strictEqual(await modeSelect.inputValue(), 'normal');
+        await page.getByRole('button', { name: '关闭设置' }).click();
+        await page.evaluate(() => StatusCenter.setContext('warning', '无匹配'));
+        assert(!(await bubble.isVisible()), 'a search with no results is an ordinary outcome');
+        await page.evaluate(() => showSuccess('刷新后同步完成'));
+        assert(!(await bubble.isVisible()));
+        assert(await unread.isVisible());
         assert.deepStrictEqual(errors, [], `browser errors: ${errors.join('; ')}`);
-        console.log('Mascot browser checks passed (tab sizing, overflow, movement bounds, bubbles, hover/focus timers, unread, task lifecycle, background pause, reduced motion and themes).');
+        console.log('Mascot browser checks passed (responsive layout, bubbles, unread, task lifecycle, motion, themes, all three notification modes and persistence).');
     } finally {
         if (browser) await browser.close();
         await new Promise(resolve => server.close(resolve));

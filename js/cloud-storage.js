@@ -349,6 +349,7 @@ function collectAllContractData() {
         const contract = contracts[contractKey];
         allContractData[contractKey] = {
             sourceId: contract.sourceId || null,
+            visibility: contract.visibility || null,
             title: contract.title || '',
             data: JSON.parse(JSON.stringify(contract.data || {}))
         };
@@ -422,6 +423,7 @@ async function saveToCloud(options = {}) {
             theme: typeof currentThemeIndex !== 'undefined' ? currentThemeIndex : 0,
             ai_settings: typeof getAISettingsForCloud === 'function' ? getAISettingsForCloud() : null,
             retrieval_settings: window.RetrievalSettings ? window.RetrievalSettings.getForCloud(contracts) : null,
+            contract_order: contractOrder || { sourceIds: getOrderedContractKeys().map(getContractDomId), modifiedAt: 0 },
             contract_data: allContractData
         };
 
@@ -485,6 +487,7 @@ async function applyCloudDataToLocal(cloudData) {
                 const cloudContract = cloudData.contract_data[contractKey] || {};
                 restoredContracts[contractKey] = {
                     sourceId: cloudContract.sourceId || null,
+                    visibility: cloudContract.visibility || null,
                     title: cloudContract.title || contractKey,
                     data: JSON.parse(JSON.stringify(cloudContract.data || {})),
                     bookmarks: JSON.parse(JSON.stringify(cloudData.bookmarks?.[contractKey] || []))
@@ -501,11 +504,13 @@ async function applyCloudDataToLocal(cloudData) {
                     if ((modification.modifiedAt || 0) >= (cloudClause.modifiedAt || 0)) {
                         cloudClause.content = modification.content;
                         cloudClause.modifiedAt = modification.modifiedAt || 0;
+                        if (Array.isArray(modification.reviewTags)) cloudClause.reviewTags = modification.reviewTags;
                     }
                 });
             });
 
             contracts = restoredContracts;
+            contractOrder = Array.isArray(cloudData.contract_order?.sourceIds) ? cloudData.contract_order : null;
             if (window.RetrievalSettings) window.RetrievalSettings.ensureSourceIds(contracts);
             if (typeof ORIGINAL_CONTRACTS === 'undefined') window.ORIGINAL_CONTRACTS = {};
             Object.keys(contracts).forEach(key => {
@@ -513,7 +518,8 @@ async function applyCloudDataToLocal(cloudData) {
             });
 
             const requestedKey = cloudData.active_contract_key;
-            const nextActiveKey = contracts[requestedKey] ? requestedKey : (Object.keys(contracts)[0] || null);
+            const nextActiveKey = isContractVisible(requestedKey) ? requestedKey
+                : Object.hasOwn(contracts, requestedKey) ? null : getOrderedContractKeys({ visibleOnly: true })[0];
             activeContractKey = null;
             fullClauseDatabase = {};
             savedBookmarks = null;
@@ -532,6 +538,7 @@ async function applyCloudDataToLocal(cloudData) {
                     const modification = cloudData.modifications[contractKey][clauseId];
                     contracts[contractKey].data[clauseId].content = modification.content;
                     contracts[contractKey].data[clauseId].modifiedAt = modification.modifiedAt || 0;
+                    if (Array.isArray(modification.reviewTags)) contracts[contractKey].data[clauseId].reviewTags = modification.reviewTags;
                 });
             });
             Object.keys(cloudData.bookmarks || {}).forEach(contractKey => {
@@ -550,6 +557,8 @@ async function applyCloudDataToLocal(cloudData) {
         if (cloudData.retrieval_settings && window.RetrievalSettings) {
             window.RetrievalSettings.applyCloud(cloudData.retrieval_settings, contracts);
         }
+        refreshContractVisibility();
+        if (typeof refreshContractSettings === 'function') refreshContractSettings();
 
         if (typeof saveContractsToStorage === 'function') {
             const persisted = await saveContractsToStorage();
@@ -577,7 +586,8 @@ function collectCloudModifications(cloudData) {
             if (clause.modifiedAt >= existingTime) {
                 collected[contractKey][clauseId] = {
                     content: clause.content || '',
-                    modifiedAt: clause.modifiedAt
+                    modifiedAt: clause.modifiedAt,
+                    ...(Array.isArray(clause.reviewTags) ? { reviewTags: clause.reviewTags } : {})
                 };
             }
         });
@@ -586,7 +596,8 @@ function collectCloudModifications(cloudData) {
 }
 
 function hydrateMissingCloudContracts(cloudData) {
-    if (typeof contracts === 'undefined') return;
+    if (typeof contracts === 'undefined') return false;
+    let displayChanged = false;
 
     Object.keys(cloudData?.contract_data || {}).forEach(contractKey => {
         if (typeof ensureContractPanelState === 'function') ensureContractPanelState(contractKey);
@@ -594,16 +605,22 @@ function hydrateMissingCloudContracts(cloudData) {
         if (!contracts[contractKey]) {
             contracts[contractKey] = {
                 sourceId: cloudContract.sourceId || null,
+                visibility: cloudContract.visibility || null,
                 title: cloudContract.title || contractKey,
                 data: JSON.parse(JSON.stringify(cloudContract.data || {})),
                 bookmarks: JSON.parse(JSON.stringify(cloudData.bookmarks?.[contractKey] || []))
             };
             restoreContractOriginals(contractKey);
             if (window.RetrievalSettings) window.RetrievalSettings.ensureSourceIds(contracts);
+            displayChanged = true;
             return;
         }
 
         const localContract = contracts[contractKey];
+        if ((cloudContract.visibility?.modifiedAt || 0) > (localContract.visibility?.modifiedAt || 0)) {
+            if ((cloudContract.visibility.hidden === true) !== (localContract.visibility?.hidden === true)) displayChanged = true;
+            localContract.visibility = cloudContract.visibility;
+        }
         if (!localContract.sourceId && cloudContract.sourceId) localContract.sourceId = cloudContract.sourceId;
         if (!localContract.title && cloudContract.title) localContract.title = cloudContract.title;
         if (!localContract.data) localContract.data = {};
@@ -627,20 +644,21 @@ function hydrateMissingCloudContracts(cloudData) {
         });
         restoreContractOriginals(contractKey);
     });
+    return displayChanged;
 }
 
 function refreshContractsAfterCloud(preferredContractKey = null) {
     if (typeof contracts === 'undefined') return;
     const welcomeActive = document.getElementById('tab-Welcome')?.classList.contains('active') === true;
     const assistantActive = typeof isAssistantMode !== 'undefined' && isAssistantMode;
-    if (welcomeActive) {
+    if (welcomeActive || (activeContractKey && Object.hasOwn(contracts, activeContractKey) && !isContractVisible(activeContractKey))) {
         if (typeof renderTabs === 'function') renderTabs();
         if (typeof showWelcomePage === 'function') showWelcomePage();
         return;
     }
-    const currentKey = contracts[activeContractKey]
+    const currentKey = isContractVisible(activeContractKey)
         ? activeContractKey
-        : (contracts[preferredContractKey] ? preferredContractKey : Object.keys(contracts)[0]);
+        : (isContractVisible(preferredContractKey) ? preferredContractKey : getOrderedContractKeys({ visibleOnly: true })[0]);
 
     if (!currentKey) {
         if (typeof renderTabs === 'function') renderTabs();
@@ -693,7 +711,10 @@ async function syncWithCloud({ showProgress = true } = {}) {
 
         // 3. 先创建云端独有的合同和条款，随后才应用修改补丁。
         const localRetrievalSettings = window.RetrievalSettings?.getForCloud(contracts);
-        hydrateMissingCloudContracts(cloudData);
+        const displayChanged = hydrateMissingCloudContracts(cloudData);
+        const cloudOrder = cloudData.contract_order;
+        const orderChanged = Array.isArray(cloudOrder?.sourceIds) && (!contractOrder || cloudOrder.modifiedAt > contractOrder.modifiedAt);
+        if (orderChanged) contractOrder = cloudOrder;
 
         // 4. 提取两端修改；云端完整快照中的 modifiedAt 同样参与比较。
         const localModifications = typeof extractAllUserModifications === 'function'
@@ -740,6 +761,8 @@ async function syncWithCloud({ showProgress = true } = {}) {
             );
             window.RetrievalSettings.applyCloud(mergedRetrievalSettings, contracts);
         }
+        if (displayChanged) refreshContractVisibility();
+        if ((displayChanged || orderChanged) && typeof refreshContractSettings === 'function') refreshContractSettings();
 
         // 8. 持久化合并结果并上传当前完整快照，绝不复用旧 contract_data。
         await persistLocalStateForCloud();
@@ -851,6 +874,7 @@ function applyMergedModifications(cloudNewerMods) {
                 const cloudClause = cloudNewerMods[contractKey][clauseId];
                 contracts[contractKey].data[clauseId].content = cloudClause.content;
                 contracts[contractKey].data[clauseId].modifiedAt = cloudClause.modifiedAt;
+                if (Array.isArray(cloudClause.reviewTags)) contracts[contractKey].data[clauseId].reviewTags = cloudClause.reviewTags;
             }
         });
     });
@@ -1246,13 +1270,14 @@ function isOldFormat(data) {
  */
 function writeContractDataWithBatching(mainRef, contractKey, contractData, timestamp, batch) {
     const sourceId = contractData.sourceId || contractKey;
-    const fullDoc = {
+    const metadata = {
         contract_key: contractKey,
         source_id: sourceId,
         title: contractData.title || '',
-        data: contractData.data || {},
+        visibility: contractData.visibility || null,
         updated_at: timestamp
     };
+    const fullDoc = { ...metadata, data: contractData.data || {} };
     const fullSize = new Blob([JSON.stringify(fullDoc)]).size;
     const cdRef = mainRef.collection('contract_data').doc(sourceId);
 
@@ -1267,11 +1292,8 @@ function writeContractDataWithBatching(mainRef, contractKey, contractData, times
         let currentBatch = {};
         let currentSize = 0;
         const metadataSize = new Blob([JSON.stringify({
-            contract_key: contractKey,
-            source_id: sourceId,
-            title: contractData.title || '',
-            batch_count: 1,
-            updated_at: timestamp
+            ...metadata,
+            batch_count: 1
         })]).size;
 
         for (const clauseId of clauseIds) {
@@ -1294,11 +1316,8 @@ function writeContractDataWithBatching(mainRef, contractKey, contractData, times
 
         // 写入元数据文档（不含 data 字段，只记录 batch_count）
         batch.set(cdRef, {
-            contract_key: contractKey,
-            source_id: sourceId,
-            title: contractData.title || '',
-            batch_count: batches.length,
-            updated_at: timestamp
+            ...metadata,
+            batch_count: batches.length
         });
 
         // 写入每个批次
@@ -1336,6 +1355,7 @@ async function loadBatchedContractData(mainRef, contractKey, metadata) {
     return {
         contractKey: metadata.contract_key || contractKey,
         sourceId: metadata.source_id || null,
+        visibility: metadata.visibility || null,
         title: metadata.title || '',
         data: mergedData
     };
@@ -1397,6 +1417,7 @@ async function writeDataToSubcollections(mainRef, data, options = {}) {
         theme: data.theme != null ? data.theme : 0,
         ai_settings: data.ai_settings || null,
         retrieval_settings: data.retrieval_settings || null,
+        contract_order: data.contract_order || null,
         format_version: 3
     }, { merge: true });
 
@@ -1498,6 +1519,7 @@ async function loadFromSubcollections(mainRef) {
                 loadBatchedContractData(mainRef, doc.id, d).then(result => {
                     contract_data[result.contractKey || doc.id] = {
                         sourceId: result.sourceId,
+                        visibility: result.visibility,
                         title: result.title,
                         data: result.data
                     };
@@ -1505,7 +1527,7 @@ async function loadFromSubcollections(mainRef) {
             );
         } else if (d.data) {
             // 直接存储
-            contract_data[d.contract_key || doc.id] = { sourceId: d.source_id || null, title: d.title || '', data: d.data };
+            contract_data[d.contract_key || doc.id] = { sourceId: d.source_id || null, visibility: d.visibility || null, title: d.title || '', data: d.data };
         }
     });
 
