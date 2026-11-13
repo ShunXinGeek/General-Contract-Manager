@@ -66,7 +66,11 @@
         const p = profile.providerId, m = (profile.model || '').toLowerCase();
         const body = { model: config.model, messages, stream: options.stream !== false };
         if (profile.protocol === 'openai-responses') body.apiStyle = 'responses';
-        if (typeof options.thinking === 'boolean' && thinkingCapability(profile, m) === 'switch') {
+        if (options.reasoning && options.reasoning !== 'auto') {
+            const selected = providers?.thinkingOptions(profile).find(option => option.id === options.reasoning);
+            if (!selected) throw new Error('当前模型不支持所选思考档位。');
+            Object.assign(body, selected.params);
+        } else if (!options.reasoning && typeof options.thinking === 'boolean' && thinkingCapability(profile, m) === 'switch') {
             if (p === 'qwen' || p === 'qwen-intl' || p === 'qwen-us') body.enable_thinking = options.thinking;
             else if (profile.protocol === 'gemini-openai') body.reasoning_effort = options.thinking ? 'medium' : 'none';
             else body.thinking = { type: options.thinking ? 'enabled' : 'disabled' };
@@ -81,9 +85,33 @@
         }
         return body;
     }
+    function prepareRequest(config, messages, options = {}) {
+        const profile = providers ? providers.normalizeProfile(config) : { ...config, baseUrl: config.apiEndpoint };
+        const body = requestBody(profile, messages, options);
+        const payload = JSON.stringify({ endpoint: endpoint(providers ? profile : config.apiEndpoint), apiKey: config.apiKey,
+            profile: providers?.publicProfile(profile), body });
+        if (options.checkSize) {
+            if (new TextEncoder().encode(payload).length > 2 * 1024 * 1024) {
+                throw new Error('对话、附件和检索资料合计超过 2 MiB 发送上限。请拆分文件、减少资料或断开旧上下文。');
+            }
+            const limit = providers?.modelContext(profile);
+            if (limit) {
+                const tokens = messages.reduce((sum, message) => {
+                    const text = message.content + (message.reasoning_content || '');
+                    const ascii = text.replace(/[^\x00-\x7f]/g, '').length;
+                    return sum + Math.ceil(ascii / 3) + text.length - ascii + 8;
+                }, 0);
+                if (tokens > limit - 4096) {
+                    throw new Error('预计输入约 ' + tokens.toLocaleString() + ' tokens，已接近或超过 ' + config.model + ' 的上下文上限。请减少资料或断开旧上下文。');
+                }
+            }
+        }
+        return payload;
+    }
     async function request(config, messages, options = {}) {
         const profile = providers ? providers.normalizeProfile(config) : { ...config, baseUrl: config.apiEndpoint };
-        const target = providers ? endpoint(profile) : endpoint(config.apiEndpoint);
+        const payload = options.payload || prepareRequest(config, messages, options);
+        options.signal?.throwIfAborted();
         const controller = new AbortController();
         const abort = () => controller.abort(options.signal.reason);
         if (options.signal?.aborted) abort();
@@ -93,8 +121,7 @@
             const response = await fetch('/api/ai', {
                 method: 'POST', cache: 'no-store', signal: controller.signal,
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ endpoint: target, apiKey: config.apiKey, profile: providers ? providers.publicProfile(profile) : undefined,
-                    body: requestBody(profile, messages, options) })
+                body: payload
             });
             clearTimeout(timer);
             if (!response.ok) {
@@ -102,9 +129,15 @@
                 if ((response.headers.get('content-type') || '').includes('application/json')) {
                     try { data = await response.json(); } catch (_) { /* use status fallback */ }
                 }
-                throw new Error(data?.error?.message || (response.status === 404
+                const error = new Error(data?.error?.message || (response.status === 404
                     ? 'AI 转发接口尚未部署，请确认 Netlify 已发布最新版本。'
                     : 'AI 请求失败（HTTP ' + response.status + '），请检查配置或稍后重试。'));
+                const choice = providers?.thinkingOptions(profile).find(option => option.id === options.reasoning);
+                if (options.checkSize && [400, 413, 422].includes(response.status)) {
+                    error.requestRejected = true;
+                    if (choice) error.message = config.model + '（思考：' + choice.label + '）' + '：' + error.message;
+                }
+                throw error;
             }
             const type = response.headers.get('content-type') || '';
             if (!response.body || (options.stream !== false && !type.includes('text/event-stream'))) {
@@ -172,5 +205,5 @@
     function instructionRole(config) {
         return providers ? providers.instructionRole(config) : 'system';
     }
-    root.AIClient = { endpoint, provider, thinkingCapability, needsReasoningHistory, instructionRole, requestBody, request, events };
+    root.AIClient = { endpoint, provider, thinkingCapability, needsReasoningHistory, instructionRole, requestBody, prepareRequest, request, events };
 })(globalThis);

@@ -9,8 +9,7 @@ const bundled = path.join(process.env.USERPROFILE, '.cache/codex-runtimes/codex-
 const { chromium } = require(process.env.GCM_PLAYWRIGHT_MODULE || bundled);
 const output = path.join(root, 'output/playwright');
 async function run() {
-    const port = Number(process.env.GCM_TEST_PORT || 8911);
-    const baseURL = `http://127.0.0.1:${port}/`;
+    const port = Number(process.env.GCM_TEST_PORT || 0);
     fs.mkdirSync(output, { recursive: true });
     const server = http.createServer((request, response) => {
         const file = path.resolve(root, '.' + decodeURIComponent(new URL(request.url, 'http://localhost').pathname === '/' ? '/index.html' : new URL(request.url, 'http://localhost').pathname));
@@ -22,6 +21,7 @@ async function run() {
         });
     });
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
+    const baseURL = 'http://127.0.0.1:' + server.address().port + '/';
     let browser;
     try {
         browser = await chromium.launch({ headless: true, executablePath: process.env.GCM_BROWSER_EXECUTABLE || 'C:/Program Files/Google/Chrome/Application/chrome.exe' });
@@ -58,10 +58,11 @@ async function run() {
                 const tx = RAG.db.transaction(['vectors'], 'readwrite'); tx.objectStore('vectors').put({ id: 'GCC_50', type: 'GCC', clauseId: '50', vector: [1, 0] }); tx.oncomplete = resolve; tx.onerror = reject;
             });
         });
-        const importedSource = "资料 A+B's";
+        const importedName = "资料 A+B's";
+        const importedSource = "资料 A+B_s";
         await page.locator('#importContractFile').setInputFiles({
             name: 'retrieval-scope.txt', mimeType: 'text/plain',
-            buffer: Buffer.from(`CONTRACT_META:\nname: Future neutral source\nshortName: ${importedSource}\n---\n` +
+            buffer: Buffer.from(`CONTRACT_META:\nname: Future neutral source\nshortName: ${importedName}\n---\n` +
                 JSON.stringify({ '1': { title: 'Disabled source check', content: '不应进入检索的专属校验词。' } }))
         });
         await page.getByRole('button', { name: '确定', exact: true }).click();
@@ -69,6 +70,7 @@ async function run() {
         await page.evaluate(() => openClauseSelector());
         await page.locator('#clauseSelectorModal .clause-option').filter({ hasText: 'Disabled source check' }).click();
         assert.ok((await page.locator('#chatInput').inputValue()).includes(importedSource), 'labels containing punctuation and apostrophes must remain usable in generated controls');
+        await page.locator('#clauseSelectorModal').getByRole('button', { name: '关闭引用弹窗' }).click();
         await page.evaluate(() => { document.getElementById('chatInput').value = ''; });
         const openRetrievalSettings = async () => {
             await page.locator('button[title="AI 设置"]').click();
@@ -205,16 +207,20 @@ async function run() {
         });
         assert.ok(Math.abs(inputToolLayout.toolsRight - inputToolLayout.sendRight) < 2, 'send button must align to the right edge of the input toolbar');
         assert.ok(Math.abs(inputToolLayout.sendCenterY - inputToolLayout.clearCenterY) < 6, 'send button must share the input action row');
-        await page.locator('#btnThinkingMode').click(); await page.locator('#btnKnowledgeBase').click();
+        await page.locator('#btnThinkingMode').click();
+        await page.getByRole('menuitemradio', { name: '高', exact: true }).click();
+        await page.locator('#btnKnowledgeBase').click();
         await page.locator('#statusText').filter({ hasText: '加载 4 条正文' }).waitFor();
         assert.strictEqual(await page.locator('#statusAnnouncement').getAttribute('aria-live'), 'polite', 'knowledge-base status must be announced without moving focus');
-        assert.match(await page.locator('#statusText').innerText(), /有效语义向量 0\/4/);
+        assert.match(await page.locator('#statusText').innerText(), /有效语义向量 0\/4[\s\S]*旧索引/);
         assert.strictEqual(await page.locator('#btnKnowledgeBase').getAttribute('aria-pressed'), 'true');
         assert.strictEqual(await page.locator('#btnUpdateIndex').count(), 0);
         const send = async query => { await page.locator('#chatInput').fill(query); await page.locator('#sendBtn').click(); await page.waitForFunction(() => !isStreaming); };
         await send('SCC Clause 34');
-        assert.strictEqual(requests.length, 1); assert.deepStrictEqual(requests[0].thinking, { type: 'enabled' });
-        assert.ok(requests[0].messages[0].content.includes('<<<SCC Clause 34')); assert.ok(!requests[0].messages[0].content.includes('<<<GCC Clause 34'));
+        const streamed = requests.filter(body => body.stream);
+        assert.strictEqual(streamed.length, 1); assert.deepStrictEqual(streamed[0].thinking, { type: 'enabled' });
+        assert.strictEqual(streamed[0].reasoning_effort, 'high');
+        assert.ok(streamed[0].messages[0].content.includes('<<<SCC Clause 34')); assert.ok(!streamed[0].messages[0].content.includes('<<<GCC Clause 34'));
         await send('在合同条款中，是否对于“一方理应在多久之内对另外一方的信函做出回复”给出明确的时间要求？');
         const deadlineRequest = requests.find(body => String(body.messages?.at?.(-1)?.content || '').includes('一方理应在多久之内'));
         assert.ok(deadlineRequest?.messages?.[0]?.content.includes('<<<GCC Clause 5'), 'Chinese response-deadline query must send GCC Clause 5 original text to the model');
@@ -252,7 +258,7 @@ async function run() {
         await page.waitForFunction(() => document.querySelectorAll('.attachment-chip.is-ready').length === 4);
         assert.strictEqual(await page.locator('#chatInput').inputValue(), '', 'adding attachments must not overwrite the question input');
         await send('请核对附件中的付款期限。');
-        const attachmentRequest = requests.at(-1);
+        const attachmentRequest = requests.findLast(body => body.stream);
         assert.ok(attachmentRequest.messages.some(message => String(message.content).includes('<<<ATTACHMENT name="付款说明.txt"')), 'the sent model request must include the local attachment text');
         assert.ok(attachmentRequest.messages.some(message => String(message.content).includes('项目经理签署')), 'DOCX must be converted inside the parser worker before the request is sent');
         assert.ok(attachmentRequest.messages.some(message => String(message.content).includes('PDF payment evidence')), 'PDF.js must extract PDF text before the request is sent');
@@ -293,7 +299,14 @@ async function run() {
         behavior = 'invalid-both'; const beforeInvalid = requests.length; await send('GCC Clause 50'); assert.strictEqual(requests.length - beforeInvalid, 2);
         assert.ok((await page.locator('.chat-message.assistant').last().innerText()).includes('引用校验提示'));
         behavior = 'valid'; await send('extension of time');
-        assert.ok((await page.locator('.chat-message.assistant').last().innerText()).includes('旧索引'));
+        assert.match(await page.locator('.chat-message.assistant .message-content').last().innerText(), /依据范围提示：[^\]]*旧索引/);
+        const legacySearch = await page.evaluate(() => ({
+            code: RAG.lastSearchStatus.code,
+            rejected: RAG.lastSearchStatus.rejected['legacy-unverified'],
+            embeddings: chatMessages.at(-1).retrievalDiagnostic.calls.embedding
+        }));
+        assert.deepStrictEqual(legacySearch, { code: 'index-invalid', rejected: 1, embeddings: 0 });
+        assert.match(requests.at(-1).messages[0].content, /<<<GCC Clause 50/);
         behavior = 'stop'; await page.locator('#chatInput').fill('GCC Clause 50'); await page.locator('#sendBtn').click();
         await page.waitForFunction(() => isStreaming); await new Promise(resolve => setTimeout(resolve, 200)); await page.locator('#sendBtn').click();
         await page.waitForFunction(() => !isStreaming); if (pending) release();

@@ -128,9 +128,17 @@ async function run() {
 
     // Snapshot consistency while building: generated vectors describe the submitted text, not later edits.
     const stored = [];
+    ctx.IDBKeyRange = { bound: () => ({}) };
     rag.db = { transaction() {
         const transaction = { objectStore() {
-            return { put(row) { stored.push(row); setTimeout(() => transaction.oncomplete(), 0); } };
+            return {
+                getAllKeys() {
+                    const request = { result: [] };
+                    queueMicrotask(() => request.onsuccess());
+                    return request;
+                },
+                put(row) { stored.push(row); setTimeout(() => transaction.oncomplete(), 0); }
+            };
         } };
         return transaction;
     } };

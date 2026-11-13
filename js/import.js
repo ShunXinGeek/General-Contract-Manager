@@ -3,99 +3,92 @@
 // General Contract Shell
 // =======================================================
 
-/**
- * 处理通用合同文件导入
- * 自动从文件名或 CONTRACT_META 块推断合同类型
- * @param {Event} event - 文件输入事件
- */
-function handleContractImport(event) {
-    const file = event.target.files[0];
-    if (!file) {
-        event.target.value = '';
-        return;
-    }
+function chooseContractImport(mode) {
+    const input = document.getElementById('importContractFile');
+    input.dataset.importMode = mode;
+    document.getElementById('importMenu').style.display = 'none';
+    input.click();
+}
 
-    Logger.info('import', `开始导入合同文件: ${file.name}`);
+async function handleContractImport(event) {
+    const input = event.target;
+    const file = input.files[0];
+    const overwrite = input.dataset.importMode === 'overwrite';
+    input.value = '';
+    if (!file) return;
 
-    const importTask = window.StatusCenter?.start(`正在读取合同 ${file.name}…`, '合同导入');
-    const reader = new FileReader();
-    reader.onload = async function (e) {
-        try {
-            const rawText = e.target.result;
-
-            // 1. 解析条款数据
-            const parsedData = parseContractText(rawText);
-
-            if (Object.keys(parsedData).length === 0) {
-                importTask?.finish(`未能在 ${file.name} 中识别出有效的条款格式。请确保文件内容符合规范。`, 'error');
-                return;
-            }
-
-            // 2. 解析元数据（合同名称和简称）
-            const meta = await parseContractMeta(rawText, file.name); // Changed from parseContractMetaInfo to parseContractMeta
-            const contractKey = meta.shortName;
-
-            // 3. 检查是否已存在同名合同并确认导入
-            let proceedImport = false;
-            if (typeof contracts !== 'undefined' && contracts[contractKey]) {
-                const isOverwrite = await CustomDialog.confirm(
-                    `合同类型 "${contractKey}" 已存在（${Object.keys(contracts[contractKey].data).length} 条条款）。\n\n是否覆盖？`,
-                    '导入确认'
-                );
-                if (isOverwrite) {
-                    proceedImport = true;
-                }
-            } else {
-                const isImport = await CustomDialog.confirm(
-                    `即将导入 ${Object.keys(parsedData).length} 条 "${meta.fullName}" (${contractKey}) 条款，是否继续？`,
-                    '导入确认'
-                );
-                if (isImport) {
-                    proceedImport = true;
-                }
-            }
-
-            if (proceedImport) {
-                // 注册合同
-                registerContract(contractKey, meta.fullName, parsedData);
-
-                // 交叉引用一致性校验（非阻塞，仅日志警告）
-                if (typeof verifyCrossRefConsistency === 'function') {
-                    try {
-                        const warnings = verifyCrossRefConsistency();
-                        if (warnings && warnings.length > 0) {
-                            console.warn('[import] 交叉引用一致性校验发现问题:');
-                            warnings.forEach(w => console.warn('  - ' + w));
-                        } else {
-                            console.log('[import] 交叉引用一致性校验通过');
-                        }
-                    } catch (e) {
-                        console.warn('[import] 交叉引用一致性校验出错:', e.message);
-                    }
-                }
-
-                if (typeof updateLocalModificationTime === 'function') {
-                    updateLocalModificationTime();
-                }
-                if (typeof forceUploadToCloud === 'function') {
-                    forceUploadToCloud().catch(err => console.log('云端同步跳过:', err.message));
-                }
-                if (typeof initBookmarks === 'function') initBookmarks();
-                buildReverseIndex();
-                autoSave();
-                if (typeof saveContractsToStorage === 'function') saveContractsToStorage();
-                importTask?.finish(`"${meta.fullName}" (${contractKey}) 数据导入成功！共 ${Object.keys(parsedData).length} 条条款。`);
-            } else { importTask?.finish('已取消合同导入', 'info'); }
-        } catch (error) {
-            console.error(error);
-            importTask?.finish(`导入失败：\n${error.message}`, 'error');
+    const task = window.StatusCenter?.start('正在读取合同 ' + file.name + '…', '合同导入');
+    try {
+        const rawText = (await file.text()).replace(/^\uFEFF/, '');
+        const data = parseContractText(rawText);
+        const count = Object.keys(data).length;
+        if (!count) throw new Error('文件中没有可识别的合同条款。');
+        const fileMeta = readContractMeta(rawText);
+        const meta = overwrite ? fileMeta : await parseContractMeta(rawText, file.name, fileMeta);
+        if (!meta && !overwrite) {
+            task?.finish('已取消合同导入', 'info');
+            return;
         }
-        // The input element's value should be cleared by the caller if it's an input type="file"
-    };
 
-    reader.onerror = () => importTask?.finish(`无法读取文件 ${file.name}`, 'error');
-    reader.onabort = () => importTask?.finish('已取消读取合同文件', 'info');
-    reader.readAsText(file);
+        const targetKey = overwrite ? findContractForOverwrite(meta, file.name, data) : null;
+        const previous = overwrite ? contracts[targetKey] : null;
+        const shortName = meta?.shortName || previous?.shortName || targetKey;
+        const title = meta?.fullName || previous?.title || shortName;
+        const message = overwrite
+            ? '将用文件中的 ' + count + ' 条条款整份覆盖「' + targetKey + ' · ' + previous.title + '」，是否继续？'
+            : '将新增「' + title + '」及其 ' + count + ' 条条款，是否继续？';
+        if (!await CustomDialog.confirm(message, '导入确认')) {
+            task?.finish('已取消合同导入', 'info');
+            return;
+        }
+
+        if (window.ContractBackup?.restoring) await window.ContractBackup.restoring;
+        if (overwrite && contracts[targetKey] !== previous) throw new Error('目标合同已变化，请重新导入。');
+        const key = targetKey || getAvailableContractKey(shortName);
+        const sourceId = overwrite ? previous.sourceId : 'src_' + createContractToken();
+        const persisted = await registerContract(key, title, data, { sourceId, shortName });
+        if (!persisted) throw new Error('条款已载入，但保存到本地失败。');
+        if (typeof updateLocalModificationTime === 'function') updateLocalModificationTime();
+        if (typeof verifyCrossRefConsistency === 'function') {
+            try {
+                for (const warning of verifyCrossRefConsistency() || []) console.warn('[import]', warning);
+            } catch (error) {
+                console.warn('[import] 交叉引用校验失败:', error);
+            }
+        }
+        task?.finish('「' + title + '」导入成功，共 ' + count + ' 条条款。');
+    } catch (error) {
+        task?.finish('导入失败：' + error.message, 'error');
+    }
+}
+
+function findContractForOverwrite(meta, fileName, data) {
+    const entries = Object.entries(contracts);
+    const bySource = meta?.sourceId && entries.find(([, contract]) => contract.sourceId === meta.sourceId);
+    if (bySource) return bySource[0];
+
+    const normalize = value => (value || '').trim().toLowerCase();
+    const shortName = normalize(meta?.shortName || contractNameFromFile(fileName));
+    const fullName = normalize(meta?.fullName);
+    const named = entries.filter(([key, contract]) => shortName &&
+        (shortName === normalize(key) || shortName === normalize(contract.shortName)));
+    const titled = fullName ? entries.filter(([, contract]) => fullName === normalize(contract.title)) : [];
+    if (named.length === 1 && titled.length === 1 && named[0][0] !== titled[0][0]) {
+        throw new Error('文件中的简称和全称指向不同合同，无法确定覆盖目标。');
+    }
+    if (!named.length) named.push(...titled);
+    if (named.length === 1) return named[0][0];
+
+    const fingerprint = (clauses, original = false) => JSON.stringify(Object.keys(clauses).sort().map(id => {
+        const clause = clauses[id];
+        return [id, cleanContractText(clause.title), cleanContractText(original ? clause.originalContent ?? clause.content : clause.content)];
+    }));
+    const target = fingerprint(data);
+    const exact = (named.length ? named : entries).filter(([, contract]) =>
+        fingerprint(contract.data) === target || fingerprint(contract.data, true) === target);
+    if (exact.length === 1) return exact[0][0];
+    if (named.length || exact.length) throw new Error('匹配到多份合同，无法确定覆盖目标。请使用带有目标合同标识的导出文件。');
+    throw new Error('找不到对应的已有合同。若要新增，请选择「新合同导入」。');
 }
 
 /**
@@ -104,21 +97,34 @@ function handleContractImport(event) {
  * @param {string} fileName - 文件名（用于回退）
  * @returns {{fullName: string, shortName: string}}
  */
-async function parseContractMeta(text, fileName) {
-    const defaultName = fileName.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_\-\u4e00-\u9fff]/g, '_');
+function contractNameFromFile(fileName) {
+    return fileName.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_\-\u4e00-\u9fff]/g, '_');
+}
 
-    // 尝试匹配 CONTRACT_META 块
-    const metaMatch = text.match(/CONTRACT_META:\s*\n([\s\S]*?)\n---/);
+function readContractMeta(text) {
+    try {
+        const meta = JSON.parse(text)?.$contract;
+        if (meta && typeof meta === 'object' && !Array.isArray(meta)) {
+            const read = key => typeof meta[key] === 'string' ? meta[key].trim() : '';
+            return { fullName: read('name'), shortName: read('shortName'), sourceId: read('sourceId') };
+        }
+    } catch {
+        // 旧 TXT 可以在条款对象前声明 CONTRACT_META。
+    }
+    const metaMatch = text.match(/^\s*CONTRACT_META:\s*\r?\n([\s\S]*?)\r?\n---/);
     if (metaMatch) {
         const metaBlock = metaMatch[1];
-        const nameMatch = metaBlock.match(/name:\s*(.+)/);
-        const shortMatch = metaBlock.match(/shortName:\s*(.+)/);
-
         return {
-            fullName: nameMatch ? nameMatch[1].trim() : defaultName,
-            shortName: shortMatch ? shortMatch[1].trim() : defaultName
+            fullName: metaBlock.match(/^name:[ \t]*(.+)$/m)?.[1].trim(),
+            shortName: metaBlock.match(/^shortName:[ \t]*(.+)$/m)?.[1].trim()
         };
     }
+    return null;
+}
+
+async function parseContractMeta(text, fileName, meta = readContractMeta(text)) {
+    const defaultName = contractNameFromFile(fileName) || 'CONTRACT';
+    if (meta) return { fullName: meta.fullName || defaultName, shortName: meta.shortName || defaultName };
 
     // 没有 META 块，弹窗让用户输入
     const userKey = await CustomDialog.prompt(
@@ -127,7 +133,7 @@ async function parseContractMeta(text, fileName) {
     );
 
     if (!userKey || !userKey.trim()) {
-        throw new Error('用户取消了导入');
+        return null;
     }
 
     const userTitle = await CustomDialog.prompt(
@@ -145,7 +151,7 @@ async function parseContractMeta(text, fileName) {
  * 去除 CONTRACT_META 块，返回纯数据文本
  */
 function stripMetaBlock(text) {
-    return text.replace(/CONTRACT_META:\s*\n[\s\S]*?\n---\s*\n?/, '');
+    return text.replace(/^\s*CONTRACT_META:\s*\r?\n[\s\S]*?\r?\n---\s*/, '');
 }
 
 /**
@@ -153,7 +159,7 @@ function stripMetaBlock(text) {
  * 优先尝试严谨的 JSON 解析，失败后回退到 JS 对象字面量提取
  */
 function parseContractText(rawText) {
-    const trimmed = rawText.trim();
+    const trimmed = stripMetaBlock(rawText).trim();
 
     // 尝试直接作为合法 JSON 解析
     if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
@@ -163,22 +169,28 @@ function parseContractText(rawText) {
             const jsonData = JSON.parse(trimmed);
             const validData = {};
             for (const [key, val] of Object.entries(jsonData)) {
-                if (val && (val.title || val.content)) {
+                if (key !== '$contract' && isContractClauseId(key) && val && typeof val === 'object' &&
+                    (typeof val.title === 'string' || typeof val.content === 'string')) {
                     validData[key] = {
-                        title: val.title || '',
-                        content: val.content || '',
-                        translation: val.translation || '',
-                        translation_tc: val.translation_tc || ''
+                        title: typeof val.title === 'string' ? val.title : '',
+                        content: typeof val.content === 'string' ? val.content : '',
+                        translation: typeof val.translation === 'string' ? val.translation : '',
+                        translation_tc: typeof val.translation_tc === 'string' ? val.translation_tc : ''
                     };
+                    if (Array.isArray(val.reviewTags)) validData[key].reviewTags = val.reviewTags;
                 }
             }
-            if (Object.keys(validData).length > 0) return validData;
+            return validData;
         } catch (e) {
             console.warn("JSON解析失败，回退到正则提取法", e.message);
         }
     }
 
-    return extractClausesFromJsObjectString(rawText);
+    return extractClausesFromJsObjectString(trimmed);
+}
+
+function isContractClauseId(id) {
+    return !Object.hasOwn(Object.prototype, id) && !/[<>"'&\\\u0000-\u001f]/.test(id);
 }
 
 /**
@@ -186,7 +198,7 @@ function parseContractText(rawText) {
  */
 function extractClausesFromJsObjectString(text) {
     const result = {};
-    let blockRegex = /"([^"]+)"\s*:\s*\{([\s\S]*?)(?=(?:\s*"[a-zA-Z0-9_]+"\s*:\s*\{)|$)/g;
+    let blockRegex = /"([^"]+)"\s*:\s*\{([\s\S]*?)(?=(?:\s*"[a-zA-Z0-9_.-]+"\s*:\s*\{)|$)/g;
     let match;
 
     while ((match = blockRegex.exec(text)) !== null) {
@@ -205,7 +217,7 @@ function extractClausesFromJsObjectString(text) {
             translation_tc: extractProperty(blockContent, "translation_tc")
         };
 
-        if (clauseObj.title || clauseObj.content) {
+        if (isContractClauseId(id) && (clauseObj.title || clauseObj.content)) {
             result[id] = clauseObj;
         }
     }

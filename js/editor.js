@@ -1,6 +1,6 @@
 // =======================================================
 // editor.js - 编辑模式、备注、自动保存、导入导出
-// 依赖：app.js (isEditMode, fullClauseDatabase, activeContractKey,
+// 依赖：app.js (editableContracts, fullClauseDatabase, activeContractKey,
 //        contracts, savedBookmarks, currentThemeIndex, AUTO_SAVE_KEY,
 //        AUTO_SAVE_INTERVAL, hasUnsavedChanges, lastSavedTime)
 //       utils.js (showSuccess)
@@ -12,7 +12,15 @@
 // =======================================================
 function getClauseTextForNode(node) {
     const element = node?.nodeType === 3 ? node.parentElement : node;
-    return element?.closest?.('.clause-text') || null;
+    return element?.closest?.('.clause-text') || element?.closest?.('.translation-text') || null;
+}
+
+function getContractTextSource(body) {
+    const { translationClause, translationField, translationContract } = body.dataset;
+    return translationField ? {
+        key: translationContract ? decodeURIComponent(translationContract) : activeContractKey,
+        id: decodeURIComponent(translationClause), field: translationField
+    } : { key: activeContractKey, id: body.parentElement.id.slice('clause-'.length), field: 'content' };
 }
 
 function captureNoteSelection() {
@@ -42,7 +50,8 @@ function getNoteInSelection(snapshot) {
 
 function deleteNote(noteSpan) {
     if (!noteSpan?.isConnected) return;
-    const clauseText = noteSpan.closest('.clause-text');
+    const clauseText = getClauseTextForNode(noteSpan);
+    if (!clauseText) return;
     noteSpan.replaceWith(...noteSpan.childNodes);
     clauseText.normalize();
     handleEditorMutation(clauseText);
@@ -69,7 +78,7 @@ async function addOrEditNote(snapshot = captureNoteSelection()) {
         const newText = await CustomDialog.prompt('添加备注:', '');
         if (!newText || newText.trim() === '') return;
         if (!isCapturedNoteSelectionValid(snapshot)) {
-            showError('正文已变化或已切换条款，请重新选择文本后添加备注。');
+            showError('所选文本已变化或已切换条款，请重新选择文本后添加备注。');
             return;
         }
 
@@ -109,36 +118,25 @@ document.addEventListener('mouseout', e => {
 // =======================================================
 // 13. 编辑模式
 // =======================================================
-async function toggleEditMode() {
-    isEditMode = !isEditMode;
-    const btn = document.getElementById('btnEditMode');
-    const icon = document.getElementById('editIcon');
-    if (isEditMode) {
-        icon.innerText = '✏️';
-        btn.style.backgroundColor = '#e74c3c';
-        await CustomDialog.alert('✏️ 编辑模式已开启');
+function toggleEditMode() {
+    if (!activeContractKey || isAssistantMode) return;
+    const contract = contracts[activeContractKey];
+    if (!contract) return;
+    if (editableContracts.has(contract)) {
+        editableContracts.delete(contract);
+        if (hasUnsavedChanges) scheduleEditorSave(true);
     } else {
-        icon.innerText = '🔒';
-        btn.style.backgroundColor = '';
+        editableContracts.add(contract);
+        CustomDialog.alert('✏️ 编辑模式已开启');
     }
+    updateEditModeUI();
 }
 
-document.getElementById('panelMain')?.addEventListener('keydown', function (e) {
-    if (isEditMode || !e.target.closest('.clause-text')) return;
-    if (['Backspace', 'Delete'].includes(e.key)) { e.preventDefault(); return; }
-    if (e.ctrlKey || e.metaKey) { const key = e.key.toLowerCase(); if (key === 'x' || key === 'v') { e.preventDefault(); return; } }
-    if (e.ctrlKey || e.altKey || e.metaKey || e.key.startsWith('F') ||
-        ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown',
-            'Shift', 'Control', 'Alt', 'Meta', 'Tab', 'Escape'].includes(e.key)) return;
-    e.preventDefault();
-});
-document.addEventListener('cut', function (e) { if (!isEditMode && e.target.closest('.clause-text')) e.preventDefault(); });
-document.addEventListener('drop', function (e) { if (!isEditMode && e.target.closest('.clause-text')) e.preventDefault(); });
 document.addEventListener('paste', function (e) {
-    if (e.target.closest('.clause-text')) {
-        if (isEditMode) { e.preventDefault(); const text = (e.clipboardData || window.clipboardData).getData('text/plain'); document.execCommand('insertText', false, text); }
-        else { e.preventDefault(); }
-    }
+    if (!e.target.closest('.clause-text[contenteditable="true"], .translation-text[contenteditable="true"]')) return;
+    e.preventDefault();
+    const text = (e.clipboardData || window.clipboardData).getData('text/plain');
+    document.execCommand('insertText', false, text);
 });
 
 // =======================================================
@@ -154,6 +152,7 @@ function getPersistableClauseContent(element) {
 }
 
 function captureCurrentContent({ target = null, recordHistory = false, group = '' } = {}) {
+    if (!activeContractKey || contracts[activeContractKey]?.data !== fullClauseDatabase) return false;
     const now = Date.now();
     let changed = false;
     const bodies = target ? [target] : document.querySelectorAll('.clause-text');
@@ -161,7 +160,7 @@ function captureCurrentContent({ target = null, recordHistory = false, group = '
         const id = d.parentElement.id.replace('clause-', '');
         if (fullClauseDatabase[id]) {
             const newContent = getPersistableClauseContent(d);
-            if (fullClauseDatabase[id].content !== newContent) {
+            if (!sameClauseContent(fullClauseDatabase[id].content, newContent)) {
                 const clause = fullClauseDatabase[id];
                 if (recordHistory) recordClauseEdit(id, clause, newContent, clause.reviewTags, group);
                 clause.content = newContent;
@@ -197,25 +196,29 @@ function hasUserModifications(content, clause = null, contractKey = null, clause
     return false;
 }
 
-function extractUserModifications(contractKey) {
+function extractUserModifications(contractKey, includeTranslations) {
     if (contractKey === activeContractKey) captureCurrentContent();
     const modifications = {};
     const contractData = contracts[contractKey].data;
     Object.keys(contractData).forEach(id => {
         const clause = contractData[id];
-        if (clause && clause.content && hasUserModifications(clause.content, clause, contractKey, id)) {
+        if (!clause) return;
+        const modification = includeTranslations ? getTranslationModifications(clause) : {};
+        if (hasUserModifications(clause.content, clause, contractKey, id)) {
             if (!clause.modifiedAt) clause.modifiedAt = Date.now();
-            modifications[id] = { content: clause.content, modifiedAt: clause.modifiedAt };
-            if (Array.isArray(clause.reviewTags)) modifications[id].reviewTags = clause.reviewTags;
+            modification.content = clause.content || '';
+            modification.modifiedAt = clause.modifiedAt;
+            if (Array.isArray(clause.reviewTags)) modification.reviewTags = clause.reviewTags;
         }
+        if (Object.keys(modification).length) modifications[id] = modification;
     });
     return modifications;
 }
 
-function extractAllUserModifications() {
+function extractAllUserModifications({ includeTranslations = true } = {}) {
     const all = {};
     Object.keys(contracts).forEach(key => {
-        const mods = extractUserModifications(key);
+        const mods = extractUserModifications(key, includeTranslations);
         if (Object.keys(mods).length > 0) all[key] = mods;
     });
     return all;
@@ -267,11 +270,14 @@ function handleFileSelect(event) {
                                     const clause = contracts[key].data[id];
                                     if (!clause) return;
                                     const modification = snapshot.modifications[key][id];
-                                    clause.content = modification.content;
-                                    if (Array.isArray(modification.reviewTags)) {
-                                        clause.reviewTags = modification.reviewTags;
-                                        clause.modifiedAt = Date.now();
+                                    if (typeof modification.content === 'string') {
+                                        clause.content = modification.content;
+                                        if (Array.isArray(modification.reviewTags)) {
+                                            clause.reviewTags = modification.reviewTags;
+                                            clause.modifiedAt = Date.now();
+                                        }
                                     }
+                                    applyTranslationModifications(clause, modification, true);
                                 });
                             }
                         });
@@ -284,10 +290,12 @@ function handleFileSelect(event) {
                     fullClauseDatabase = contracts[activeContractKey].data;
                     savedBookmarks = contracts[activeContractKey].bookmarks;
                     renderMainDocument();
+                    refreshRenderedTranslations();
                     if (typeof initBookmarks === 'function') initBookmarks();
                     buildReverseIndex();
                     if (typeof snapshot.theme !== 'undefined') { currentThemeIndex = snapshot.theme; applyTheme(currentThemeIndex); }
-                    await CustomDialog.alert('导入成功！');
+                    markAsUnsaved();
+                    if (await autoSave()) await CustomDialog.alert('导入成功！');
                 }
             } else { await CustomDialog.alert('无法识别的文件格式。', '错误'); }
         } catch (err) { await CustomDialog.alert('导入失败：' + err, '错误'); }
@@ -301,11 +309,12 @@ function handleFileSelect(event) {
 // =======================================================
 function initAutoSave() {
     autoSaveTimer = setInterval(() => {
-        if (hasUnsavedChanges && activeContractKey) { autoSave(); }
+        if (hasUnsavedChanges) { autoSave(); }
     }, AUTO_SAVE_INTERVAL);
 }
 
 let editPersistTimer = null;
+let editRevision = 0;
 const clauseEditHistory = new WeakMap();
 
 function endTypingGroup() {
@@ -313,26 +322,28 @@ function endTypingGroup() {
     if (last) last.group = '';
 }
 
-function recordClauseEdit(id, clause, nextContent, nextTags, group = '') {
+function recordClauseEdit(id, clause, nextContent, nextTags, group = '', field = 'content', sourceKey = null) {
     const contract = contracts[activeContractKey];
     const history = clauseEditHistory.get(contract) || [];
     const last = history.at(-1);
     const now = Date.now();
-    if (group && last?.group === group && last.clause === clause &&
-        last.nextContent === clause.content && last.nextTags === clause.reviewTags && now - last.time < 750) {
+    const content = field === 'content' ? clause.content : (getClauseTranslation(clause, field === 'translation_tc') || '');
+    const tags = field === 'content' ? clause.reviewTags : undefined;
+    if (group && last?.group === group && last.clause === clause && last.field === field &&
+        last.nextContent === content && last.nextTags === tags && now - last.time < 750) {
         last.nextContent = nextContent;
         last.time = now;
     } else {
-        history.push({ id, clause, content: clause.content, tags: clause.reviewTags, nextContent, nextTags, group, time: now });
+        history.push({ id, clause, field, content, tags, nextContent, nextTags, group, sourceKey, time: now });
         if (history.length > MAX_HISTORY_SIZE) history.shift();
     }
     clauseEditHistory.set(contract, history);
 }
 
-function updateClauseReviewTags(id, tags) {
-    const clause = fullClauseDatabase[id];
+function updateClauseReviewTags(id, tags, key = activeContractKey) {
+    const clause = contracts[key]?.data[id];
     if (!clause || !activeContractKey) return;
-    recordClauseEdit(id, clause, clause.content, tags);
+    recordClauseEdit(id, clause, clause.content, tags, '', 'content', key === activeContractKey ? null : key);
     clause.reviewTags = tags;
     clause.modifiedAt = Math.max(Date.now(), (clause.modifiedAt || 0) + 1);
     updateLocalModificationTime();
@@ -354,17 +365,23 @@ function undoClauseEdit() {
     const entry = history?.pop();
     if (!entry) return;
     endTypingGroup();
-    const { id, clause, content, tags, nextContent, nextTags } = entry;
-    if (fullClauseDatabase[id] !== clause || !sameClauseContent(clause.content, nextContent) ||
-        JSON.stringify(clause.reviewTags || []) !== JSON.stringify(nextTags || [])) {
+    const { id, clause, field, content, tags, nextContent, nextTags, sourceKey } = entry;
+    const data = sourceKey ? contracts[sourceKey]?.data : fullClauseDatabase;
+    if (data?.[id] !== clause || !sameClauseContent(clause[field], nextContent) ||
+        (field === 'content' && JSON.stringify(clause.reviewTags || []) !== JSON.stringify(nextTags || []))) {
         history.length = 0;
         showError('条款已被其他操作更新，无法安全撤销。');
         return;
     }
-    if (tags || nextTags) clause.reviewTags = tags || [];
-    clause.content = content;
-    clause.modifiedAt = Math.max(Date.now(), (clause.modifiedAt || 0) + 1);
-    if (content !== nextContent) {
+    if (field !== 'content') {
+        setClauseTranslation(clause, field, content);
+        refreshRenderedTranslations();
+    } else {
+        if (tags || nextTags) clause.reviewTags = tags || [];
+        clause.content = content;
+        clause.modifiedAt = Math.max(Date.now(), (clause.modifiedAt || 0) + 1);
+    }
+    if (field === 'content' && content !== nextContent) {
         const body = document.getElementById('clause-' + id)?.querySelector('.clause-text');
         if (body) {
             body.innerHTML = sanitizeHtml(content);
@@ -381,19 +398,20 @@ function undoClauseEdit() {
     showSuccess('已撤销上一次修改');
 }
 
-function markAsUnsaved() { hasUnsavedChanges = true; }
+function markAsUnsaved() {
+    editRevision++;
+    hasUnsavedChanges = true;
+}
 
 function handleEditorMutation(target = null, group = '') {
     if (!activeContractKey || !contracts[activeContractKey]) return;
 
-    let clauseText = target?.closest?.('.clause-text') || null;
-    if (!clauseText) {
-        const selectionNode = window.getSelection()?.anchorNode;
-        const selectionElement = selectionNode?.nodeType === 3 ? selectionNode.parentElement : selectionNode;
-        clauseText = selectionElement?.closest?.('.clause-text') || null;
-    }
+    const clauseText = getClauseTextForNode(target) || getClauseTextForNode(window.getSelection()?.anchorNode);
     if (!clauseText) return;
-
+    if (clauseText.classList.contains('translation-text')) {
+        handleTranslationInput(clauseText, group);
+        return;
+    }
     if (!captureCurrentContent({ target: clauseText, recordHistory: true, group })) return;
     scheduleEditorSave();
 }
@@ -405,26 +423,52 @@ function scheduleEditorSave(immediate = false) {
     else editPersistTimer = setTimeout(() => autoSave(), 500);
 }
 
-document.getElementById('panelMain')?.addEventListener('input', event => {
+function setClauseTranslation(clause, field, content) {
+    clause[field] = content;
+    const times = clause.translationModifiedAt ??= {};
+    times[field] = Math.max(Date.now(), (times[field] || 0) + 1);
+}
+
+function handleTranslationInput(body, group) {
+    const { key, id, field } = getContractTextSource(body);
+    const clause = contracts[key]?.data[id];
+    if (!clause || !TRANSLATION_FIELDS.includes(field)) return;
+    const content = body.textContent ? sanitizeHtml(body.innerHTML) : '';
+    const current = getClauseTranslation(clause, field === 'translation_tc') || '';
+    if (sameClauseContent(current, content)) return;
+    recordClauseEdit(id, clause, content, undefined, group, field, key === activeContractKey ? null : key);
+    setClauseTranslation(clause, field, content);
+    updateLocalModificationTime();
+    scheduleEditorSave();
+}
+
+function handleContractTextInput(event) {
+    if (!isContractEditing()) return;
+    const body = event.target.closest('.clause-text, .translation-text');
+    if (!body?.isContentEditable) return;
     const group = ['insertText', 'insertCompositionText', 'deleteContentBackward', 'deleteContentForward'].includes(event.inputType)
         ? event.inputType : '';
-    if (event.target.closest('.clause-text')) handleEditorMutation(event.target, group);
-});
+    handleEditorMutation(body, group);
+}
+
+document.getElementById('panelMain')?.addEventListener('input', handleContractTextInput);
+document.getElementById('refContent')?.addEventListener('input', handleContractTextInput);
 
 document.addEventListener('pointerdown', endTypingGroup);
 document.addEventListener('keydown', event => {
-    if (event.target.closest?.('.clause-text') && /^(?:Arrow|Home|End|Page)/.test(event.key)) endTypingGroup();
+    if (event.target.closest?.('.clause-text, .translation-text') && /^(?:Arrow|Home|End|Page)/.test(event.key)) endTypingGroup();
     if (event.defaultPrevented || event.isComposing || !(event.ctrlKey || event.metaKey) || event.shiftKey ||
         event.altKey || event.key.toLowerCase() !== 'z' || !activeContractKey || isAssistantMode) return;
     const field = event.target.closest?.('input, textarea, select, [contenteditable="true"]');
-    if (field && !field.classList.contains('clause-text')) return;
+    if (field && !field.matches('.clause-text, .translation-text')) return;
     event.preventDefault();
     undoClauseEdit();
 });
 
 async function autoSave() {
-    if (!activeContractKey) return false;
+    if (!activeContractKey && !hasUnsavedChanges) return false;
     captureCurrentContent();
+    const revision = editRevision;
     try {
         if (contracts[activeContractKey]) contracts[activeContractKey].bookmarks = savedBookmarks;
         const persisted = await saveContractsToStorage();
@@ -433,7 +477,7 @@ async function autoSave() {
         Object.keys(contracts).forEach(key => { saveData.contracts[key] = { title: contracts[key].title, bookmarks: contracts[key].bookmarks }; });
         saveData.modifications = extractAllUserModifications();
         await localforage.setItem(AUTO_SAVE_KEY, JSON.stringify(saveData));
-        hasUnsavedChanges = false;
+        if (editRevision === revision) hasUnsavedChanges = false;
         lastSavedTime = Date.now();
         return true;
     } catch (e) {
@@ -452,123 +496,54 @@ document.addEventListener('keydown', async e => {
 });
 
 // =======================================================
-// 24. 高级导出 (Word / PDF)
+// 24. 导出当前合同 TXT
 // =======================================================
 
-async function exportToPdf() {
-    if (!activeContractKey) return;
-    if (typeof html2pdf === 'undefined') {
-        CustomDialog.alert('未能加载 PDF 导出引擎，请检查网络连接。', '导出失败');
-        return;
-    }
-    const isConfirm = await CustomDialog.confirm('确定要将当前合同及批注导出为 PDF 吗？', '导出为 PDF');
-    if (!isConfirm) return;
-
-    captureCurrentContent();
-    const exportTask = window.StatusCenter?.start('正在生成 PDF，请稍候…', 'PDF 导出');
-
-    const element = document.getElementById('panelMain').cloneNode(true);
-    // 移除不必要的按钮
-    element.querySelectorAll('.clause-actions').forEach(el => el.remove());
-
-    // 简单优化 PDF 样式
-    element.style.padding = '20px';
-    element.style.background = 'white';
-    element.style.color = 'black';
-
-    const opt = {
-        margin: 10,
-        filename: `${contracts[activeContractKey].title}_审阅版.pdf`,
-        image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: { scale: 2, useCORS: true },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
-    };
-
-    try {
-        await html2pdf().set(opt).from(element).save();
-        exportTask?.finish('PDF 导出成功。');
-    } catch (err) {
-        exportTask?.finish(`导出 PDF 失败: ${err.message}`, 'error');
-    }
-}
-
-async function exportToWord(includeAnnotations) {
-    if (!activeContractKey || typeof docx === 'undefined') {
-        CustomDialog.alert('未能加载 Word 导出引擎，请检查网络连接。', '导出失败');
-        return;
-    }
-
-    captureCurrentContent();
-
-    const { Document, Packer, Paragraph, TextRun, HeadingLevel } = docx;
-    const docData = contracts[activeContractKey].data;
-    const children = [];
-
-    // 标题
-    children.push(new Paragraph({
-        text: contracts[activeContractKey].title,
-        heading: HeadingLevel.TITLE,
-        spacing: { after: 400 }
-    }));
-
-    Object.keys(docData).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).forEach(id => {
-        const clause = docData[id];
-
-        // 条款编号与标题
-        children.push(new Paragraph({
-            text: `${id} ${clause.title || ''}`,
-            heading: HeadingLevel.HEADING_2,
-            spacing: { before: 200, after: 100 }
-        }));
-
-        // 解析纯文本内容 (去除HTML标签)
-        const tempDiv = document.createElement('div');
-        tempDiv.innerHTML = clause.content || '';
-        const plainText = tempDiv.innerText || tempDiv.textContent || '';
-
-        children.push(new Paragraph({
-            children: [new TextRun({ text: plainText })],
-            spacing: { after: 200 }
-        }));
-
-        // 处理批注 (如果是审阅版)
-        if (includeAnnotations) {
-            const notes = tempDiv.querySelectorAll('.note-span');
-            if (notes.length > 0) {
-                children.push(new Paragraph({
-                    children: [new TextRun({ text: "批注/备注:", bold: true, color: "FF0000" })]
-                }));
-                notes.forEach(note => {
-                    const noteText = note.getAttribute('data-note') || '';
-                    const hlText = note.innerText || '';
-                    children.push(new Paragraph({
-                        children: [
-                            new TextRun({ text: `[原文: ${hlText}] `, italics: true, color: "666666" }),
-                            new TextRun({ text: `-> ${noteText}`, color: "FF0000" })
-                        ],
-                        spacing: { after: 100 },
-                        bullet: { level: 0 }
-                    }));
-                });
+function cleanContractText(value) {
+    const template = document.createElement('template');
+    template.innerHTML = sanitizeHtml(value || '');
+    template.content.querySelectorAll('b, i, em, strong, span, u, strike, s, mark').forEach(element => {
+        element.replaceWith(...element.childNodes);
+    });
+    template.content.querySelectorAll('*').forEach(element => {
+        for (const attr of [...element.attributes]) {
+            if (attr.name === 'style' || attr.name === 'class' || attr.name.startsWith('data-')) {
+                element.removeAttribute(attr.name);
             }
         }
     });
+    return template.innerHTML;
+}
 
-    const doc = new Document({ sections: [{ properties: {}, children: children }] });
-    const suffix = includeAnnotations ? '_带批注审阅版' : '_基础版';
+function exportContractText(includeAnnotations) {
+    document.getElementById('exportMenu').style.display = 'none';
+    if (!activeContractKey || isAssistantMode) {
+        showError('请先打开要导出的合同标签页。');
+        return;
+    }
 
-    const exportTask = window.StatusCenter?.start('正在生成 Word 文档…', 'Word 导出');
-    Packer.toBlob(doc).then(blob => {
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `${contracts[activeContractKey].title}${suffix}.docx`;
-        a.click();
-        window.URL.revokeObjectURL(url);
-        exportTask?.finish(`Word ${suffix} 导出成功。`);
-    }).catch(err => {
-        exportTask?.finish(`导出 Word 失败: ${err.message}`, 'error');
-    });
+    captureCurrentContent();
+    const contract = contracts[activeContractKey];
+    const payload = {
+        $contract: { name: contract.title, shortName: activeContractKey, sourceId: contract.sourceId || '' }
+    };
+    for (const [id, clause] of Object.entries(contract.data)) {
+        const entry = {};
+        for (const field of ['title', 'content', ...TRANSLATION_FIELDS]) {
+            entry[field] = includeAnnotations ? sanitizeHtml(clause[field] || '') : cleanContractText(clause[field]);
+        }
+        if (includeAnnotations && Array.isArray(clause.reviewTags)) entry.reviewTags = clause.reviewTags;
+        payload[id] = entry;
+    }
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const title = contract.title.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_');
+    link.href = url;
+    link.download = title + (includeAnnotations ? '_带批注文本.txt' : '_原文本.txt');
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 console.log('[editor.js] 编辑器与数据持久化加载完成');

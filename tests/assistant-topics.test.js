@@ -22,9 +22,17 @@ function loadTopicModule(values) {
     const store = storage(values);
     const { localforage } = store;
     const cloudWrites = [];
+    const documents = new Map();
+    const collection = path => ({
+        doc: id => makeRef(path + '/' + id),
+        get: async () => {
+            const rows = [...documents.entries()].filter(([key]) => key.startsWith(path + '/') && !key.slice(path.length + 1).includes('/'));
+            return { forEach: visit => rows.forEach(([key, data]) => visit({ id: key.split('/').at(-1), data: () => data })) };
+        }
+    });
     const makeRef = path => ({
         path,
-        collection: name => ({ doc: id => makeRef(`${path}/${name}/${id}`) })
+        collection: name => collection(path + '/' + name)
     });
     const context = {
         console, JSON, Map, Set, Promise, Date, Math,
@@ -47,16 +55,19 @@ function loadTopicModule(values) {
         window: { addEventListener: () => {}, innerWidth: 1280, FIREBASE_COLLECTIONS: { CONTRACT_MODS: 'general_contract_mods' } }
     };
     context.db = {
-        collection: name => ({ doc: id => makeRef(`${name}/${id}`) }),
+        collection,
         batch: () => {
             const operations = [];
-            return { set: (ref, data, options) => operations.push({ path: ref.path, data, options }), commit: async () => { cloudWrites.push(...operations); } };
+            return { set: (ref, data, options) => operations.push({ path: ref.path, data, options }), commit: async () => {
+                cloudWrites.push(...operations);
+                operations.forEach(write => documents.set(write.path, write.options?.merge ? { ...documents.get(write.path), ...write.data } : write.data));
+            } };
         }
     };
     context.window.window = context.window;
     vm.createContext(context);
     vm.runInContext(source, context, { filename: 'assistant-topics.js' });
-    return { context, values: store.values, cloudWrites };
+    return { context, values: store.values, cloudWrites, documents };
 }
 
 async function run() {
@@ -141,8 +152,12 @@ async function run() {
 
     const attachmentCloud = loadTopicModule({});
     await attachmentCloud.context.window.assistantTopicsReady;
+    const removedAttachments = [];
+    let importedAfterDelete = 0;
     attachmentCloud.context.window.AssistantAttachments = {
         messageAttachments: async () => [{ id: 'attachment-1', name: 'evidence.md', type: 'md', size: 12, extractedBytes: 12, text: '仅存于附件子文档', warning: null }],
+        removeMessage: async (topicId, messageId) => removedAttachments.push([topicId, messageId]),
+        importCloud: async () => { importedAfterDelete++; },
         clearDraft: async () => {}, loadDraft: async () => {}
     };
     const attachmentApi = attachmentCloud.context.window.AssistantTopics;
@@ -156,10 +171,21 @@ async function run() {
     const childWrite = attachmentCloud.cloudWrites.find(write => write.path.endsWith(`/assistant_topics/${attachmentTopicId}/messages/attachment-message/attachments/attachment-1`));
     assert.ok(parentWrite && !Object.prototype.hasOwnProperty.call(parentWrite.data, 'text'), 'message document must retain only attachment summaries');
     assert.strictEqual(childWrite?.data.text, '仅存于附件子文档', 'attachment body must use the separate attachment subcollection');
+    attachmentCloud.context.navigator.onLine = false;
     await attachmentApi.saveCurrentChat({ messages: [], hasContextBreak: false, contextBreakIndex: -1 });
-    assert.strictEqual(await attachmentApi.flushOutbox(), true, 'attachment deletion should synchronize');
+    assert.deepStrictEqual(removedAttachments, [[attachmentTopicId, 'attachment-message']], 'clearing removes the local attachment body');
+    assert.strictEqual(await attachmentApi.flushOutbox(), false, 'offline deletion stays queued');
+    attachmentCloud.context.navigator.onLine = true;
+    assert.strictEqual(await attachmentApi.syncWithCloud(), true, 'reconnect merges and propagates the queued deletion');
+    assert.equal(importedAfterDelete, 0, 'stale cloud messages must not restore attachments before flushing deletion');
+    assert.equal(JSON.parse(attachmentCloud.values.get('assistant_topic_messages_v2:' + attachmentTopicId)).length, 0);
     const tombstone = attachmentCloud.cloudWrites.find(write => write.path.endsWith(`/assistant_topics/${attachmentTopicId}/messages/attachment-message`) && write.data.status === 'deleted');
     assert.ok(tombstone && tombstone.options === undefined && !Object.prototype.hasOwnProperty.call(tombstone.data, 'content'), 'message tombstone must overwrite instead of merge so prior content is not retained');
+    const attachmentTombstone = attachmentCloud.documents.get(childWrite.path);
+    assert.equal(attachmentTombstone.status, 'deleted');
+    assert.ok(!('text' in attachmentTombstone));
+    await attachmentApi.syncWithCloud();
+    assert.equal(importedAfterDelete, 0, 'cloud tombstones must not rehydrate attachment bodies');
     console.log('assistant topic tests passed (migration, persistence, branching, offline outbox, Firebase writes)');
 }
 

@@ -10,6 +10,7 @@
 // 1. 全局状态（全部动态初始化，无硬编码合同）
 // =======================================================
 let contracts = {};                    // 动态合同数据库（空初始化）
+let contractDeletions = Object.create(null);
 let contractOrder = null;
 const CONTRACTS_DB_KEY = 'general_contract_db'; // IndexedDB 存储键名
 let fullClauseDatabase = {};           // 当前激活合同的数据引用
@@ -53,10 +54,10 @@ let assistantRefClauseType = null;
 let assistantRefClauseId = null;
 let assistantRefMode = 'ref';
 let isAssistantTraditional = false;
-let isThinkingMode = false;
 
 // 编辑模式
-let isEditMode = false;
+const editableContracts = new WeakSet();
+const TRANSLATION_FIELDS = ['translation', 'translation_tc'];
 // 同步滚动
 let isSyncMode = false;
 
@@ -97,10 +98,35 @@ let currentSelectedModelId = null;
 // 2. 合同注册与动态 Tab 管理
 // =======================================================
 
-/**
- * 注册新合同到系统
- */
-function registerContract(key, title, data) {
+function createContractToken() {
+    return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function getAvailableContractKey(name) {
+    const base = name.replace(/[<>"'&\\\u0000-\u001f]/g, '_').trim() || 'CONTRACT';
+    let key = base;
+    for (let suffix = 2; key === 'Welcome' || key === 'Assistant' || key === '$contract' || key === 'prototype' ||
+        Object.hasOwn(Object.prototype, key) || Object.hasOwn(contracts, key); suffix++) {
+        key = base + ' (' + suffix + ')';
+    }
+    return key;
+}
+
+function contractChangeTime(contract, patches = {}) {
+    let latest = contract?.replacementAt || 0;
+    for (const clause of [...Object.values(contract?.data || {}), ...Object.values(patches)]) {
+        latest = Math.max(latest, clause?.modifiedAt || 0,
+            clause?.translationModifiedAt?.translation || 0, clause?.translationModifiedAt?.translation_tc || 0);
+    }
+    return latest;
+}
+
+function markContractReplacement(contract, previousTime = 0) {
+    contract.replacementAt = Math.max(Date.now(), previousTime + 1);
+    contract.replacementId = createContractToken();
+}
+
+function registerContract(key, title, data, options = null) {
     // 每次重新导入都以本次导入的正文建立新的持久化基线。
     Object.values(data).forEach(clause => {
         clause.originalContent = clause.content || '';
@@ -108,14 +134,15 @@ function registerContract(key, title, data) {
     });
 
     const previousContract = contracts[key];
-    const existingSourceId = previousContract?.sourceId || null;
     contracts[key] = {
-        sourceId: existingSourceId,
+        sourceId: previousContract?.sourceId || options?.sourceId || null,
         visibility: previousContract?.visibility || null,
         title: title,
         data: data,
         bookmarks: null
     };
+    if (options?.shortName) contracts[key].shortName = options.shortName;
+    if (options || previousContract) markContractReplacement(contracts[key], contractChangeTime(previousContract));
 
     if (window.RetrievalSettings) {
         window.RetrievalSettings.ensureSourceIds(contracts);
@@ -147,9 +174,8 @@ function registerContract(key, title, data) {
     switchContract(key);
 
     // 保存到 IndexedDB
-    saveContractsToStorage();
-
     Logger.info('app', `已注册合同: ${key} (${title}), ${Object.keys(data).length} 条条款`);
+    return saveContractsToStorage();
 }
 
 function getContractDomId(key) {
@@ -269,6 +295,7 @@ function renderTabs() {
 function removeContract(key) {
     if (!contracts[key]) return;
     const sourceId = getContractDomId(key);
+    contractDeletions[sourceId] = Math.max(Date.now(), contractChangeTime(contracts[key]) + 1, (contractDeletions[sourceId] || 0) + 1);
     if (contractOrder?.sourceIds.includes(sourceId)) {
         contractOrder = {
             sourceIds: contractOrder.sourceIds.filter(id => id !== sourceId),
@@ -319,14 +346,37 @@ function removeContract(key) {
 /**
  * 将所有的合同数据序列化并保存到浏览器 IndexedDB 中
  */
-function writeContractSnapshot(nextContracts, nextOrder, nextActiveKey) {
+function writeContractSnapshot(nextContracts, nextOrder, nextActiveKey, deletions = contractDeletions) {
     return localforage.setItem(CONTRACTS_DB_KEY, JSON.stringify({
         version: 2,
         contracts: nextContracts,
         contractOrder: nextOrder,
+        contractDeletions: deletions,
         activeContractKey: nextActiveKey,
         savedAt: Date.now()
     }));
+}
+
+function getTranslationModifications(clause) {
+    const patch = {};
+    for (const field of TRANSLATION_FIELDS) {
+        const time = clause.translationModifiedAt?.[field];
+        if (time > 0 && typeof clause[field] === 'string') {
+            (patch.translationModifiedAt ??= {})[field] = time;
+            patch[field] = clause[field];
+        }
+    }
+    return patch;
+}
+
+function applyTranslationModifications(clause, patch, overwrite = false) {
+    for (const field of TRANSLATION_FIELDS) {
+        const time = patch.translationModifiedAt?.[field];
+        const previous = clause.translationModifiedAt?.[field] || 0;
+        if (!(time > 0) || typeof patch[field] !== 'string' || (!overwrite && time <= previous)) continue;
+        clause[field] = patch[field];
+        (clause.translationModifiedAt ??= {})[field] = overwrite ? Math.max(Date.now(), previous + 1) : time;
+    }
 }
 
 async function saveContractsToStorage() {
@@ -351,6 +401,7 @@ async function loadContractsFromStorage() {
         const saved = await localforage.getItem(CONTRACTS_DB_KEY);
         if (saved) {
             const parsed = JSON.parse(saved);
+            contractDeletions = Object.assign(Object.create(null), parsed.version === 2 ? parsed.contractDeletions : null);
             const storedContracts = parsed.version === 2 && parsed.contracts
                 ? parsed.contracts
                 : parsed;
@@ -366,11 +417,15 @@ async function loadContractsFromStorage() {
                     Object.keys(autoSnapshot.modifications || {}).forEach(contractKey => {
                         if (!storedContracts[contractKey]?.data) return;
                         Object.keys(autoSnapshot.modifications[contractKey]).forEach(clauseId => {
-                            if (!storedContracts[contractKey].data[clauseId]) return;
+                            const clause = storedContracts[contractKey].data[clauseId];
+                            if (!clause) return;
                             const modification = autoSnapshot.modifications[contractKey][clauseId];
-                            storedContracts[contractKey].data[clauseId].content = modification.content;
-                            storedContracts[contractKey].data[clauseId].modifiedAt = modification.modifiedAt || autoSnapshot.timestamp || Date.now();
-                            if (Array.isArray(modification.reviewTags)) storedContracts[contractKey].data[clauseId].reviewTags = modification.reviewTags;
+                            if (typeof modification.content === 'string') {
+                                clause.content = modification.content;
+                                clause.modifiedAt = modification.modifiedAt || autoSnapshot.timestamp || Date.now();
+                                if (Array.isArray(modification.reviewTags)) clause.reviewTags = modification.reviewTags;
+                            }
+                            applyTranslationModifications(clause, modification);
                         });
                     });
                     Object.keys(autoSnapshot.bookmarks || {}).forEach(contractKey => {
@@ -393,6 +448,7 @@ async function loadContractsFromStorage() {
                             version: 2,
                             contracts,
                             contractOrder,
+                            contractDeletions,
                             activeContractKey: storedActiveContractKey,
                             savedAt: Date.now()
                         }));
@@ -437,6 +493,24 @@ function setDocumentPanelToggleAvailability(enabled) {
     document.getElementById('btnToggleReferenceView')?.toggleAttribute('disabled', !enabled);
 }
 
+function isContractEditing() {
+    return !!activeContractKey && !isAssistantMode && editableContracts.has(contracts[activeContractKey]);
+}
+
+function updateEditModeUI() {
+    const editing = isContractEditing();
+    const btn = document.getElementById('btnEditMode');
+    if (btn) {
+        btn.disabled = !activeContractKey || isAssistantMode;
+        btn.setAttribute('aria-pressed', String(editing));
+        btn.style.backgroundColor = editing ? '#e74c3c' : '';
+        document.getElementById('editIcon').innerText = editing ? '✏️' : '🔒';
+    }
+    document.querySelectorAll('#panelMain .clause-text, #refContent .translation-text:not([data-translation-contract])').forEach(body => {
+        body.contentEditable = String(editing);
+    });
+}
+
 function ensureContractPanelState(key) {
     if (!key) return;
     if (!Object.prototype.hasOwnProperty.call(refViewStatePerContract, key)) {
@@ -474,11 +548,14 @@ function showWelcomePage() {
     if (activeContractKey) {
         captureCurrentContent();
         saveReferenceLanguagePreference();
+        if (typeof syncStatePerContract !== 'undefined') syncStatePerContract[activeContractKey] = isSyncMode;
         const panelMain = document.getElementById('panelMain');
         if (panelMain) mainScrollPerContract[activeContractKey] = panelMain.scrollTop;
     }
+    if (isSyncMode) disableSyncModeInternal();
     activeContractKey = null;
     fullClauseDatabase = {};
+    updateEditModeUI();
     setDocumentPanelToggleAvailability(false);
     document.querySelectorAll('.header-tab').forEach(btn => btn.classList.remove('active'));
     const tabWelcome = document.getElementById('tab-Welcome');
@@ -585,7 +662,7 @@ function showWelcomePage() {
                     <div class="welcome-feature-card-v2">
                         <div class="wf-icon">📤</div>
                         <div class="wf-title">一键导出</div>
-                        <div class="wf-desc">支持导出带批注 Word 文档及 PDF 格式</div>
+                        <div class="wf-desc">支持导出当前合同的原文本或带批注 TXT</div>
                     </div>
                 </div>
                 <div class="welcome-cta-v2">
@@ -683,7 +760,7 @@ function handleAutoRenameContract(oldKey, type, inputElement) {
 }
 
 function handleDeleteContract(key) {
-    if (confirm(`警告：您确认要彻底删除 "${key}" 吗？此操作无法撤销，数据将从本地存储中彻底移除。`)) {
+    if (confirm(`确认删除合同 "${key}"？此操作无法撤销，删除会在智能合并同步时同步到其他设备。`)) {
         removeContract(key);
     }
 }
@@ -782,14 +859,15 @@ function switchContract(key) {
     const tabEl = document.getElementById(`tab-${getContractDomId(key)}`);
     if (tabEl) tabEl.classList.add('active');
 
-    if (activeContractKey === key) {
+    if (activeContractKey === key && fullClauseDatabase === contracts[key].data) {
         restoreContractPanelState(key);
+        updateEditModeUI();
         return;
     }
     Logger.info('app', `切换合同: ${activeContractKey} → ${key}`);
 
     // 保存当前合同状态
-    if (activeContractKey && contracts[activeContractKey]) {
+    if (activeContractKey && contracts[activeContractKey]?.data === fullClauseDatabase) {
         saveReferenceLanguagePreference();
         if (typeof syncStatePerContract !== 'undefined') {
             syncStatePerContract[activeContractKey] = isSyncMode;
@@ -797,7 +875,6 @@ function switchContract(key) {
         const searchInput = document.querySelector('.search-input');
         if (!window.SelectionTools?.searchActive()) searchStatePerContract[activeContractKey] = searchInput ? searchInput.value : '';
         if (typeof clearSearchHighlights === 'function') clearSearchHighlights();
-        if (isSyncMode && typeof disableSyncModeInternal === 'function') disableSyncModeInternal();
         captureCurrentContent();
         contracts[activeContractKey].bookmarks = savedBookmarks;
 
@@ -834,6 +911,7 @@ function switchContract(key) {
         if (pr && pr.style.width) refWidthPerContract[activeContractKey] = pr.style.width;
     }
 
+    if (isSyncMode && typeof disableSyncModeInternal === 'function') disableSyncModeInternal();
     resetCrossRefState();
     activeContractKey = key;
     fullClauseDatabase = contracts[key].data;
@@ -855,8 +933,6 @@ function switchContract(key) {
     if (typeof activeBookmarkUid !== 'undefined') {
         activeBookmarkUid = activeBookmarkUidPerContract[key] || null;
     }
-
-    if (isEditMode) toggleEditMode();
 
     renderMainDocument();
     if (typeof initBookmarks === 'function') initBookmarks();
@@ -884,9 +960,11 @@ function switchContract(key) {
     const pr2 = document.getElementById('panelRef');
     if (pr2) pr2.style.width = refWidthPerContract[key] || '';
 
+    restoreContractPanelState(key);
+
     // 恢复同步滚动状态
     if (typeof syncStatePerContract !== 'undefined' && syncStatePerContract[key]) {
-        setTimeout(() => { if (typeof enableSyncModeInternal === 'function') enableSyncModeInternal(); }, 50);
+        enableSyncModeInternal(false);
     } else {
         const refContent = document.getElementById('refContent');
         const refHeader = document.getElementById('refFixedHeader');
@@ -894,7 +972,7 @@ function switchContract(key) {
         if (refHeader) refHeader.style.display = 'none';
     }
 
-    restoreContractPanelState(key);
+    updateEditModeUI();
 
     // 恢复搜索状态
     const targetSearchInput = document.querySelector('.search-input');
@@ -924,10 +1002,11 @@ function renderMainDocument() {
         return;
     }
     const sortedKeys = Object.keys(fullClauseDatabase).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+    const editable = isContractEditing();
     let html = "";
     sortedKeys.forEach(id => {
         const clause = fullClauseDatabase[id];
-        html += "<div id=\"clause-" + id + "\"><div style=\"display:flex; align-items:center; margin-top:40px; border-bottom:2px solid var(--border-color); padding-bottom:10px; flex-wrap:wrap; gap:8px;\"><h2 style=\"margin:0; border:none; padding:0; flex:1;\" onclick=\"showTranslation('" + id + "')\">" + sanitizeHtml(clause.title) + "</h2></div><div class=\"clause-text\" contenteditable=\"true\" spellcheck=\"false\">" + sanitizeHtml(clause.content) + "</div></div>";
+        html += "<div id=\"clause-" + id + "\"><div style=\"display:flex; align-items:center; margin-top:40px; border-bottom:2px solid var(--border-color); padding-bottom:10px; flex-wrap:wrap; gap:8px;\"><h2 style=\"margin:0; border:none; padding:0; flex:1;\" onclick=\"showTranslation('" + id + "')\">" + sanitizeHtml(clause.title) + "</h2></div><div class=\"clause-text\" contenteditable=\"" + editable + "\" spellcheck=\"false\">" + sanitizeHtml(clause.content) + "</div></div>";
     });
     contentDiv.innerHTML = html;
     contentDiv.querySelectorAll('.clause-ref').forEach(el => { el.outerHTML = el.textContent; });
@@ -1108,6 +1187,32 @@ function processRefLinks(text, sourceId) {
         return match;
     });
 }
+function getClauseTranslation(clause, traditional) {
+    if (!traditional) return clause.translation;
+    if (clause.translationModifiedAt?.translation_tc) return clause.translation_tc;
+    return clause.translation_tc || clause.translation;
+}
+
+function renderTranslationBody(clause, id, className, referenceKey = '') {
+    const field = isTraditionalChinese ? 'translation_tc' : 'translation';
+    const source = referenceKey ? ` data-translation-contract="${encodeInlineArgument(referenceKey)}"` : '';
+    return `<div class="translation-text ${className}" data-translation-clause="${encodeInlineArgument(id)}"
+        data-translation-field="${field}"${source} contenteditable="${!referenceKey && isContractEditing()}" spellcheck="false">${sanitizeHtml(getClauseTranslation(clause, isTraditionalChinese))}</div>`;
+}
+
+function refreshRenderedTranslations() {
+    const content = document.getElementById('refContent');
+    if (isViewingCrossContractRef && currentRefId && currentRefMode === 'trans') {
+        renderCrossContractRefContent(crossRefContractKey, currentRefId, 'trans');
+    } else if (content?.querySelector?.('.sync-trans-content')) {
+        const scrollTop = content.scrollTop;
+        renderAllTranslations();
+        content.scrollTop = scrollTop;
+    } else if (currentRefId && content?.querySelector?.('.ref-translation-text')) {
+        renderRefContent(currentRefId, 'trans');
+    }
+}
+
 function renderRefContent(id, mode) {
     currentRefId = id; currentRefMode = mode; updateNavButtons();
     saveReferenceLanguagePreference();
@@ -1125,10 +1230,9 @@ function renderRefContent(id, mode) {
         linkScheduleItems(content.querySelector('.ref-card-body > div'), id, 'ref-internal-link');
     } else {
         header.classList.add('mode-trans');
-        const transText = isTraditionalChinese ? (dbEntry.translation_tc || dbEntry.translation) : dbEntry.translation;
         const langLabel = isTraditionalChinese ? '繁體譯文' : '中文译文';
         title.innerText = langLabel + "：" + dbEntry.title;
-        content.innerHTML = "<div class=\"ref-card-body\"><div style=\"line-height:1.8; text-align:justify;\">" + sanitizeHtml(transText || '(暂无译文)') + "</div>" + getReverseRefHTML(id) + "</div>";
+        content.innerHTML = `<div class="ref-card-body">${renderTranslationBody(dbEntry, id, 'ref-translation-text')}${getReverseRefHTML(id)}</div>`;
     }
     content.scrollTop = 0;
 }
@@ -1163,10 +1267,9 @@ function renderCrossContractRefContent(contractKey, id, mode) {
         linkScheduleItems(content.querySelector('.ref-card-body > div'), id, 'ref-internal-link');
     } else {
         header.classList.add('mode-trans');
-        const transText = isTraditionalChinese ? (dbEntry.translation_tc || dbEntry.translation) : dbEntry.translation;
         const langLabel = isTraditionalChinese ? (contractKey + ' 繁體譯文') : (contractKey + ' 中文译文');
         title.innerText = langLabel + "：" + dbEntry.title;
-        content.innerHTML = "<div class=\"ref-card-body\"><div style=\"line-height:1.8; text-align:justify;\">" + (sanitizeHtml(transText) || '<span style="color:#999;">(暂无译文)</span>') + "</div></div>";
+        content.innerHTML = `<div class="ref-card-body">${renderTranslationBody(dbEntry, id, 'ref-translation-text', contractKey)}</div>`;
     }
     content.scrollTop = 0;
     updateLangModeButton();

@@ -17,10 +17,13 @@ const server = http.createServer((request, response) => {
     });
 });
 
-async function selectText(page, quote, id = '1', endId = id) {
-    await page.evaluate(async ({ quote, id, endId }) => {
-        const start = document.querySelector('#clause-' + id + ' .clause-text');
-        const end = document.querySelector('#clause-' + endId + ' .clause-text');
+async function selectText(page, quote, id = '1', endId = id, translation = false) {
+    await page.evaluate(async ({ quote, id, endId, translation }) => {
+        const body = id => document.querySelector(translation
+            ? '#refContent .translation-text[data-translation-clause="' + id + '"]'
+            : '#clause-' + id + ' .clause-text');
+        const start = body(id);
+        const end = body(endId);
         const offset = start.textContent.indexOf(quote);
         if (offset < 0) throw new Error('Missing quote: ' + quote);
         const point = (element, index) => {
@@ -43,7 +46,7 @@ async function selectText(page, quote, id = '1', endId = id) {
         selection.removeAllRanges();
         selection.addRange(range);
         start.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-    }, { quote, id, endId });
+    }, { quote, id, endId, translation });
     await page.locator('#floatingToolbar').waitFor();
 }
 
@@ -66,8 +69,8 @@ async function eventually(check, description) {
     assert.fail(description);
 }
 
-async function annotation(page, value) {
-    await selectText(page, paragraph);
+async function annotation(page, value, quote = paragraph, translation = false) {
+    await selectText(page, quote, '1', '1', translation);
     await toolbar(page).getByRole('button', { name: '添加/编辑备注' }).click();
     const dialog = page.locator('.custom-dialog-content');
     await dialog.locator('input').fill(value);
@@ -126,11 +129,13 @@ async function formatOnWord(page, word, property) {
         await page.evaluate(() => window.contractAppReady);
         await page.evaluate(() => {
             registerContract('A', 'Alpha Contract', {
-                '1': { title: 'Payment terms', content: '<p>Payment notice and written records. <em>Preserve emphasis.</em></p>' },
-                '2': { title: 'Records', content: 'Retention requirements.' }
+                '1': { title: 'Payment terms', content: '<p>Payment notice and written records. <em>Preserve emphasis.</em></p>',
+                    translation: '付款通知与书面记录。', translation_tc: '付款通知與書面紀錄。' },
+                '2': { title: 'Records', content: 'Retention requirements.', translation: '保留记录的要求。' }
             });
             registerContract('B', 'Beta Contract', {
-                '1': { title: 'Notice requirements', content: 'A Payment notice must be submitted in writing.' }
+                '1': { title: 'Notice requirements', content: 'A Payment notice must be submitted in writing.',
+                    translation: '应当以书面形式提交通知。' }
             });
         });
         await tab(page, 'A');
@@ -315,19 +320,182 @@ async function formatOnWord(page, word, property) {
         await searchInput.fill('');
         assert.equal(await clause(page).innerHTML(), original);
 
-        // AI shortcuts append an editable draft. Only the three approved actions are available.
+        // Drag-select a translation in reading mode and check that copy and edits use the right pane.
+        const translation = page.locator('#refContent .translation-text');
+        const translationQuote = '付款通知';
+        const selectTranslation = (quote = translationQuote, endId = '1') => selectText(page, quote, '1', endId, true);
+        const showTranslation = () => page.locator('#clause-1 h2').click();
+        await showTranslation();
+        const drag = await translation.evaluate(element => {
+            const range = document.createRange();
+            range.setStart(element.firstChild, 0);
+            range.setEnd(element.firstChild, 4);
+            const rect = range.getBoundingClientRect();
+            return { left: rect.left + 1, right: rect.right - 1, y: (rect.top + rect.bottom) / 2 };
+        });
+        await page.mouse.move(drag.left, drag.y);
+        await page.mouse.down();
+        await page.mouse.move(drag.right, drag.y, { steps: 8 });
+        await page.mouse.up();
+        const draggedText = await page.evaluate(() => window.getSelection().toString());
+        assert(draggedText.startsWith(translationQuote));
+        await toolbar(page).getByRole('button', { name: '复制', exact: true }).click();
+        await eventually(async () => (await clipboard(page)).includes('简体译文'), 'translation copy did not reach the clipboard');
+        assert.equal((await clipboard(page)).replace(/\r\n/g, '\n'),
+            draggedText + '\n——《Alpha Contract》 · 第 1 条 · Payment terms · 简体译文');
+        await annotation(page, '译文备注', translationQuote, true);
+        await annotation(page, '更新译文备注', translationQuote, true);
+        const translationNote = translation.locator('.note-span');
+        assert.equal(await translationNote.getAttribute('data-note'), '更新译文备注');
+        assert.equal(await clause(page).locator('.note-span').count(), 0);
+        await selectTranslation();
+        await more(page);
+        await toolbar(page).getByRole('button', { name: '删除备注', exact: true }).click();
+        assert.equal(await translationNote.count(), 0);
+        await undo(page);
+        assert.equal(await translationNote.getAttribute('data-note'), '更新译文备注');
+
+        await selectTranslation();
+        await toolbar(page).getByRole('button', { name: '文字颜色', exact: true }).click();
+        const fontPalette = page.locator('#fontColorMenu');
+        assert.deepEqual(await fontPalette.locator('button').evaluateAll(buttons => buttons.map(button => button.title)),
+            ['红色', '黄色', '蓝色', '紫色', '橙色', '绿色', '青色', '粉色']);
+        await fontPalette.getByRole('button', { name: '绿色', exact: true }).click();
+        assert.match(await translation.innerHTML(), /color: rgb\(39, 174, 96\)/);
+        assert.doesNotMatch(await clause(page).innerHTML(), /39, 174, 96/);
+        await selectTranslation();
+        await more(page);
+        await toolbar(page).getByRole('button', { name: '清除格式', exact: true }).click();
+        assert.doesNotMatch(await translation.innerHTML(), /color:/);
+        assert.equal(await translationNote.getAttribute('data-note'), '更新译文备注');
+        await undo(page);
+        assert.match(await translation.innerHTML(), /color: rgb\(39, 174, 96\)/);
+
+        await page.locator('#btnLangToggle').click();
+        assert.match(await translation.textContent(), /書面紀錄/);
+        assert.equal(await translationNote.count(), 0);
+        await selectTranslation();
+        await more(page);
+        await toolbar(page).getByRole('button', { name: '审阅标签 ▸' }).click();
+        await toolbar(page).getByRole('button', { name: '风险点', exact: true }).click();
+        await page.keyboard.press('Escape');
+        await page.keyboard.press('Escape');
+        await page.locator('#btnLangToggle').click();
+        await page.getByRole('button', { name: '查看审阅标签' }).click();
+        await panel(page).getByRole('button', { name: /繁體譯文.*付款通知.*风险点/ }).click();
+        await page.waitForFunction(() => isTraditionalChinese && CSS.highlights.has('selection-result'));
+        await panel(page).getByRole('button', { name: '关闭结果面板' }).click();
+        await page.locator('#btnLangToggle').click();
+
+        await page.locator('#btnSync').click();
+        await page.waitForFunction(() => !syncScrollLock);
+        await selectTranslation(translationQuote, '2');
+        await toolbar(page).getByRole('button', { name: '复制', exact: true }).click();
+        await eventually(async () => (await clipboard(page)).includes('第 2 条 · Records · 简体译文'), 'sync copy omitted the second translation');
+        await page.locator('#btnSync').click();
+        await tab(page, 'B');
+        await showTranslation();
+        await selectTranslation('书面形式');
+        await more(page);
+        await toolbar(page).getByRole('button', { name: '搜索选中文字' }).click();
+        await panel(page).getByRole('button', { name: /Notice requirements.*简体译文/ }).click();
+        await page.waitForFunction(() => CSS.highlights.has('selection-result'));
+        await panel(page).getByRole('button', { name: '关闭结果面板' }).click();
+        await tab(page, 'A');
+        await showTranslation();
+        await page.evaluate(() => showCrossContractRef('B', '1'));
+        await selectTranslation('书面形式');
+        await toolbar(page).getByRole('button', { name: '复制', exact: true }).click();
+        await eventually(async () => (await clipboard(page)).includes('《Beta Contract》 · 第 1 条 · Notice requirements · 简体译文'),
+            'cross-contract translation copy used the wrong source');
+        await annotation(page, '跨合同备注', '书面形式', true);
+        assert.equal(await page.evaluate(() => contracts.A.data['1'].translation.includes('跨合同备注')), false);
+        assert.equal(await page.evaluate(() => contracts.B.data['1'].translation.includes('跨合同备注')), true);
+        await undo(page);
+        assert.equal(await translation.locator('.note-span').count(), 0);
+
+        // Each AI action creates its own empty topic and persists the editable prompt.
         await page.locator('#tab-Assistant').click();
         await page.evaluate(() => window.assistantTopicsReady);
         const input = page.locator('#chatInput');
+        const currentTopic = () => page.evaluate(() => AssistantTopics.getCurrentTopicId());
+        const existingId = await currentTopic();
+        await page.evaluate(async () => {
+            const messages = [{ role: 'user', content: 'Existing message' }];
+            applyAssistantTopicChatState({ messages });
+            await saveChatToStorage();
+        });
         await input.fill('Existing draft');
+        const drafts = new Map();
+        for (const [action, translated] of [['解释这段', false], ['分析风险', true], ['拟修改建议', true]]) {
+            await tab(page, 'A');
+            if (translated) { await showTranslation(); await selectTranslation(); }
+            else await selectText(page, paragraph);
+            await toolbar(page).getByRole('button', { name: '发送给 AI' }).click();
+            assert.deepEqual(await page.locator('#selectionAiMenu button').allTextContents(), ['解释这段', '分析风险', '拟修改建议']);
+            await toolbar(page).getByRole('button', { name: action, exact: true }).click();
+            await page.waitForFunction(action => document.getElementById('chatInput').value.startsWith(action + '：'), action);
+            const id = await currentTopic();
+            assert(id !== existingId && !drafts.has(id));
+            const draft = await input.inputValue();
+            assert(draft.includes('Alpha Contract'));
+            assert(draft.includes(translated ? '简体译文】\n付款通知' : 'Payment notice'));
+            assert.equal(await page.locator('#chatMessages .chat-message').count(), 0);
+            assert.equal(await page.locator('.assistant-topic-item.is-active').getAttribute('data-topic-id'), id);
+            assert(await input.evaluate(element => document.activeElement === element));
+            drafts.set(id, draft);
+        }
+        await page.locator(`.assistant-topic-item[data-topic-id="${existingId}"] .assistant-topic-select`).click();
+        await page.waitForFunction(() => document.getElementById('chatInput').value === 'Existing draft');
+        assert.equal(await page.locator('#chatMessages .message-content').textContent(), 'Existing message');
+        await page.reload();
+        await page.evaluate(() => window.contractAppReady);
+        await page.locator('#tab-Assistant').click();
+        for (const [id, draft] of drafts) {
+            await page.locator(`.assistant-topic-item[data-topic-id="${id}"] .assistant-topic-select`).click();
+            await page.waitForFunction(draft => document.getElementById('chatInput').value === draft, draft);
+        }
+        await tab(page, 'A');
+        await showTranslation();
+        assert.equal(await translationNote.getAttribute('data-note'), '更新译文备注');
+        assert.match(await translation.innerHTML(), /color: rgb\(39, 174, 96\)/);
+        assert.equal(aiCalls, 0);
+
+        // An in-progress reply finishes in its original topic before the shortcut opens the new draft.
+        let releaseReply;
+        const replyGate = new Promise(resolve => { releaseReply = resolve; });
+        await page.route('**/api/ai', async route => {
+            if (!route.request().postDataJSON().body.stream) {
+                await route.fulfill({ json: { choices: [{ message: { content: '旧话题' } }] } });
+                return;
+            }
+            await replyGate;
+            await route.fulfill({ contentType: 'text/event-stream',
+                body: 'data: ' + JSON.stringify({ choices: [{ delta: { content: 'Old topic reply' } }] }) + '\n\ndata: [DONE]\n\n' });
+        });
+        await page.locator('#tab-Assistant').click();
+        await page.locator(`.assistant-topic-item[data-topic-id="${existingId}"] .assistant-topic-select`).click();
+        await page.waitForFunction(() => document.getElementById('chatInput').value === 'Existing draft');
+        await page.evaluate(() => Object.assign(AI_CONFIG, {
+            apiEndpoint: 'https://api.deepseek.com/v1', apiKey: 'test-only', model: 'deepseek-chat'
+        }));
+        await input.fill('Wait for this reply');
+        const oldRequest = page.waitForRequest('**/api/ai');
+        await page.locator('#sendBtn').click();
+        await oldRequest;
         await tab(page, 'A');
         await selectText(page, paragraph);
         await toolbar(page).getByRole('button', { name: '发送给 AI' }).click();
-        assert.deepEqual(await page.locator('#selectionAiMenu button').allTextContents(), ['解释这段', '分析风险', '拟修改建议']);
         await toolbar(page).getByRole('button', { name: '分析风险', exact: true }).click();
-        await page.waitForFunction(() => document.getElementById('chatInput').value.includes('分析风险'));
-        assert.match(await input.inputValue(), /^Existing draft[\s\S]+分析风险[\s\S]+Alpha Contract[\s\S]+Payment notice/);
-        assert.equal(aiCalls, 0);
+        assert.equal(await currentTopic(), existingId);
+        releaseReply();
+        await page.waitForFunction(() => document.getElementById('chatInput').value.startsWith('分析风险：'));
+        assert.notEqual(await currentTopic(), existingId);
+        assert.equal(await page.locator('#chatMessages .chat-message').count(), 0);
+        await page.locator(`.assistant-topic-item[data-topic-id="${existingId}"] .assistant-topic-select`).click();
+        await page.locator('#chatMessages .message-content').getByText('Old topic reply').waitFor();
+        assert.equal(await page.locator('#chatMessages .chat-message.user').last().textContent().then(text => text.includes('Wait for this reply')), true);
+        assert.equal(await input.inputValue(), '');
         await tab(page, 'A');
         await page.setViewportSize({ width: 540, height: 820 });
         await selectText(page, paragraph);

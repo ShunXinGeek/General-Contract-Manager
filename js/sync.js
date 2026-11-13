@@ -37,7 +37,7 @@ function disableSyncModeInternal() {
  * 内部函数：启用同步滚动模式（不切换状态，直接启用）
  * 用于 switchContract() 切换合同时恢复状态
  */
-function enableSyncModeInternal() {
+function enableSyncModeInternal(openPanel = true) {
     isSyncMode = true;
 
     // 渲染全部译文
@@ -60,7 +60,7 @@ function enableSyncModeInternal() {
     }
 
     // 打开右侧栏
-    if (typeof openSidePanel === 'function') {
+    if (openPanel && typeof openSidePanel === 'function') {
         openSidePanel();
     }
 
@@ -131,14 +131,9 @@ function renderAllTranslations() {
     let html = '';
     sortedKeys.forEach(id => {
         const clause = fullClauseDatabase[id];
-        const useTC = typeof isTraditionalChinese !== 'undefined' && isTraditionalChinese;
-        const transText = useTC
-            ? (clause.translation_tc || clause.translation)
-            : clause.translation;
-
         html += `<div id="sync-trans-${id}" class="sync-trans-block" data-clause-id="${id}">
             <div class="sync-trans-title" onclick="scrollToClause('${id}')">${typeof sanitizeHtml === 'function' ? sanitizeHtml(clause.title) : clause.title}</div>
-            <div class="sync-trans-content">${typeof sanitizeHtml === 'function' ? sanitizeHtml(transText || '<span style="color:#999;">(暂无译文)</span>') : (transText || '(暂无译文)')}</div>
+            ${renderTranslationBody(clause, id, 'sync-trans-content')}
         </div>`;
     });
 

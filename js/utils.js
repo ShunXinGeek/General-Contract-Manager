@@ -122,7 +122,8 @@ const CustomDialog = {
         return Promise.resolve();
     },
 
-    confirm: function (message, title = '确认') {
+    confirm: function (message, title = '确认', signal) {
+        if (signal?.aborted) return Promise.resolve(false);
         return new Promise(resolve => {
             const overlay = this._createOverlay();
             const { content, body } = this._createContent(title, escapeHtml(message).replace(/\n/g, '<br>'));
@@ -136,18 +137,29 @@ const CustomDialog = {
             const btnCancel = document.createElement('button');
             btnCancel.innerText = '取消';
             btnCancel.style.cssText = 'padding:8px 20px; background:#eee; color:#333; border:none; border-radius:4px; cursor:pointer;';
-            btnCancel.onclick = () => { overlay.remove(); resolve(false); };
+            const finish = confirmed => {
+                signal?.removeEventListener('abort', cancel);
+                overlay.remove();
+                resolve(confirmed);
+            };
+            const cancel = () => finish(false);
+            signal?.addEventListener('abort', cancel, { once: true });
+            btnCancel.onclick = cancel;
 
             const btnConfirm = document.createElement('button');
             btnConfirm.innerText = '确定';
             btnConfirm.style.cssText = 'padding:8px 20px; background:#e74c3c; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;';
-            btnConfirm.onclick = () => { overlay.remove(); resolve(true); };
+            btnConfirm.onclick = () => finish(true);
 
             btnDiv.appendChild(btnCancel);
             btnDiv.appendChild(btnConfirm);
             body.appendChild(btnDiv);
             overlay.appendChild(content);
             document.body.appendChild(overlay);
+            if (signal) {
+                overlay.addEventListener('keydown', event => { if (event.key === 'Escape') cancel(); });
+                btnCancel.focus();
+            }
         });
     },
 

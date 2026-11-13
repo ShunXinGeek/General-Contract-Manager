@@ -11,6 +11,13 @@ const RAG_INDEX_SCHEMA_VERSION = 3;
 // Leave room under the Netlify /api/retrieval limit of 60 requests per minute.
 const RAG_INDEX_REQUEST_INTERVAL_MS = 1250;
 
+function readVectorRequest(request) {
+    return new Promise((resolve, reject) => {
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(new Error('本机向量索引读取失败'));
+    });
+}
+
 const RAG = {
     db: null,
     statusCallback: null,
@@ -88,15 +95,41 @@ const RAG = {
         if (!this.db) await this.init();
         const transaction = this.db.transaction([RAG_STORE_NAME], 'readonly');
         const store = transaction.objectStore(RAG_STORE_NAME);
-        const read = request => new Promise((resolve, reject) => {
-            request.onsuccess = () => resolve(request.result);
-            request.onerror = () => reject(new Error('本机向量索引读取失败'));
-        });
-        if (!sourceIds) return read(store.getAll());
+        if (!sourceIds) return readVectorRequest(store.getAll());
 
         const index = store.index(RAG_SOURCE_INDEX);
-        const batches = await Promise.all(sourceIds.map(sourceId => read(index.getAll(sourceId))));
+        const batches = await Promise.all(sourceIds.map(sourceId => readVectorRequest(index.getAll(sourceId))));
         return batches.flat();
+    },
+
+    async countUnverifiedLegacyRecords(sources, coveredIds) {
+        if (!this.db) return 0;
+        const uncoveredByType = new Map();
+        for (const row of sources) {
+            if (coveredIds.has(`${row.sourceId}::${row.id}`)) continue;
+            if (!uncoveredByType.has(row.type)) uncoveredByType.set(row.type, new Set());
+            uncoveredByType.get(row.type).add(`${row.type}_${row.id}`);
+        }
+        if (!uncoveredByType.size) return 0;
+
+        // Pre-sourceId records used `${type}_${clauseId}` keys. Look up keys
+        // for the enabled sources with gaps, without loading the whole vector store.
+        const db = this.db;
+        const store = db.transaction(RAG_STORE_NAME, 'readonly').objectStore(RAG_STORE_NAME);
+        const matches = await Promise.all([...uncoveredByType].map(async ([type, expectedKeys]) => {
+            const prefix = `${type}_`;
+            const keys = await readVectorRequest(store.getAllKeys(IDBKeyRange.bound(prefix, `${type}\u0060`, false, true)));
+            return keys.filter(key => expectedKeys.has(key)).map(key => ({ key, type }));
+        }));
+        const candidates = matches.flat();
+        if (!candidates.length) return 0;
+
+        const records = db.transaction(RAG_STORE_NAME, 'readonly').objectStore(RAG_STORE_NAME);
+        const unverified = await Promise.all(candidates.map(async ({ key, type }) => {
+            const item = await readVectorRequest(records.get(key));
+            return item && !item.sourceId && item.type === type && key === `${type}_${item.clauseId}`;
+        }));
+        return unverified.filter(Boolean).length;
     },
 
     async replaceSourceRecords(sourceIds, records) {
@@ -183,10 +216,12 @@ const RAG = {
             coverage.get(item.sourceId).covered++;
             validRecords.push({ ...item, type: source.type, clauseId: clauseKey });
         }
+        const legacyCount = allContracts ? 0 : await this.countUnverifiedLegacyRecords(sources, coveredIds);
+        if (legacyCount) rejected['legacy-unverified'] = (rejected['legacy-unverified'] || 0) + legacyCount;
         return {
             schemaVersion: RAG_INDEX_SCHEMA_VERSION,
             corpus: sources.length,
-            records: records.length,
+            records: records.length + legacyCount,
             valid: validRecords.length,
             uncovered: sources.length - coveredIds.size,
             rejected,

@@ -1312,6 +1312,25 @@ header .icon-btn:disabled {
 
 }
 
+.ref-translation-text {
+    line-height: 1.8;
+    text-align: justify;
+}
+
+.translation-text:empty::before {
+    content: '(暂无译文)';
+    color: #999;
+    pointer-events: none;
+}
+
+.translation-text[contenteditable="true"] {
+    min-height: 1.8em;
+}
+
+.translation-text[contenteditable="true"]:focus::before {
+    content: none;
+}
+
 
 
 .panel-main h2 {
@@ -4022,7 +4041,7 @@ body:not(.dark-mode):not(.eye-mode) .chat-message.assistant .message-content h4 
 }
 
 .chat-input-area .attachment-tray {
-    max-height: 100px;
+    max-height: min(30vh, 240px);
     overflow-y: auto;
 }
 
@@ -6659,14 +6678,24 @@ body:not(.dark-mode):not(.eye-mode) .chat-message.assistant .message-content h4 
     }
 }
 
-/* 管理助手附件：仅展示文件摘要，正文以 textContent 处理而不渲染为 HTML。 */
+/* 管理助手附件预览使用纯文本。 */
 .attachment-tray { display:flex; flex-wrap:wrap; gap:6px; padding:7px 8px 0; }
 .attachment-chip,.message-attachments span { display:inline-flex; align-items:center; gap:5px; min-width:0; border:1px solid var(--border-color); border-radius:7px; background:var(--bg-nav-header); color:var(--text-main); font-size:12px; }
-.attachment-chip { max-width:100%; padding:4px 5px 4px 8px; }
+.attachment-chip { max-width:100%; padding:4px 5px 4px 8px; flex-wrap:wrap; }
 .attachment-chip-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:260px; }
-.attachment-chip-detail { color:var(--text-muted); white-space:nowrap; }
+.attachment-chip-detail { color:var(--text-muted); overflow-wrap:anywhere; }
 .attachment-chip button { width:20px; height:20px; padding:0; border-radius:50%; color:var(--text-muted); font-size:17px; line-height:1; }
 .attachment-chip button:hover:not(:disabled) { color:#fff; background:#b42318; }.attachment-chip.is-error { border-color:#d92d20; }.attachment-chip.is-parsing { opacity:.7; }
+.attachment-chip .attachment-retry { width:auto; padding: 0 5px; font-size:12px; border-radius:4px; }
+.attachment-preview { min-width:0; max-width:100%; }
+.attachment-preview summary { cursor:pointer; }
+.attachment-preview pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:180px; max-width:min(65vw, 680px); overflow:auto; margin:4px 0; }
+.assistant-thinking-control { position:relative; }
+.assistant-thinking-menu { position:absolute; z-index:5; bottom:calc(100% + 5px); right:0; min-width:max-content; padding:4px; border:1px solid var(--border-color); border-radius:8px; background:var(--bg-nav-header); color:var(--text-main); }
+.assistant-thinking-menu button { display:block; width:100%; padding:6px 10px; text-align:left; border-radius:4px; color:inherit; }
+.assistant-thinking-menu button[aria-checked="true"], .assistant-thinking-menu button:hover { background:var(--bg-nav-item-hover); }
+.clause-option[role="button"]:focus-visible, .assistant-thinking-menu button:focus-visible { outline:2px solid currentColor; outline-offset:-2px; }
+.clause-selector-notice:not(:empty) { padding: 4px 14px; color:var(--text-muted); }
 .message-attachments { display:flex; flex-wrap:wrap; gap:5px; margin-top:7px; }.message-attachments span { padding:3px 7px; }
 
 /* Transparent middle space flexes; the tab background hugs its contents. */

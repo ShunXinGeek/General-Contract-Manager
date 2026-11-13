@@ -24,7 +24,10 @@
     const results = document.getElementById('selectionResultList');
     const searchInput = document.querySelector('.search-input');
     const reviewButton = document.getElementById('openReviewTags');
+    const main = document.getElementById('panelMain');
+    const ref = document.getElementById('refContent');
     const reviewLabels = ['待确认', '风险点', '待谈判', '重要义务'];
+    const translationLabels = { translation: '简体译文', translation_tc: '繁體譯文' };
     const parsedText = document.createElement('template');
     let selected = null;
     let openMenu = null;
@@ -74,7 +77,8 @@
         ['浅黄', '#FFF59D'], ['浅粉', '#F8BBD0'], ['浅青', '#80CBC4'], ['浅灰', '#E0E0E0']
     ]);
     fillPalette('fontColorMenu', 'foreColor', [
-        ['红色', '#E74C3C'], ['黄色', '#F1C40F'], ['蓝色', '#3498DB'], ['紫色', '#9B59B6']
+        ['红色', '#E74C3C'], ['黄色', '#F1C40F'], ['蓝色', '#3498DB'], ['紫色', '#9B59B6'],
+        ['橙色', '#E67E22'], ['绿色', '#27AE60'], ['青色', '#16A085'], ['粉色', '#D63384']
     ]);
 
     function textOffset(root, node, offset) {
@@ -113,10 +117,14 @@
         const range = selection.getRangeAt(0);
         const first = getClauseTextForNode(range.startContainer);
         const last = getClauseTextForNode(range.endContainer);
-        const main = document.getElementById('panelMain');
-        if (!first || !last || !main.contains(first) || !main.contains(last)) return null;
+        if (!first || !last) return null;
+        const pane = first.classList.contains('translation-text') ? ref : main;
+        if (!pane.contains(first) || !pane.contains(last)) return null;
+        const source = getContractTextSource(first);
+        const end = getContractTextSource(last);
+        if (source.key !== end.key || source.field !== end.field) return null;
         return {
-            key: activeContractKey, range: range.cloneRange(), text,
+            key: activeContractKey, pane, source, range: range.cloneRange(), text,
             first, last, clauseText: first === last ? first : null
         };
     }
@@ -201,11 +209,13 @@
     }
 
     function excerptSources(snapshot) {
-        const contract = contracts[snapshot.key];
+        const { pane, source } = snapshot;
+        const contract = contracts[source.key];
         const bodies = snapshot.clauseText ? [snapshot.clauseText] :
-            [...document.querySelectorAll('#panelMain .clause-text')].filter(body => snapshot.range.intersectsNode(body));
+            [...pane.querySelectorAll(pane === main ? '.clause-text' : '.translation-text')]
+                .filter(body => snapshot.range.intersectsNode(body));
         return bodies.flatMap(body => {
-            const id = body.parentElement.id.slice('clause-'.length);
+            const { id, field } = getContractTextSource(body);
             const part = document.createRange();
             part.selectNodeContents(body);
             if (body === snapshot.first) part.setStart(snapshot.range.startContainer, snapshot.range.startOffset);
@@ -213,7 +223,9 @@
             const fragment = document.createElement('div');
             fragment.append(part.cloneContents());
             const text = snapshot.clauseText ? snapshot.text : plainText(fragment.innerHTML);
-            return text ? [{ text, source: '《' + (contract.title || snapshot.key) + '》 · ' + clauseLabel(id, contract.data[id]) }] : [];
+            const label = '《' + (contract.title || source.key) + '》 · ' + clauseLabel(id, contract.data[id]);
+            const language = translationLabels[field];
+            return text ? [{ text, source: language ? label + ' · ' + language : label }] : [];
         });
     }
 
@@ -239,28 +251,32 @@
 
     async function prepareAI(snapshot, instruction) {
         const context = excerptSources(snapshot).map(part => '【' + part.source + '】\n' + part.text).join('\n\n');
-        await switchToAssistant();
-        if (!isAssistantMode) return;
-        const input = document.getElementById('chatInput');
-        if (input.disabled || input.readOnly) {
-            showError('请先切换到可编辑的 AI 对话。');
-            return;
+        const topics = window.AssistantTopics;
+        try {
+            await switchToAssistant();
+            await topics.waitForIdle();
+            if (isAssistantMode) await topics.createTopic({ draft: instruction + '：\n\n' + context });
+        } catch (error) {
+            console.error('创建 AI 草稿失败:', error);
+            showError('无法新建话题草稿，请重试。');
         }
-        const prompt = instruction + '：\n\n' + context;
-        input.value = input.value.trim() ? input.value + '\n\n' + prompt : prompt;
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.focus();
     }
 
     function formatSelection(snapshot, format, color) {
         const { range, clauseText } = snapshot;
         if (!clauseText) return;
-        clauseText.focus({ preventScroll: true });
-        const selection = window.getSelection();
-        selection.removeAllRanges();
-        selection.addRange(range);
-        document.execCommand('styleWithCSS', false, true);
-        document.execCommand(format, false, color || null);
+        const editable = clauseText.contentEditable;
+        clauseText.contentEditable = 'true';
+        try {
+            clauseText.focus({ preventScroll: true });
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            document.execCommand('styleWithCSS', false, true);
+            document.execCommand(format, false, color || null);
+        } finally {
+            clauseText.contentEditable = editable;
+        }
         handleEditorMutation(clauseText);
     }
 
@@ -335,12 +351,13 @@
 
     function tagSelection() {
         const { range, clauseText } = selected;
-        const id = clauseText.parentElement.id.slice('clause-'.length);
+        const { key, id, field } = selected.source;
         const text = clauseText.textContent;
         const start = textOffset(clauseText, range.startContainer, range.startOffset);
         const end = textOffset(clauseText, range.endContainer, range.endOffset);
-        const entries = tagsFor(fullClauseDatabase[id]);
+        const entries = tagsFor(contracts[key].data[id]);
         const matches = entries.filter(entry => {
+            if ((entry.anchor.field || 'content') !== field) return false;
             const offset = resolveBookmarkOffset(text, entry.anchor);
             return offset !== null && start >= offset && end <= offset + entry.anchor.quote.length;
         });
@@ -350,7 +367,8 @@
             prefix: text.slice(Math.max(0, start - 32), start),
             suffix: text.slice(end, end + 32)
         };
-        return { id, anchor, entries, entry };
+        if (field !== 'content') anchor.field = field;
+        return { key, id, anchor, entries, entry };
     }
 
     function renderTagMenu() {
@@ -359,12 +377,12 @@
         for (const label of reviewLabels) {
             const button = makeButton(label, () => {
                 if (!selectionIsCurrent(selected)) { hideToolbar(); return; }
-                const { id, anchor, entries, entry } = tagSelection();
+                const { key, id, anchor, entries, entry } = tagSelection();
                 const labels = entry?.labels || [];
                 const next = labels.includes(label) ? labels.filter(value => value !== label) : [...labels, label];
                 const updated = entries.filter(item => item !== entry);
                 if (next.length) updated.push({ anchor, labels: next });
-                updateClauseReviewTags(id, updated);
+                updateClauseReviewTags(id, updated, key);
                 if (resultMode === 'tags') renderResults();
                 renderTagMenu();
                 menu.querySelector('[data-review-label="' + label + '"]')?.focus({ preventScroll: true });
@@ -404,25 +422,48 @@
         switchContract(key);
         requestAnimationFrame(() => {
             if (activeContractKey !== key || isAssistantMode) return;
-            const clause = document.getElementById('clause-' + id);
-            const body = clause?.querySelector('.clause-text');
+            const field = match.anchor?.field || match.field;
+            const translated = Boolean(translationLabels[field]);
+            let clause, body;
+            if (translated) {
+                isTraditionalChinese = field === 'translation_tc';
+                if (isSyncMode) {
+                    resetCrossRefState();
+                    currentRefMode = 'trans';
+                    saveReferenceLanguagePreference();
+                    renderAllTranslations();
+                    clause = document.getElementById('sync-trans-' + id);
+                } else {
+                    showTranslation(id);
+                    clause = ref.querySelector('.ref-card-body');
+                }
+                updateChineseVariantButton();
+                updateLangModeButton();
+                openSidePanel();
+                const refPanel = document.getElementById('panelRef');
+                if (window.innerWidth <= 1024 && !refPanel.classList.contains('visible')) toggleRef();
+                body = clause?.querySelector('.translation-text');
+            } else {
+                clause = document.getElementById('clause-' + id);
+                body = clause?.querySelector('.clause-text');
+            }
             if (!body) return;
             let range;
             if (match.anchor) {
                 const offset = resolveBookmarkOffset(body.textContent, match.anchor);
                 if (offset !== null) range = textRange(body, offset, offset + match.anchor.quote.length);
-                else showStatus('warning', '摘录原文已变化，已定位到所属条款。');
+                else showStatus('warning', '摘录文字已变化，已定位到所属条款。');
             } else {
                 const element = match.inTitle ? clause.querySelector('h2') : body;
                 const found = element && (patternFor(match.term).exec(element.textContent) ||
                     patternFor(match.term, '\\s*').exec(element.textContent));
                 if (found) range = textRange(element, found.index, found.index + found[0].length);
             }
-            scrollToClause(id);
+            if (!translated) scrollToClause(id);
             const rect = range?.getClientRects()[0];
-            if (rect) {
-                const main = document.getElementById('panelMain');
-                main.scrollTop += rect.top - main.getBoundingClientRect().top - 36;
+            if (rect || translated) {
+                const pane = translated ? ref : main;
+                pane.scrollTop += (rect || body.getBoundingClientRect()).top - pane.getBoundingClientRect().top - 36;
             }
             highlightResult(range, clause);
         });
@@ -454,15 +495,18 @@
             group.append(heading);
             for (const [id, clause] of Object.entries(contract.data || {})) {
                 if (isSearch && term) {
-                    const text = normalText(plainText(clause.content));
-                    const title = normalText(plainText(clause.title));
+                    const field = search.field;
+                    const translated = Boolean(translationLabels[field]);
+                    const content = translated ? getClauseTranslation(clause, field === 'translation_tc') : clause.content;
+                    const text = normalText(plainText(content));
+                    const title = translated ? '' : normalText(plainText(clause.title));
                     const index = text.toLowerCase().indexOf(term.toLowerCase());
                     const inTitle = index < 0 && title.toLowerCase().includes(term.toLowerCase());
                     if (index < 0 && !inTitle) continue;
                     const from = Math.max(0, index - 28);
                     const to = from + Math.max(120, term.length + 46);
                     const excerpt = (from ? '…' : '') + text.slice(from, to) + (to < text.length ? '…' : '');
-                    group.append(resultButton(key, id, clause, excerpt, { term, inTitle }));
+                    group.append(resultButton(key, id, clause, excerpt, { term, inTitle, field }));
                     count++;
                 } else if (!isSearch) {
                     for (const entry of tagsFor(clause)) {
@@ -493,7 +537,8 @@
         const button = makeButton('', () => jumpToResult(key, id, match));
         button.className = 'selection-result-item';
         const title = document.createElement('strong');
-        title.textContent = clauseLabel(id, clause);
+        const language = translationLabels[match.anchor?.field || match.field];
+        title.textContent = clauseLabel(id, clause) + (language ? ' · ' + language : '');
         const summary = document.createElement('span');
         summary.textContent = normalText(excerpt);
         button.append(title, summary);
@@ -512,7 +557,7 @@
         clearResultHighlight();
     }
 
-    function openResults(mode, text = '') {
+    function openResults(mode, text = '', field = 'content') {
         closeResults();
         if (!activeContractKey || isAssistantMode) return;
         resultMode = mode;
@@ -525,7 +570,7 @@
             const nav = document.getElementById('panelNav');
             if (window.innerWidth <= 768 ? !nav.classList.contains('visible') : nav.classList.contains('collapsed')) toggleNav();
             searchStatePerContract[activeContractKey] = searchInput.value;
-            search = { term: normalText(text), scope: 'current' };
+            search = { term: normalText(text), scope: 'current', field };
             searchInput.value = search.term;
             toggleSearchClear(searchInput);
             for (const [scope, label] of [['current', '当前合同'], ['all', '全部可见合同']]) {
@@ -569,7 +614,7 @@
         if (format) formatSelection(snapshot, format, color);
         if (ai) prepareAI(snapshot, ai);
         if (action === 'copy-source' || action === 'copy-text') copySelection(snapshot, action === 'copy-source');
-        if (action === 'search') openResults('search', snapshot.text);
+        if (action === 'search') openResults('search', snapshot.text, snapshot.source.field);
         if (action === 'note' && snapshot.clauseText) addOrEditNote(snapshot);
         if (action === 'delete-note') deleteNote(getNoteInSelection(snapshot));
         if (action === 'clear-format') clearFormatting(snapshot);
@@ -588,7 +633,7 @@
         if (selected && !toolbar.contains(event.target)) hideToolbar();
     });
     document.addEventListener('keyup', event => {
-        if (event.shiftKey && event.target.closest?.('.clause-text')) show();
+        if (event.shiftKey && getClauseTextForNode(event.target)) show();
     });
     document.addEventListener('keydown', event => {
         if (event.key !== 'Escape') return;
@@ -596,7 +641,10 @@
         else if (selected) hideToolbar();
         else if (resultMode) closeResults();
     });
-    document.getElementById('panelMain').addEventListener('scroll', hideToolbar);
+    ref.addEventListener('mouseup', show);
+    for (const pane of [main, ref]) pane.addEventListener('scroll', () => {
+        if (selected?.pane === pane) hideToolbar();
+    });
     window.addEventListener('resize', () => { hideToolbar(); positionPanel(); });
 
     window.SelectionTools = {

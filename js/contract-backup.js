@@ -215,6 +215,7 @@ window.ContractBackup = (() => {
         const selectedIds = new Set();
         const affectedIds = new Set();
         const restoredKeys = [];
+        const deletions = Object.assign(Object.create(null), contractDeletions);
         for (const [key, contract] of Object.entries(snapshot.contracts)) {
             const matches = conflicts.get(key);
             if (matches.length && !choices.has(key)) continue;
@@ -228,9 +229,14 @@ window.ContractBackup = (() => {
                 replacedKeys.set(localKey, key);
                 replacedIds.set(localId, contract.sourceId);
                 affectedIds.add(localId);
+                if (localId !== contract.sourceId) {
+                    deletions[localId] = Math.max(Date.now(), contractChangeTime(contracts[localKey]) + 1, (deletions[localId] || 0) + 1);
+                }
                 delete nextContracts[localKey];
             }
-            nextContracts[key] = contract;
+            nextContracts[key] = { ...contract };
+            markContractReplacement(nextContracts[key], Math.max(contractChangeTime(contract),
+                contractChangeTime(contracts[matches[0]]), deletions[contract.sourceId] || 0));
             selectedIds.add(contract.sourceId);
             affectedIds.add(contract.sourceId);
             restoredKeys.push(key);
@@ -243,13 +249,13 @@ window.ContractBackup = (() => {
         const nextOrder = { sourceIds, modifiedAt: Math.max(Date.now(), (contractOrder?.modifiedAt || 0) + 1) };
         const preferredKey = replacedKeys.get(activeContractKey) || activeContractKey;
         const vectors = snapshot.vectors.filter(record => selectedIds.has(record.sourceId));
-        return { nextContracts, nextOrder, preferredKey, vectors, affectedIds, restoredKeys, replacedKeys };
+        return { nextContracts, nextOrder, preferredKey, vectors, affectedIds, restoredKeys, replacedKeys, deletions };
     }
 
     async function applyRestore(plan) {
         const previous = await localforage.getItem(CONTRACTS_DB_KEY);
         const retrievalSettings = window.RetrievalSettings.get(contracts);
-        await writeContractSnapshot(plan.nextContracts, plan.nextOrder, plan.preferredKey);
+        await writeContractSnapshot(plan.nextContracts, plan.nextOrder, plan.preferredKey, plan.deletions);
         try {
             await RAG.replaceSourceRecords(plan.affectedIds, plan.vectors);
         } catch (error) {
@@ -263,6 +269,7 @@ window.ContractBackup = (() => {
         }
         contracts = plan.nextContracts;
         contractOrder = plan.nextOrder;
+        contractDeletions = plan.deletions;
         for (const [previousKey, nextKey] of plan.replacedKeys) {
             if (previousKey !== nextKey) delete window.ORIGINAL_CONTRACTS?.[previousKey];
         }

@@ -6,6 +6,7 @@ const root = path.join(__dirname, '..');
 
 function createAppContext(storage = new Map(), database = new Map()) {
     const context = {
+        crypto: require('node:crypto').webcrypto,
         Blob, URL, AbortController, TextDecoder, setTimeout, clearTimeout, setInterval, clearInterval, confirm: () => true,
         console: { log() {}, info() {}, warn() {}, error() {} },
         navigator: { onLine: true },

@@ -13,6 +13,18 @@
         topics: [], currentTopicId: null, drafts: {}, outbox: [], messages: new Map(), hashes: new Map(),
         view: 'active', archivePreviewTopicId: null, search: '', ready: false, busy: false, initializedDom: false, flushTimer: null
     };
+    const idleWaiters = new Set();
+
+    function waitForIdle() {
+        return state.busy ? new Promise(resolve => idleWaiters.add(resolve)) : Promise.resolve();
+    }
+    function setBusy(value) {
+        state.busy = !!value;
+        if (!state.busy) {
+            for (const resolve of idleWaiters) resolve();
+            idleWaiters.clear();
+        }
+    }
 
     const now = () => Date.now();
     const uid = () => (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `${now().toString(36)}-${Math.random().toString(36).slice(2)}`);
@@ -48,6 +60,10 @@
             createdAt: message.createdAt || now(), updatedAt: message.updatedAt || now()
         }));
     }
+    function contextFor(messages) {
+        const start = messages.findLastIndex(message => message.type === 'break') + 1;
+        return { hasContextBreak: start > 0, contextBreakIndex: start || -1 };
+    }
     function notify(message, kind = '') {
         if (message !== '本地保存' && !(kind === 'pending' && !canSync())) window.StatusCenter?.post(kind === 'error' ? 'error' : kind === 'warning' ? 'warning' : message === '同步中…' ? 'loading' : kind === 'ok' ? 'success' : 'info', message, { source: '话题同步', id: 'topic-sync' });
         const el = document.getElementById('assistantTopicSyncState');
@@ -81,6 +97,8 @@
     function enqueue(op) {
         const key = `${op.kind}:${op.topicId}:${op.messageId || ''}`;
         state.outbox = state.outbox.filter(item => `${item.kind}:${item.topicId}:${item.messageId || ''}` !== key);
+        if (op.kind === 'message-delete') state.outbox = state.outbox.filter(item => !(item.kind === 'message' && item.topicId === op.topicId && item.messageId === op.messageId));
+        if (op.kind === 'topic-delete') state.outbox = state.outbox.filter(item => !(item.kind === 'topic' && item.topicId === op.topicId));
         state.outbox.push({ ...op, queuedAt: now() });
         persistIndex().catch(() => {});
         scheduleFlush();
@@ -98,44 +116,63 @@
         const { id, ...data } = topic;
         return { ...clone(data), schemaVersion: 2, cloudUpdatedAt: firebase.firestore.FieldValue.serverTimestamp() };
     }
-    async function flushOutbox() {
+    let flushing;
+    function flushOutbox() {
+        if (!flushing) flushing = writeOutbox().finally(() => { flushing = null; });
+        return flushing;
+    }
+    async function writeOutbox() {
         if (!state.outbox.length) { notify('已同步', 'ok'); return true; }
         if (!canSync()) { notify(navigator.onLine ? '待同步' : '离线，待同步', 'pending'); return false; }
         const pending = [...state.outbox];
         notify('同步中…', 'pending');
         try {
             // 附件正文单独写入 message/attachments 子集合；主消息只保存摘要，避免触及 Firestore 1 MiB 文档上限。
-            for (let start = 0; start < pending.length; start += 40) {
-                const batch = db.batch();
-                for (const op of pending.slice(start, start + 40)) {
-                    const ref = cloudTopicRef(op.topicId);
-                    const topic = getTopic(op.topicId);
-                    if (op.kind === 'topic' && topic) batch.set(ref, compactTopic(topic), { merge: true });
-                    if (op.kind === 'topic-delete' && topic) batch.set(ref, { status: 'deleted', deletedAt: topic.deletedAt || now(), updatedAt: now(), schemaVersion: 2 }, { merge: true });
-                    if (op.kind === 'message' && topic) {
-                        const message = (state.messages.get(op.topicId) || []).find(item => item.id === op.messageId);
-                        if (message) {
-                            const messageRef = ref.collection('messages').doc(message.id);
-                            batch.set(messageRef, { ...clone(message), schemaVersion: 2, cloudUpdatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
-                            const attachments = await window.AssistantAttachments?.messageAttachments?.(op.topicId, message.id) || [];
-                            attachments.forEach(attachment => batch.set(messageRef.collection('attachments').doc(attachment.id), {
-                                id: attachment.id, name: attachment.name, type: attachment.type, size: attachment.size, extractedBytes: attachment.extractedBytes,
-                                text: attachment.text, warning: attachment.warning || null, status: 'ready', schemaVersion: 1, updatedAt: now(), cloudUpdatedAt: firebase.firestore.FieldValue.serverTimestamp()
-                            }, { merge: true }));
-                        }
-                    }
-                    if (op.kind === 'message-delete') {
-                        const messageRef = ref.collection('messages').doc(op.messageId);
-                        // 不使用 merge，确保此前消息正文不再残留在删除墓碑上。
-                        batch.set(messageRef, { status: 'deleted', deletedAt: now(), updatedAt: now(), schemaVersion: 2 });
-                        (op.attachmentIds || []).forEach(attachmentId => batch.set(messageRef.collection('attachments').doc(attachmentId), { status: 'deleted', deletedAt: now(), updatedAt: now(), schemaVersion: 1 }));
+            let batch = db.batch(), batchBytes = 0, batchWrites = 0;
+            async function flushBatch() {
+                if (!batchWrites) return;
+                await batch.commit();
+                batch = db.batch(); batchBytes = 0; batchWrites = 0;
+            }
+            function documentWrite(ref, data, options) {
+                const bytes = typeof TextEncoder === 'undefined' ? JSON.stringify(data).length * 3 : new TextEncoder().encode(JSON.stringify(data)).length;
+                return { ref, data, options, bytes };
+            }
+            for (const op of pending) {
+                const writes = [];
+                const ref = cloudTopicRef(op.topicId);
+                const topic = getTopic(op.topicId);
+                if (op.kind === 'topic' && topic && topic.status !== 'deleted') writes.push(documentWrite(ref, compactTopic(topic), { merge: true }));
+                if (op.kind === 'topic-delete' && topic) writes.push(documentWrite(ref, { status: 'deleted', deletedAt: topic.deletedAt || now(), updatedAt: now(), schemaVersion: 2 }, { merge: true }));
+                if (op.kind === 'message' && topic) {
+                    const message = (state.messages.get(op.topicId) || []).find(item => item.id === op.messageId);
+                    if (message) {
+                        const messageRef = ref.collection('messages').doc(message.id);
+                        writes.push(documentWrite(messageRef, { ...clone(message), schemaVersion: 2, cloudUpdatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true }));
+                        const attachments = await window.AssistantAttachments?.messageAttachments?.(op.topicId, message.id) || [];
+                        attachments.forEach(attachment => writes.push(documentWrite(messageRef.collection('attachments').doc(attachment.id), {
+                            id: attachment.id, name: attachment.name, type: attachment.type, size: attachment.size, extractedBytes: attachment.extractedBytes,
+                            text: attachment.text, warning: attachment.warning || null, skippedPages: attachment.skippedPages || [], status: 'ready', schemaVersion: 1, updatedAt: now(), cloudUpdatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                        }, { merge: true })));
                     }
                 }
-                await batch.commit();
+                if (op.kind === 'message-delete') {
+                    const messageRef = ref.collection('messages').doc(op.messageId);
+                    // 不使用 merge，确保此前消息正文不再残留在删除墓碑上。
+                    writes.push(documentWrite(messageRef, { status: 'deleted', sequence: 0, deletedAt: now(), updatedAt: now(), schemaVersion: 2 }));
+                    (op.attachmentIds || []).forEach(attachmentId => writes.push(documentWrite(messageRef.collection('attachments').doc(attachmentId), { status: 'deleted', deletedAt: now(), updatedAt: now(), schemaVersion: 1 })));
+                }
+                const bytes = writes.reduce((total, write) => total + write.bytes, 0);
+                if (batchWrites + writes.length > 400 || batchBytes + bytes > 7 * 1024 * 1024) await flushBatch();
+                for (const { ref, data, options } of writes) batch.set(ref, data, options);
+                batchBytes += bytes;
+                batchWrites += writes.length;
             }
-            const sent = new Set(pending.map(item => `${item.kind}:${item.topicId}:${item.messageId || ''}`));
-            state.outbox = state.outbox.filter(item => !sent.has(`${item.kind}:${item.topicId}:${item.messageId || ''}`));
+            await flushBatch();
+            const sent = new Set(pending);
+            state.outbox = state.outbox.filter(item => !sent.has(item));
             await persistIndex();
+            if (state.outbox.length) scheduleFlush();
             notify('已同步', 'ok');
             return true;
         } catch (error) {
@@ -146,41 +183,61 @@
     }
     async function syncTopicMessages(topicId) {
         if (!canSync() || !topicId) return;
-        const snapshot = await cloudTopicRef(topicId).collection('messages').orderBy('sequence').get();
+        // Older deletion records may have no sequence and are excluded by Firestore orderBy.
+        const snapshot = await cloudTopicRef(topicId).collection('messages').get();
+        await waitForIdle();
+        if (getTopic(topicId)?.status === 'deleted') return;
         const local = state.messages.get(topicId) || [];
         const merged = new Map(local.map(item => [item.id, item]));
+        const removed = new Set(state.outbox.filter(item => item.topicId === topicId && item.kind === 'message-delete').map(item => item.messageId));
         snapshot.forEach(doc => {
             const remote = doc.data();
             const existing = merged.get(doc.id);
-            if (remote.status === 'deleted') { merged.delete(doc.id); return; }
+            if (remote.status === 'deleted' || removed.has(doc.id)) { removed.add(doc.id); return; }
             if (!existing || (remote.updatedAt || 0) > (existing.updatedAt || 0)) merged.set(doc.id, { ...remote, id: doc.id });
         });
+        removed.forEach(messageId => merged.delete(messageId));
+        if (removed.size) state.outbox = state.outbox.filter(op => !(op.kind === 'message' && op.topicId === topicId && removed.has(op.messageId)));
         const messages = [...merged.values()].sort((a, b) => (a.sequence - b.sequence) || a.id.localeCompare(b.id));
         state.messages.set(topicId, messages);
         state.hashes.set(topicId, new Map(messages.map(item => [item.id, hash(item)])));
+        const topic = getTopic(topicId);
+        if (topic) Object.assign(topic, contextFor(messages), { messageCount: messages.length, preview: messagePreview(messages) });
         await persistMessages(topicId);
+        if (removed.size) await persistIndex();
+        await Promise.all([...removed].map(messageId => window.AssistantAttachments?.removeMessage?.(topicId, messageId)));
         // 附件正文位于独立子集合；只有已有摘要的消息才读取，主消息保持轻量。
         await Promise.all(messages.filter(message => Array.isArray(message.attachments) && message.attachments.length).map(async message => {
             const attachmentSnapshot = await cloudTopicRef(topicId).collection('messages').doc(message.id).collection('attachments').get();
+            if (!(state.messages.get(topicId) || []).some(item => item.id === message.id)) return;
             const rows = []; attachmentSnapshot.forEach(doc => rows.push({ ...doc.data(), id: doc.id }));
             await window.AssistantAttachments?.importCloud?.(topicId, message.id, rows);
+            if (!(state.messages.get(topicId) || []).some(item => item.id === message.id)) {
+                await window.AssistantAttachments?.removeMessage?.(topicId, message.id);
+            }
         }));
     }
     async function syncWithCloud() {
         if (!canSync()) return false;
+        await waitForIdle();
+        if (!canSync()) return false;
         try {
             const snapshot = await db.collection(window.FIREBASE_COLLECTIONS.CONTRACT_MODS).doc(currentUser.uid).collection('assistant_topics').get();
             const localById = new Map(state.topics.map(topic => [topic.id, topic]));
+            const deleted = [];
             snapshot.forEach(doc => {
                 const remote = { ...doc.data(), id: doc.id };
                 const local = localById.get(doc.id);
                 if (remote.status === 'deleted') {
                     if (local) Object.assign(local, remote);
                     else state.topics.push(remote);
+                    deleted.push(doc.id);
                 } else if (!local || (remote.updatedAt || 0) > (local.updatedAt || 0)) {
+                    if (local?.status === 'deleted') return;
                     if (local) Object.assign(local, remote); else state.topics.push(remote);
                 }
             });
+            await Promise.all(deleted.map(removeLocalTopicData));
             const current = getTopic();
             if (!current || current.status !== 'active') state.currentTopicId = sortedTopics(activeTopics())[0]?.id || null;
             if (state.currentTopicId) await syncTopicMessages(state.currentTopicId);
@@ -249,11 +306,10 @@
         return state.messages.get(topicId) || [];
     }
     function saveDraftForCurrent() {
-        if (!state.currentTopicId) return;
+        if (!state.currentTopicId || getTopic()?.status === 'deleted') return;
         const input = document.getElementById('chatInput');
         const chat = document.getElementById('chatMessages');
         state.drafts[state.currentTopicId] = { text: input?.value || '', scrollTop: chat?.scrollTop || 0, updatedAt: now() };
-        window.AssistantAttachments?.loadDraft?.(state.currentTopicId).catch(() => {});
     }
     async function switchTopic(topicId) {
         if (!requireIdle() || !topicId || topicId === state.currentTopicId) return;
@@ -270,6 +326,7 @@
         if (typeof toggleAssistantRef === 'function' && document.getElementById('assistantRefPanel')?.style.display !== 'none') toggleAssistantRef();
         await persistIndex(); render();
         if (canSync()) syncTopicMessages(topicId).then(() => {
+            if (state.busy || state.currentTopicId !== topicId || state.archivePreviewTopicId) return;
             const fresh = getTopic(topicId); window.applyAssistantTopicChatState?.({ messages: state.messages.get(topicId) || [], hasContextBreak: !!fresh?.hasContextBreak, contextBreakIndex: fresh?.contextBreakIndex ?? -1 });
         }).catch(() => {});
     }
@@ -282,16 +339,26 @@
         if (typeof toggleAssistantRef === 'function' && document.getElementById('assistantRefPanel')?.style.display !== 'none') toggleAssistantRef();
         render();
     }
-    async function createTopic() {
+    async function createTopic({ draft = '' } = {}) {
+        await window.assistantTopicsReady;
         if (!requireIdle()) return;
+        if (state.view === 'notebook' && !await window.AssistantNotebook?.requestClose?.()) return;
         saveDraftForCurrent();
         const topic = createTopicData(); state.topics.push(topic); state.currentTopicId = topic.id;
-        state.messages.set(topic.id, []); state.hashes.set(topic.id, new Map()); state.drafts[topic.id] = { text: '', scrollTop: 0, updatedAt: now() };
-        await persistMessages(topic.id); queueTopic(topic); await persistIndex();
+        state.archivePreviewTopicId = null;
+        state.view = 'active';
+        if (draft) {
+            state.search = '';
+            const search = document.getElementById('assistantTopicSearch');
+            if (search) search.value = '';
+        }
+        state.messages.set(topic.id, []); state.hashes.set(topic.id, new Map()); state.drafts[topic.id] = { text: draft, scrollTop: 0, updatedAt: now() };
         window.applyAssistantTopicChatState?.({ messages: [], hasContextBreak: false, contextBreakIndex: -1 });
-        const input = document.getElementById('chatInput'); if (input) { input.value = ''; input.focus(); }
-        await window.AssistantAttachments?.clearDraft?.(topic.id);
         render();
+        const input = document.getElementById('chatInput');
+        if (input) { input.value = draft; input.focus(); }
+        await persistMessages(topic.id); queueTopic(topic); await persistIndex();
+        if (state.currentTopicId === topic.id) await window.AssistantAttachments?.loadDraft?.(topic.id);
     }
     async function branchFromMessage(messageIndex, sourceMessages) {
         if (!requireIdle()) return null;
@@ -406,9 +473,20 @@
         messages.forEach(message => enqueue({ kind: 'message-delete', topicId, messageId: message.id, attachmentIds: (message.attachments || []).map(item => item.id) }));
         topic.status = 'deleted'; topic.deletedAt = now(); topic.updatedAt = now(); topic.title = ''; topic.preview = ''; queueTopic(topic);
         if (state.archivePreviewTopicId === topicId) state.archivePreviewTopicId = null;
-        state.messages.delete(topicId); state.hashes.delete(topicId); delete state.drafts[topicId]; await localforage.removeItem(topicKey(topicId));
+        await removeLocalTopicData(topicId);
         if (state.currentTopicId === topicId) { const next = sortedTopics(activeTopics())[0]; if (next) await switchTopic(next.id); else await createTopic(); }
         await persistIndex(); render();
+    }
+    async function removeLocalTopicData(topicId) {
+        state.outbox = state.outbox.filter(op => op.topicId !== topicId || op.kind.endsWith('-delete'));
+        state.messages.delete(topicId);
+        state.hashes.delete(topicId);
+        delete state.drafts[topicId];
+        await Promise.all([
+            localforage.removeItem(topicKey(topicId)),
+            window.AssistantAttachments?.clearDraft?.(topicId),
+            window.AssistantAttachments?.removeTopicMessages?.(topicId)
+        ]);
     }
     async function setPinned(topicId, pinned) {
         if (!requireIdle()) return;
@@ -510,7 +588,7 @@
     }
     function attachDom() {
         if (state.initializedDom) return; state.initializedDom = true;
-        document.getElementById('btnNewAssistantTopic')?.addEventListener('click', createTopic);
+        document.getElementById('btnNewAssistantTopic')?.addEventListener('click', () => createTopic());
         document.getElementById('btnAssistantArchive')?.addEventListener('click', () => toggleArchive().catch(() => {}));
         document.getElementById('btnAssistantNotebook')?.addEventListener('click', () => (state.view === 'notebook' ? closeNotebook() : openNotebook()).catch(() => {}));
         document.getElementById('assistantTopicSearch')?.addEventListener('input', event => { state.search = event.target.value; render(); });
@@ -524,13 +602,19 @@
     async function saveCurrentChat(chatState) {
         if (!state.ready || !state.currentTopicId || state.archivePreviewTopicId) return;
         const topic = getTopic(); if (!topic) return;
-        const messages = normalizeMessages(chatState.messages || []); const priorHashes = state.hashes.get(topic.id) || new Map(); const nextHashes = new Map();
+        const messages = normalizeMessages(chatState.messages || []).map((message, index) => {
+            const sequence = index + 1;
+            return message.sequence === sequence ? message : { ...message, sequence, updatedAt: now() };
+        });
+        const priorHashes = state.hashes.get(topic.id) || new Map(), nextHashes = new Map();
         messages.forEach(message => { const signature = hash(message); nextHashes.set(message.id, signature); if (priorHashes.get(message.id) !== signature) enqueue({ kind: 'message', topicId: topic.id, messageId: message.id }); });
-        priorHashes.forEach((_, messageId) => { if (!nextHashes.has(messageId)) { const previous = (state.messages.get(topic.id) || []).find(message => message.id === messageId); enqueue({ kind: 'message-delete', topicId: topic.id, messageId, attachmentIds: (previous?.attachments || []).map(item => item.id) }); } });
+        const removed = (state.messages.get(topic.id) || []).filter(message => !nextHashes.has(message.id));
+        for (const message of removed) enqueue({ kind: 'message-delete', topicId: topic.id, messageId: message.id, attachmentIds: (message.attachments || []).map(item => item.id) });
         state.messages.set(topic.id, messages); state.hashes.set(topic.id, nextHashes);
         topic.messageCount = messages.length; topic.preview = messagePreview(messages); topic.lastMessageAt = now(); topic.updatedAt = now(); topic.hasContextBreak = !!chatState.hasContextBreak; topic.contextBreakIndex = chatState.contextBreakIndex ?? -1;
         if (topic.titleSource === 'default') { const first = messages.find(message => message.role === 'user' && message.content); if (first) { topic.title = fallbackTitle(first.content); topic.titleSource = 'fallback'; } }
         queueTopic(topic); await persistMessages(topic.id); await persistIndex(); render();
+        await Promise.all(removed.map(message => window.AssistantAttachments?.removeMessage?.(topic.id, message.id)));
         state.channel?.postMessage({ type: 'changed', topicId: topic.id });
     }
     async function loadCurrentChat() {
@@ -544,7 +628,7 @@
     }
     const api = window.AssistantTopics = {
         init: initialize, saveCurrentChat, loadCurrentChat, switchTopic, createTopic, branchFromMessage, toggleSidebar: () => setSidebarOpen(!isSidebarOpen()), previewArchivedTopic,
-        setBusy: value => { state.busy = !!value; }, syncWithCloud, flushOutbox, getCurrentTopicId: () => state.currentTopicId,
+        setBusy, waitForIdle, syncWithCloud, flushOutbox, getCurrentTopicId: () => state.currentTopicId,
         getDisplayedTopicId: () => state.archivePreviewTopicId || state.currentTopicId,
         getTopicInfo: id => clone(getTopic(id)), isReadOnlyPreview: () => !!state.archivePreviewTopicId,
         openNotebook, closeNotebook, generateTitle, getTopics: () => clone(state.topics.filter(topic => topic.status !== 'deleted'))

@@ -29,6 +29,7 @@ function createContext() {
         innerHTML: '',
         innerText: '',
         value: '',
+        setAttribute() {},
         toggleAttribute() {},
         querySelectorAll() { return []; }
     });

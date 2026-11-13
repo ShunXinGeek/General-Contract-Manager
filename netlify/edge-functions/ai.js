@@ -1,5 +1,6 @@
 // Credentials and chat content are transient: never log, store, or cache them.
 import { resolveEndpoint, validateEndpoint, profileTimeout } from '../edge-shared/ai-providers.mjs';
+import '../../js/ai-providers.js';
 export { validateEndpoint };
 
 const MAX_BYTES = 2 * 1024 * 1024;
@@ -28,25 +29,42 @@ async function providerError(upstream) {
         const diagnostic = [error.code, error.type, error.message].filter(v => typeof v === 'string').join(' ').toLowerCase();
         if (/model[_ .-]?(?:not[_ .-]?(?:found|exist)|does[_ .-]?not[_ .-]?exist)|invalid[_ .-]?model|unsupported[_ .-]?model|模型不存在/.test(diagnostic)) return 'AI 服务商未找到此模型，请检查设置中的 Model 字段是否为当前有效的官方模型 ID。';
         if (/context[_ .-]?length|maximum context|token limit|上下文.*(?:超|限)/.test(diagnostic)) return 'AI 请求超过模型上下文长度，请减少历史消息或引用条款。';
-        const fields = ['thinking', 'enable_thinking', 'reasoning_effort', 'temperature', 'max_tokens', 'messages', 'stream'].filter(field => new RegExp('\\b' + field + '\\b').test(diagnostic));
+        const fields = ['thinking', 'enable_thinking', 'reasoning_effort', 'thinking_budget', 'temperature', 'max_tokens', 'messages', 'stream'].filter(field => new RegExp('\\b' + field + '\\b').test(diagnostic));
         return fields.length ? 'AI 服务商拒绝请求参数（' + fields.join('、') + '），请核对该模型的参数要求。' : statusMessage(upstream.status);
     } catch (_) { return statusMessage(upstream.status); }
     finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 function validMessage(m) { return m && ['system', 'developer', 'user', 'assistant'].includes(m.role) && typeof m.content === 'string' && (m.reasoning_content === undefined || typeof m.reasoning_content === 'string'); }
 function validBody(body) { return body && typeof body.model === 'string' && body.model.trim() && body.model.length <= 200 && Array.isArray(body.messages) && body.messages.length && body.messages.every(validMessage) && typeof body.stream === 'boolean' && (!body.apiStyle || body.apiStyle === 'responses'); }
+function validReasoning(body, target) {
+    const fields = ['reasoning_effort', 'thinking_budget', 'thinking', 'enable_thinking'];
+    const keys = fields.filter(key => Object.hasOwn(body, key));
+    if (!keys.length) return true;
+    const profile = { providerId: target.providerId, protocol: target.protocol, baseUrl: target.url, model: body.model };
+    const options = globalThis.AIProviders.thinkingOptions(profile).map(option => option.params);
+    // Keep the original binary request contract for callers such as the model connection test.
+    if (globalThis.AIProviders.thinkingCapability(profile) === 'switch') {
+        if (/^qwen(?:-|$)/.test(target.providerId)) options.push({ enable_thinking: true }, { enable_thinking: false });
+        else if (target.protocol === 'openai-chat') options.push({ thinking: { type: 'enabled' } }, { thinking: { type: 'disabled' } });
+    }
+    return options.some(params => Object.keys(params).length === keys.length && keys.every(key => {
+        if (key !== 'thinking') return params[key] === body[key];
+        return params.thinking && body.thinking && Object.keys(body.thinking).length === 1 && params.thinking.type === body.thinking.type;
+    }));
+}
 function chatRequest(body) {
     const outgoing = { model: body.model, messages: body.messages.map(m => ({ role: m.role, content: m.content, ...(typeof m.reasoning_content === 'string' ? { reasoning_content: m.reasoning_content } : {}) })), stream: body.stream };
     if (typeof body.enable_thinking === 'boolean') outgoing.enable_thinking = body.enable_thinking;
     if (['enabled', 'disabled'].includes(body.thinking?.type)) outgoing.thinking = { type: body.thinking.type };
-    if (['none', 'low', 'medium', 'high'].includes(body.reasoning_effort)) outgoing.reasoning_effort = body.reasoning_effort;
+    if (body.reasoning_effort !== undefined) outgoing.reasoning_effort = body.reasoning_effort;
+    if (body.thinking_budget !== undefined) outgoing.thinking_budget = body.thinking_budget;
     if (Number.isFinite(body.temperature) && body.temperature >= 0 && body.temperature <= 2) outgoing.temperature = body.temperature;
     if (Number.isInteger(body.max_tokens) && body.max_tokens > 0 && body.max_tokens <= 393216) outgoing.max_tokens = body.max_tokens;
     return outgoing;
 }
 function responsesRequest(body) {
     const outgoing = { model: body.model, stream: body.stream, input: body.messages.map(m => ({ role: m.role, content: [{ type: m.role === 'assistant' ? 'output_text' : 'input_text', text: m.content }] })) };
-    if (['none', 'low', 'medium', 'high'].includes(body.reasoning_effort)) outgoing.reasoning = { effort: body.reasoning_effort };
+    if (body.reasoning_effort !== undefined) outgoing.reasoning = { effort: body.reasoning_effort };
     return outgoing;
 }
 function responseText(data) { return typeof data.output_text === 'string' ? data.output_text : (data.output || []).flatMap(item => item.content || []).map(item => item.text || '').join(''); }
@@ -73,6 +91,7 @@ export default async function handler(request) {
     const body = payload.body, key = payload.apiKey;
     if (typeof key !== 'string' || !key.trim() || key.length > 4096 || /[\r\n]/.test(key) || !validBody(body)) return failure(400, 'AI 模型、密钥或消息配置不完整。');
     if (body.apiStyle === 'responses' && target.protocol !== 'openai-responses') return failure(400, '该供应商未配置 Responses 协议。');
+    if (!validReasoning(body, target)) return failure(400, '当前模型或协议不支持所选思考参数。');
     const outgoing = body.apiStyle === 'responses' ? responsesRequest(body) : chatRequest(body);
     const controller = new AbortController(), cancel = () => controller.abort(); request.signal.addEventListener('abort', cancel, { once: true }); if (request.signal.aborted) cancel();
     const connectTimeout = profileTimeout(payload.profile, 'connectTimeoutMs', 30000, 120000), idleTimeout = profileTimeout(payload.profile, 'idleTimeoutMs', 120000, 300000);

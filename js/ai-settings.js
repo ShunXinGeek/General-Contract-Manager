@@ -765,6 +765,7 @@ function selectModel(modelId) {
 }
 
 function updateModelSelector() {
+    if (typeof refreshAssistantThinking === 'function') refreshAssistantThinking();
     const t = document.getElementById('currentModelName');
     if (!t) return;
     if (currentSelectedModelId) {
@@ -1125,7 +1126,7 @@ function handleContractInlineEdit(el) {
 }
 
 function handleContractDeleteFromModal(key) {
-    if (confirm(`确认要删除合同 "${key}" 吗？\n\n此操作不可撤销，数据将从本地存储中彻底移除。`)) {
+    if (confirm(`确认删除合同 "${key}"？\n\n此操作不可撤销，删除会在智能合并同步时同步到其他设备。`)) {
         if (typeof removeContract === 'function') removeContract(key);
         renderContractManagementTab();
     }

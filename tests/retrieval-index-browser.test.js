@@ -54,6 +54,7 @@ const labels = ['ALPHA', 'BETA', 'GAMMA'];
                         });
                     }
                     store.put({ id: 'unverified', vector: [1, 0] });
+                    store.put({ id: 'ALPHA_3', type: 'ALPHA', clauseId: '3', vector: [1, 0] });
                 };
                 open.onsuccess = () => { open.result.close(); resolve(); };
             });
@@ -125,11 +126,44 @@ const labels = ['ALPHA', 'BETA', 'GAMMA'];
         assert(managementReads.length > 0);
         for (const read of managementReads) {
             assert.equal(read.index, null);
-            assert.deepEqual(read.sourceIds, ['source-ALPHA', 'source-ALPHA', 'source-BETA', 'source-GAMMA', null]);
+            assert.deepEqual(read.sourceIds, ['source-ALPHA', 'source-ALPHA', null, 'source-BETA', 'source-GAMMA', null]);
         }
         await page.getByRole('button', { name: '关闭设置' }).click();
         await assertSearchReads(['ALPHA']);
-        console.log('Browser vector regressions passed (v1 migration, scoped IndexedDB reads, visibility, full coverage)');
+
+        await openSettings();
+        await page.locator('#tabContractSettings').click();
+        await page.getByRole('switch', { name: 'BETA 可见', checked: false }).click();
+        await page.getByRole('button', { name: '关闭设置' }).click();
+        await setSources(['ALPHA']);
+        await page.evaluate(() => {
+            contracts.ALPHA.data['3'] = { title: 'Payment terms', content: 'Additional payment terms.' };
+        });
+        const scopedStatus = () => page.evaluate(async () => {
+            window.vectorReads.length = 0;
+            const status = await RAG.getIndexStatus(AI_CONFIG, contracts);
+            return { corpus: status.corpus, valid: status.valid, rejected: status.rejected, reads: window.vectorReads };
+        });
+        const withLegacy = await scopedStatus();
+        assert.equal(withLegacy.corpus, 3);
+        assert.equal(withLegacy.valid, 2);
+        assert.deepEqual(withLegacy.rejected, { 'legacy-unverified': 1 });
+        assert.deepEqual(withLegacy.reads.map(read => read.key), ['source-ALPHA']);
+
+        await setSources(['GAMMA']);
+        const withoutLegacy = await scopedStatus();
+        assert.equal(withoutLegacy.valid, 1);
+        assert.deepEqual(withoutLegacy.rejected, {});
+        assert.deepEqual(withoutLegacy.reads.map(read => read.key), ['source-GAMMA']);
+
+        await setSources(['ALPHA']);
+        const rebuilt = await page.evaluate(() => RAG.buildIndex(contracts, AI_CONFIG));
+        assert.equal(rebuilt.count, 1);
+        assert.equal(rebuilt.skipped, 2);
+        const afterRebuild = await scopedStatus();
+        assert.equal(afterRebuild.valid, 3);
+        assert.deepEqual(afterRebuild.rejected, {});
+        console.log('Browser vector regressions passed (v1 migration, scoped reads, legacy diagnostics, incremental rebuild, visibility, full coverage)');
     } finally {
         await browser.close();
     }

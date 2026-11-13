@@ -153,7 +153,7 @@ const server = http.createServer((request, response) => {
         const closeStatus = page.locator('#statusBubbleClose');
         if (await closeStatus.isVisible()) await closeStatus.click();
         const actions = page.locator('.chat-input-shell .input-action-btn');
-        assert.deepStrictEqual(await actions.locator('.btn-text').allTextContents(), ['附件', '引用', '清空', '知识库', '思考', '终止']);
+        assert.deepStrictEqual(await actions.locator('.btn-text').allTextContents(), ['附件', '引用', '清空', '知识库', '思考 · 使用模型默认', '断开上下文']);
         const composer = page.locator('.chat-input-shell');
         const messages = page.locator('#chatMessages');
         const input = page.locator('#chatInput');
@@ -213,6 +213,8 @@ const server = http.createServer((request, response) => {
         assert.match(await input.inputValue(), /See FOURTH Clause 1/);
 
         await page.setViewportSize({ width: 375, height: 480 });
+        await page.keyboard.press('Escape');
+        await dialog.waitFor({ state: 'detached' });
         await page.keyboard.press('Escape');
         await page.locator('#assistantTopicSidebar.is-collapsed').waitFor({ state: 'attached' });
         const lastAction = await actions.last().boundingBox();

@@ -85,7 +85,7 @@
                 <span id="syncIcon" style="font-weight:bold; font-size:18px;">🔗</span>
             </button>
 
-            <button class="icon-btn" id="btnEditMode" onclick="toggleEditMode()" title="开启/关闭编辑模式">
+            <button class="icon-btn" id="btnEditMode" onclick="toggleEditMode()" title="开启/关闭编辑模式" aria-pressed="false" disabled>
                 <span id="editIcon" style="font-size:16px;">🔒</span>
             </button>
 
@@ -102,15 +102,12 @@
                     style="display: none; position: absolute; z-index: 1000; background: white; border: 1px solid #ccc; border-radius: 4px; padding: 5px 0; top: 100%; right: 0; box-shadow: 0 2px 10px rgba(0,0,0,0.1); white-space: nowrap;">
                     <button
                         style="display: block; width: 100%; padding: 8px 15px; text-align: left; background: none; border: none; cursor: pointer;"
-                        onclick="document.getElementById('importFile').click(); document.getElementById('importMenu').style.display='none';">1.
-                        导入本地修改数据 (.json)</button>
+                        onclick="chooseContractImport('overwrite')">覆盖合同导入</button>
                     <button
                         style="display: block; width: 100%; padding: 8px 15px; text-align: left; background: none; border: none; cursor: pointer;"
-                        onclick="document.getElementById('importContractFile').click(); document.getElementById('importMenu').style.display='none';">2.
-                        导入合同条款 (.txt)</button>
+                        onclick="chooseContractImport('new')">新合同导入</button>
                 </div>
             </div>
-            <input type="file" id="importFile" style="display:none" onchange="handleFileSelect(event)" accept=".json">
             <input type="file" id="importContractFile" style="display:none" onchange="handleContractImport(event)"
                 accept=".txt">
 
@@ -123,16 +120,10 @@
                     style="display: none; position: absolute; z-index: 1000; background: white; border: 1px solid #ccc; border-radius: 4px; padding: 5px 0; top: 100%; right: 0; box-shadow: 0 2px 10px rgba(0,0,0,0.1); white-space: nowrap;">
                     <button
                         style="display: block; width: 100%; padding: 8px 15px; text-align: left; background: none; border: none; cursor: pointer;"
-                        onclick="exportToWord(true); document.getElementById('exportMenu').style.display='none';">1.
-                        导出为带批注 Word (.docx)</button>
+                        onclick="exportContractText(false)">导出为原文本</button>
                     <button
                         style="display: block; width: 100%; padding: 8px 15px; text-align: left; background: none; border: none; cursor: pointer;"
-                        onclick="exportToWord(false); document.getElementById('exportMenu').style.display='none';">2.
-                        导出为基础版 Word (.docx)</button>
-                    <button
-                        style="display: block; width: 100%; padding: 8px 15px; text-align: left; background: none; border: none; cursor: pointer;"
-                        onclick="exportToPdf(); document.getElementById('exportMenu').style.display='none';">3.
-                        导出为 PDF</button>
+                        onclick="exportContractText(true)">导出为带批注文本</button>
                 </div>
             </div>
 
@@ -324,18 +315,21 @@
                                 title="知识库" aria-label="知识库" aria-pressed="false">
                                 <span aria-hidden="true">📂</span><span class="btn-text">知识库</span>
                             </button>
-                            <button class="assistant-btn input-action-btn" id="btnThinkingMode" onclick="toggleThinkingMode()"
-                                title="思考" aria-label="思考" aria-pressed="false">
-                                <span id="thinkingModeIcon" aria-hidden="true">🧠</span><span class="btn-text">思考</span>
-                            </button>
+                            <div id="assistantThinkingControl" class="assistant-thinking-control">
+                                <button class="assistant-btn input-action-btn" id="btnThinkingMode" onclick="toggleThinkingMode()"
+                                    title="思考" aria-label="思考" aria-haspopup="menu" aria-controls="assistantThinkingMenu" aria-expanded="false">
+                                    <span aria-hidden="true">🧠</span><span class="btn-text">思考</span>
+                                </button>
+                                <div id="assistantThinkingMenu" class="assistant-thinking-menu" role="menu" aria-label="思考深度" hidden></div>
+                            </div>
                             <button class="assistant-btn input-action-btn" id="btnContextBreak"
-                                onclick="toggleContextBreak()" title="终止" aria-label="终止">
-                                <span aria-hidden="true">✂️</span><span class="btn-text">终止</span>
+                                onclick="toggleContextBreak()" title="断开上下文" aria-label="断开上下文">
+                                <span aria-hidden="true">✂️</span><span class="btn-text">断开上下文</span>
                             </button>
                             <input type="file" id="fileUpload" multiple accept=".pdf,.docx,.txt,.md,.markdown" style="display:none"
                                 onchange="handleFileUpload(event)">
-                            <button id="sendBtn" class="send-btn" onclick="sendMessage()" title="发送">
-                                <span id="sendBtnIcon">➤</span>
+                            <button id="sendBtn" class="send-btn" onclick="sendMessage()" title="发送" aria-label="发送">
+                                <span id="sendBtnIcon" aria-hidden="true">➤</span>
                             </button>
                         </div>
                     </div>

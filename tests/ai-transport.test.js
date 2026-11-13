@@ -4,7 +4,7 @@ const path = require('path');
 const vm = require('vm');
 const { pathToFileURL } = require('url');
 const root = path.join(__dirname, '..');
-const context = { URL, Response, DOMException, AbortController, TextDecoder, setTimeout, clearTimeout };
+const context = { URL, Response, DOMException, AbortController, TextEncoder, TextDecoder, setTimeout, clearTimeout };
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.join(root, 'js/ai-providers.js'), 'utf8'), context);
 vm.runInContext(fs.readFileSync(path.join(root, 'js/ai-client.js'), 'utf8'), context);
@@ -70,6 +70,39 @@ async function run() {
         return new Request(origin + '/api/ai', { method: 'POST', headers: { origin, 'content-type': 'application/json', ...headers }, body: JSON.stringify(p) });
     }
     const originalFetch = global.fetch;
+    const reasoningCases = [
+        ['https://api.openai.com/v1', 'gpt-5.6-terra', 'openai-responses', 'max', { reasoning: { effort: 'max' } }],
+        ['https://api.openai.com/v1', 'gpt-5.5', 'openai-chat', 'xhigh', { reasoning_effort: 'xhigh' }],
+        ['https://api.deepseek.com/v1', 'deepseek-v4-pro', 'openai-chat', 'max', { thinking: { type: 'enabled' }, reasoning_effort: 'max' }],
+        ['https://open.bigmodel.cn/api/paas/v4', 'glm-5.3', 'openai-chat', 'max', { reasoning_effort: 'max' }],
+        ['https://api.moonshot.ai/v1', 'kimi-k3.1-pro', 'openai-chat', 'max', { reasoning_effort: 'max' }],
+        ['https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen3.8-max', 'openai-chat', 'xhigh', { enable_thinking: true, reasoning_effort: 'xhigh' }],
+        ['https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen3.6-plus', 'openai-chat', '16384', { enable_thinking: true, thinking_budget: 16384 }],
+        ['https://generativelanguage.googleapis.com/v1beta/openai', 'gemini-3.8-flash', 'gemini-openai', 'high', { reasoning_effort: 'high' }]
+    ];
+    try {
+        for (const [apiEndpoint, model, protocol, reasoning, expected] of reasoningCases) {
+            const profile = { apiEndpoint, model, protocol, apiKey: 'test-only-key' };
+            let sentBody;
+            global.fetch = async (_url, options) => {
+                sentBody = JSON.parse(options.body);
+                return Response.json({ output_text: 'OK' });
+            };
+            const p = JSON.parse(client.prepareRequest(profile, messages, { stream: false, reasoning, checkSize: true }));
+            assert.strictEqual((await handler(request(p))).status, 200, model + ' should reach the provider');
+            for (const [field, value] of Object.entries(expected)) assert.deepStrictEqual(sentBody[field], value, model + ' ' + field);
+            sentBody = undefined;
+            p.body.reasoning_effort = 'invalid';
+            assert.strictEqual((await handler(request(p))).status, 400);
+            assert.equal(sentBody, undefined, 'invalid parameter must be rejected before forwarding');
+        }
+        const geminiProfile = { apiEndpoint: reasoningCases.at(-1)[0], model: 'gemini-3.8-flash' };
+        assert.throws(() => client.requestBody(geminiProfile, messages, { reasoning: 'off' }), /不支持/);
+        const mini = { apiEndpoint: 'https://api.openai.com/v1', model: 'gpt-5-mini', apiKey: 'test' };
+        assert.throws(() => client.prepareRequest(mini, [{ role: 'user', content: '中'.repeat(400000) }], { checkSize: true }), /上下文上限/);
+        assert.throws(() => client.prepareRequest(mini, [{ role: 'user', content: 'x'.repeat(2 * 1024 * 1024) }], { checkSize: true }), /2 MiB/);
+        assert.ok(!('reasoning_effort' in client.requestBody(mini, messages, { reasoning: 'auto' })));
+    } finally { global.fetch = originalFetch; }
     let called = 0, signal, canceled = false;
     global.fetch = async (url, options) => {
         called++; signal = options.signal;

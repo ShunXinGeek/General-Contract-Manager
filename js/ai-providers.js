@@ -102,7 +102,11 @@
     function thinkingCapability(value, model) {
         const profile = typeof value === 'object' ? normalizeProfile(value) : normalizeProfile({ endpoint: value });
         const p = profile.providerId, m = String(model || profile.model || '').toLowerCase();
-        if (profile.protocol === 'gemini-openai') return /^(gemini-(?:2\.5-(?:flash|flash-lite)|3\.8-flash))/.test(m) ? 'switch' : 'always';
+        if (profile.protocol === 'gemini-openai') {
+            if (/^gemini-2\.5-flash(?:-lite)?(?:$|-(?:preview|[0-9]))/.test(m)) return 'switch';
+            if (/^gemini-(?:2\.5-pro|3(?:\.[15-8])?-(?:pro|flash(?:-lite)?)|4-(?:carbon|argon|hydrogen))(?:$|-(?:preview|[0-9]))/.test(m)) return 'always';
+            return 'default';
+        }
         if (p === 'deepseek') {
             if (m === 'deepseek-reasoner') return 'always';
             if (/^deepseek-(?:v4|flash)/.test(m)) return 'switch';
@@ -120,6 +124,72 @@
             if (/^kimi-k2\.[56](?:-|$)/.test(m)) return 'switch';
         }
         return 'default';
+    }
+
+    function thinkingOptions(config) {
+        const profile = normalizeProfile(config);
+        const { providerId, protocol } = profile;
+        const model = String(profile.model || '').toLowerCase();
+        const capability = thinkingCapability(profile, model);
+        const qwen = ['qwen', 'qwen-intl', 'qwen-us'].includes(providerId);
+        const kimi = ['kimi-cn', 'kimi-global'].includes(providerId);
+        let efforts = [], budgets = [], canDisable = capability === 'switch';
+        if (providerId === 'openai' && /^openai-(?:chat|responses)$/.test(protocol)) {
+            if (/^gpt-5\.6(?:-(?:sol|terra|luna))?$/.test(model)) {
+                efforts = ['medium', 'high', 'max'];
+                canDisable = true;
+            } else if (/^gpt-5\.(?:2|4|5)(?:-(?:mini|nano|\d{4}-\d\d-\d\d))?$/.test(model)) {
+                efforts = ['medium', 'high', 'xhigh'];
+                canDisable = true;
+            } else if (/^gpt-5(?:-(?:mini|nano))?(?:-\d{4}-\d\d-\d\d)?$/.test(model)) {
+                efforts = ['low', 'medium', 'high'];
+            } else if (/^gpt-6(?:\.1)?-(?:astra|sol|luna)$/.test(model)) {
+                efforts = ['medium', 'high', 'xhigh'];
+                canDisable = /^gpt-6-(?:sol|luna)$/.test(model);
+            } else if (/^o[134](?:-mini)?(?:-\d{4}-\d\d-\d\d)?$/.test(model)) {
+                efforts = ['low', 'medium', 'high'];
+            }
+        } else if (providerId === 'gemini' && protocol === 'gemini-openai') {
+            if (model === 'gemini-3-pro-preview') efforts = ['low', 'high'];
+            else if (model === 'gemini-4-hydrogen') efforts = ['medium', 'high', 'xhigh'];
+            else if (/^gemini-(?:2\.5-(?:flash(?:-lite)?|pro)|3-flash|3\.1-(?:flash-lite|pro)|3\.[5-8]-flash(?:-lite)?|4-(?:carbon|argon))(?:$|-(?:preview|[0-9]))/.test(model)) efforts = ['low', 'medium', 'high'];
+        } else if (protocol === 'openai-chat') {
+            if (providerId === 'deepseek' && /^deepseek-(?:flash|v4(?:\.1)?-(?:pro|flash))(?:-\d+)?$/.test(model)) {
+                efforts = ['low', 'high', 'max'];
+            } else if (providerId === 'zhipu' && /^glm-5\.[23](?:$|-(?:flashx?|[0-9]))/.test(model)) {
+                efforts = model.startsWith('glm-5.3') ? ['low', 'high', 'max'] : ['high', 'max'];
+            } else if (kimi && /^kimi-k3(?:\.1-pro)?(?:-highspeed)?$/.test(model)) {
+                efforts = ['low', 'high', 'max'];
+            } else if (qwen && /^qwen(?:4-max-preview|3\.8-(?:max|flash|2\.4t-a95b|27b))(?:-\d+)?$/.test(model)) {
+                efforts = ['low', 'medium', 'xhigh'];
+                canDisable = true;
+            } else if (qwen && /^qwen3\.[567]-(?:plus|flash)(?:-\d{4}-\d\d-\d\d)?$/.test(model)) {
+                budgets = [4096, 8192, 16384];
+            }
+        }
+        const toggle = enabled => qwen ? { enable_thinking: enabled } : { thinking: { type: enabled ? 'enabled' : 'disabled' } };
+        const options = [];
+        if (canDisable) options.push({ id: 'off', label: '关闭', params: providerId === 'openai' || providerId === 'gemini' ? { reasoning_effort: 'none' } : toggle(false) });
+        if (!efforts.length && !budgets.length && canDisable) options.push({ id: 'on', label: '开启', params: toggle(true) });
+        const labels = ['普通', '高', '极高'].slice(3 - Math.max(efforts.length, budgets.length));
+        efforts.forEach((effort, index) => options.push({
+            id: effort, label: labels[index],
+            params: { ...(canDisable && !['openai', 'gemini'].includes(providerId) ? toggle(true) : {}), reasoning_effort: effort }
+        }));
+        budgets.forEach((budget, index) => options.push({ id: String(budget), label: labels[index], params: { ...toggle(true), thinking_budget: budget } }));
+        return options;
+    }
+
+    function modelContext(config) {
+        const { providerId, model } = normalizeProfile(config);
+        if (providerId === 'openai' && /^gpt-5-(mini|nano)(?:-|$)/.test(model)) return 400000;
+        if (providerId === 'openai' && /^gpt-5\.[456](?:-(?:sol|terra|luna|\d{4}-\d\d-\d\d))?$/.test(model)) return 1050000;
+        if (providerId === 'gemini' && /^gemini-(?:2\.5-(?:flash(?:-lite)?|pro)|3\.8-flash)$/.test(model)) return 1048576;
+        if (providerId === 'deepseek' && /^deepseek-(?:flash|v4-(?:pro|flash))$/.test(model)) return 1048576;
+        if (['kimi-cn', 'kimi-global'].includes(providerId) && /^kimi-k3(?:\.1-pro)?(?:-highspeed)?$/.test(model)) return 1000000;
+        if (providerId === 'zhipu' && /^glm-5\.[23]$/.test(model)) return 1000000;
+        if (/^qwen(?:-|$)/.test(providerId) && /^qwen3\.(?:[567]-(?:plus|flash)|8-(?:max|flash))(?:-(?:\d+|\d{4}-\d\d-\d\d))?$/.test(model)) return 1000000;
+        return null;
     }
 
     function needsReasoningHistory(value, model) {
@@ -141,5 +211,5 @@
     }
 
     root.AIProviders = Object.freeze({ CONFIG_VERSION, PRESETS, cleanBaseUrl, inferProvider, preset, normalizeProfile,
-        endpoint, provider, thinkingCapability, needsReasoningHistory, instructionRole, publicProfile });
+        endpoint, provider, thinkingCapability, thinkingOptions, modelContext, needsReasoningHistory, instructionRole, publicProfile });
 })(globalThis);
