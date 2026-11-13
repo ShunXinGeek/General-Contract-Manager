@@ -232,6 +232,9 @@
                     <button class="assistant-archive-link" id="btnAssistantArchive" type="button" aria-label="打开档案库">
                         <span aria-hidden="true">▣</span><span>档案库</span><span class="assistant-archive-count" id="assistantArchiveCount">0</span>
                     </button>
+                    <button class="assistant-archive-link" id="btnAssistantSkillManager" type="button" aria-haspopup="dialog">
+                        <span>Skill 管理</span>
+                    </button>
                     <span class="assistant-sync-state" id="assistantTopicSyncState" role="status">本地保存</span>
                 </div>
             </aside>
@@ -297,9 +300,16 @@
                         aria-label="调整聊天输入框高度" aria-orientation="horizontal" aria-controls="chatInput"
                         title="拖动或按上下方向键调整高度"></div>
                     <div id="attachmentTray" class="attachment-tray" aria-live="polite" hidden></div>
+                    <div id="assistantSkillPicker" class="assistant-skill-picker" hidden>
+                        <label id="assistantSkillFilterLabel" for="assistantSkillFilter">选择本轮 Skill</label>
+                        <input id="assistantSkillFilter" type="search" role="combobox" aria-autocomplete="list"
+                            aria-controls="assistantSkillOptions" aria-expanded="false" autocomplete="off">
+                        <div id="assistantSkillOptions" role="listbox" aria-label="可用 Skill"></div>
+                        <p id="assistantSkillPickerStatus" role="status" hidden></p>
+                    </div>
                     <div class="chat-input-shell">
                         <textarea id="chatInput" class="chat-input" placeholder="输入您的问题..." rows="1"
-                            onkeydown="handleInputKeydown(event)"></textarea>
+                            aria-controls="assistantSkillOptions" onkeydown="handleInputKeydown(event)"></textarea>
                         <div class="input-tools">
                             <button class="assistant-btn input-action-btn upload-btn"
                                 onclick="document.getElementById('fileUpload').click()" title="附件" aria-label="附件">
@@ -308,6 +318,8 @@
                             <button class="assistant-btn input-action-btn" onclick="openClauseSelector()" title="引用" aria-label="引用">
                                 <span aria-hidden="true">📋</span><span class="btn-text">引用</span>
                             </button>
+                            <button class="assistant-btn input-action-btn assistant-skill-button" id="btnAssistantSkill"
+                                type="button" aria-haspopup="listbox" aria-controls="assistantSkillOptions" aria-expanded="false">Skill</button>
                             <button class="assistant-btn input-action-btn" onclick="clearChat()" title="清空" aria-label="清空">
                                 <span aria-hidden="true">🗑️</span><span class="btn-text">清空</span>
                             </button>
@@ -768,6 +780,28 @@
             </div>
         </div>
 
+        <dialog id="assistantSkillManager" class="modal-content assistant-skill-manager" aria-labelledby="assistantSkillManagerTitle">
+            <div class="modal-header">
+                <strong id="assistantSkillManagerTitle">Skill 管理</strong>
+                <button type="button" id="btnCloseAssistantSkillManager" aria-label="关闭 Skill 管理">×</button>
+            </div>
+            <div class="modal-body">
+                <button type="button" id="btnImportAssistantSkill" class="assistant-btn">导入 .skill.json</button>
+                <input type="file" id="assistantSkillFile" accept=".skill.json" hidden>
+                <p id="assistantSkillManagerStatus" role="status"></p>
+                <section id="assistantSkillReview" class="assistant-skill-review" hidden>
+                    <strong id="assistantSkillReviewName"></strong>
+                    <p id="assistantSkillReviewDescription"></p>
+                    <pre id="assistantSkillReviewInstructions"></pre>
+                    <div class="assistant-skill-actions">
+                        <button type="button" id="btnCancelAssistantSkill" class="assistant-btn">取消</button>
+                        <button type="button" id="btnConfirmAssistantSkill" class="assistant-btn">安装</button>
+                    </div>
+                </section>
+                <ul id="assistantSkillLibrary" class="assistant-skill-library" aria-label="已安装的 Skill"></ul>
+            </div>
+        </dialog>
+
         <!-- 流程图弹窗 -->
         <div id="flowchartModal" class="modal-overlay">
             <div class="modal-content" style="width:90%; height:90%;">
@@ -831,6 +865,8 @@
         <script src="js/editor.js"></script>
         <script src="js/selection-tools.js"></script>
         <script src="js/assistant-attachments.js"></script>
+        <script src="js/assistant-skills.js"></script>
+        <script src="js/assistant-diagrams.js"></script>
         <script src="js/ai-assistant.js"></script>
         <script src="js/cloud-storage.js"></script>
         <script src="js/contract-backup.js"></script>

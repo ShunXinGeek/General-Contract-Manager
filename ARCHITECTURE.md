@@ -14,7 +14,8 @@
 | 合同工作区 | `import.js`、`editor.js`、`bookmark.js`、`search.js`、`sync.js`、`comparison.js`、`ai-settings.js`、`contract-backup.js` | JSON 内容的 TXT 新建与覆盖导入、当前合同原文本/带批注文本导出、双语编辑、书签、搜索、同步滚动与版本差异；合同管理提供排序、可见性、向量化及整库备份与恢复。 |
 | 正文选区 | `js/selection-tools.js`、`js/editor.js`、`js/search.js` | 浮动工具栏、带出处复制、选区搜索、AI 草稿、审阅标签与格式操作。编辑模块统一记录正文、备注、格式和审阅标签的撤销历史。 |
 | AI 与检索 | `ai-assistant.js`、`ai-client.js`、`ai-providers.js`、`rag.js`、`ai-retrieval.js`、`cross-ref.js`、`retrieval-settings.js` | 发送前校验与流式问答、按模型能力选择思考深度、供应商协议适配、向量/证据检索、可见合同范围、检索来源与等级/关系规则、GCC↔SCC 映射及合同/附件引用校验。 |
-| 助手内容 | `assistant-topics.js`、`assistant-notebook.js`、`assistant-attachments.js`、`assistant-docx.mjs`、`attachment-parser-worker.js` | 话题与分支、收藏笔记、TXT/Markdown/PDF/DOCX 附件解析和回复导出 Word；附件正文与消息分开保存，按需注入请求，登录后随话题同步。 |
+| 助手内容 | `assistant-topics.js`、`assistant-notebook.js`、`assistant-attachments.js`、`assistant-docx.mjs`、`assistant-diagrams.js`、`attachment-parser-worker.js` | 话题与分支、收藏笔记、TXT/Markdown/PDF/DOCX 附件解析、回复正文导出 Word 与 Mermaid 流程图显示；附件正文与消息分开保存，按需注入请求，登录后随话题同步。 |
+| 助手 Skill | `assistant-skills.js` | 本机导入、预览、启停与卸载 `.skill.json`，通过输入区按钮或空格后的 `/` 为本轮选择一个 Skill。 |
 | 数据与配置 | `js/general-settings.js`、`MD base/`、`cross-ref-data.js`、`firebase-*.js` | 浮动工具栏和通知形式的本机偏好、合同知识库、交叉引用索引、Firebase 运行时配置。 |
 | 云端与部署 | `cloud-storage.js`、`netlify/edge-functions/`、`netlify.toml` | Firebase 认证、合同版本/删除记录及条款字段合并、Firestore 快照写入；`/api/ai`、`/api/retrieval` 校验并转发 AI 请求；Netlify 构建与发布。 |
 | 离线与质量 | `sw.js`、`tests/`、`scripts/` | 缓存应用外壳并在断网时回退；回归测试、语法/Edge Function 检查。 |
@@ -79,9 +80,11 @@
   → 完成请求体大小检查后提交消息与附件；请求被拒绝时恢复草稿和附件
   → 仅从可见且在检索设置中已勾选的合同取回证据；无有效向量时仍使用当前范围内的原文检索
   → ai-retrieval.js / RAG / cross-ref 选择合同证据和关联条款
+  → 如本轮选择了 Skill，在检索后将其文本指令加入模型请求
   → ai-client.js 向同源 /api/ai 发送流式请求
   → Netlify Edge Function 校验请求、思考参数及目标地址后转发供应商
   → ai-assistant.js 实时渲染回答，核对合同与附件引文并保存话题记录；回复可导出为 Word
+  → 回复结束或恢复历史消息时渲染 Mermaid 代码块；首次使用按需加载并缓存 Mermaid Tiny，失败时保留可复制源码；聊天记录保留原 Markdown
 ```
 
 ```text
@@ -111,7 +114,8 @@
 - **编辑撤销**涵盖正文编辑、备注、格式和标签。当前页面会话为每份合同保留最多 50 步，连续输入可合并为一步。Ctrl+Z 恢复当前合同的最近一次修改并保存，普通输入框继续使用浏览器原生文字撤销。
 - **检索设置**：来源以稳定 `sourceId` 标识；新版设置默认不勾选新来源，旧版设置迁移时保留原检索范围。隐藏合同不出现在检索设置中，也不参与检索，原勾选、等级及来源关系保留以便恢复可见。双方都有数字等级时以等级为准；任一方未设等级时使用显式来源关系。冲突或循环关系不可保存；旧快照中的冲突关系不会参与检索。
 - **云端可选**：智能同步按来源 ID 比较合同整份覆盖、正文和译文编辑、删除的时间。同一合同版本内按字段合并编辑，整份覆盖后旧版的缺失条款不会被补回。删除记录随本地快照和 Firestore 主文档持久化。合同顺序与逐合同可见性仍分别按各自的时间合并。
-- **附件与回复**：草稿附件和已发送消息附件分别存于 LocalForage，消息只携带附件摘要；发送时按话题恢复正文。登录后附件可随消息写入 Firestore 子集合。PDF 仅使用可提取的文字，扫描件需先经 OCR。助手回复 Word 由 `assistant-docx.mjs` 在浏览器生成。
+- **附件与回复**：草稿附件和已发送消息附件分别存于 LocalForage，消息只携带附件摘要；发送时按话题恢复正文。登录后附件可随消息写入 Firestore 子集合。PDF 仅使用可提取的文字，扫描件需先经 OCR。助手回复 Word 由 `assistant-docx.mjs` 在浏览器生成，只导出选中回复的正文，不包含思考过程；Mermaid 由 `assistant-diagrams.js` 在显示层渲染，原始 Markdown 保留在消息中。
+- **Skill**：导入 UTF-8 编码的 `.skill.json` 文件，字段为 `formatVersion: 1`、`id`、`name`、`description` 和 `instructions`，格式与使用方法见 `docs/assistant-skill-spec.md`。安装内容保存在本机 LocalForage，发送时只读取本轮选中的指令且不改变合同检索范围。消息记录 Skill 的 ID、名称和安装版本。重新生成时，如原版本在本机不可用，可确认改用普通问答。
 - **AI 密钥与请求**：浏览器配置密钥，实际请求经同源 Edge Function 转发；服务端负责来源、体积、限流和目标地址限制。
 
 ## 维护入口
@@ -122,6 +126,7 @@
 - 修改整库备份与恢复：`js/contract-backup.js`；入口见 `index.html` 的合同管理页，向量读写见 `js/rag.js`
 - 选区工具栏与结果浮层见 `js/selection-tools.js`，撤销与标签持久化见 `js/editor.js`
 - 修改 AI/检索：先看 `js/ai-assistant.js`，再按需进入 `ai-*.js`、`rag.js`、`cross-ref.js`
+- 修改助手 Skill 与流程图：`js/assistant-skills.js`、`js/assistant-diagrams.js`；按需加载的 Mermaid Tiny 见 `vendor/` 与 `sw.js`
 - 修改检索设置或向量覆盖：`js/retrieval-settings.js`、`js/ai-settings.js`、`js/rag.js`
 - 修改云同步或转发：`js/cloud-storage.js`、`netlify/edge-functions/`
 - 验证：`npm test`；静态与 Edge Function 检查：`npm run check`
@@ -131,4 +136,5 @@
 - 运行 `node tests/contract-transfer-browser.test.js` 验证 TXT 往返、同名独立导入及双设备覆盖/删除同步
 - 运行 `node tests/contract-edit-browser.test.js` 验证合同双语编辑和云端合并
 - 运行 `node tests/assistant-composer-browser.test.js` 与 `node tests/assistant-docx-browser.test.js` 验证助手发送流程和回复导出
+- 运行 `node tests/assistant-skills-browser.test.js` 验证 Skill 安装、选择、发送、停用和卸载
 - 运行 `node tests/mascot-browser.test.js` 验证三种通知形式和未读消息

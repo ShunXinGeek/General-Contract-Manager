@@ -1,6 +1,7 @@
 // Service Worker for General Contract Shell
 const CACHE_PREFIX = 'general-contract-shell-';
-const CACHE_NAME = CACHE_PREFIX + 'v18';
+const CACHE_NAME = CACHE_PREFIX + 'v21';
+const MERMAID_PATH = new URL('./vendor/mermaid-tiny-12.3.0.js', self.location.href).pathname;
 const urlsToCache = [
     './',
     './index.html',
@@ -43,8 +44,10 @@ const urlsToCache = [
     './js/editor.js',
     './js/selection-tools.js',
     './js/ai-assistant.js',
+    './js/assistant-diagrams.js',
     './js/assistant-docx.mjs',
     './js/assistant-attachments.js',
+    './js/assistant-skills.js',
     './js/attachment-parser-worker.js',
     './js/assistant-topics.js',
     './js/assistant-notebook.js'
@@ -71,6 +74,17 @@ self.addEventListener('fetch', event => {
 
     const requestUrl = new URL(event.request.url);
     if (requestUrl.origin !== self.location.origin) return;
+    if (requestUrl.pathname === MERMAID_PATH) {
+        // This pinned bundle is downloaded only when a chat needs it.
+        event.respondWith(caches.open(CACHE_NAME).then(async cache => {
+            const cached = await cache.match(event.request);
+            if (cached) return cached;
+            const response = await fetch(event.request);
+            if (response.ok) event.waitUntil(cache.put(event.request, response.clone()).catch(() => {}));
+            return response;
+        }));
+        return;
+    }
 
     event.respondWith(
         fetch(event.request)

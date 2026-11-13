@@ -9,7 +9,7 @@ async function run() {
     let resources;
     const context = {
         URL, Response,
-        self: { location: { origin: 'http://localhost' }, skipWaiting: async () => {},
+        self: { location: { origin: 'http://localhost', href: 'http://localhost/sw.js' }, skipWaiting: async () => {},
             clients: { claim: async () => {} }, addEventListener: (name, handler) => { events[name] = handler; } },
         caches: {
             open: async () => ({ addAll: async urls => { resources = [...urls]; },
@@ -35,6 +35,7 @@ async function run() {
         assert.ok(resources.includes(`./${script}`), `Core script not precached: ${script}`);
     }
     assert.ok(!resources.includes('./js/vectors-data.js'), 'large optional vectors must stay lazy');
+    assert.ok(!resources.some(resource => /vendor\/mermaid/.test(resource)), 'Mermaid Tiny must stay lazy');
     events.activate({ waitUntil: promise => { pending = promise; } });
     await pending;
     assert.deepStrictEqual(deleted, ['general-contract-shell-v2', 'general-contract-shell-v3', 'general-contract-shell-v4'], 'do not delete other apps caches');

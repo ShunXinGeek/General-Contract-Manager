@@ -32,7 +32,7 @@ const reply = `## 1.2.3 合同通知
 4. 乙方回复（回到一级续号）
    1. 登记回复（新子列表从 1 开始）
 
-这里是独立段落。
+这里是独立段落，包含代码示例 \`<think>\`。
 
 7. 后续办理（新列表从 7 开始）
 8. 完成归档（新列表续号）
@@ -138,15 +138,17 @@ async function verifyLists(page, entries) {
         await page.evaluate(markdown => {
             chatMessages = [
                 { role: 'user', content: '这个问题不应进入导出文件。' },
-                { role: 'assistant', content: markdown, reasoning: '思考内容也应保留。' },
+                { role: 'assistant', content: '<think>正文内残留的思考内容。\n\n同一思考区块的第二段。</think>\n\n' + markdown, reasoning: '独立思考区块的内容。' },
                 { role: 'assistant', content: '其他回复不应进入导出文件。' }
             ];
             renderChatMessages();
         }, reply);
 
-        const message = page.locator('#chatMessages .chat-message.assistant').first();
+        const messages = page.locator('#chatMessages .chat-message.assistant');
+        const message = messages.first();
         assert.deepEqual(await message.locator('.msg-actions button').evaluateAll(buttons => buttons.map(button => button.title)),
             ['复制', '重新生成', '分支', '收藏', '导出 Word', '删除']);
+        assert.equal(await message.locator('.thinking-body-inner').textContent(), '独立思考区块的内容。');
         assert.equal(await page.locator('.chat-message.user button[title="导出 Word"]').count(), 0);
         assert.equal(await page.evaluate(() => performance.getEntriesByName(location.origin + '/js/assistant-docx.mjs').length), 0);
         await context.setOffline(true);
@@ -168,19 +170,25 @@ async function verifyLists(page, entries) {
         const continuation = xml.match(/<w:p>[\s\S]*?<\/w:p>/g).find(p => p.includes('这是同一列表项内的独立续段'));
         assert.match(continuation, /<w:ind w:left="600"\/>/);
         assert.ok(!continuation.includes('<w:numPr>'));
-        for (const text of ['1.2.3 合同通知', '思考内容也应保留', '（一）保留手写编号', '不可用外链', '    indented']) assert.ok(xml.includes(text), text);
-        assert.ok(!xml.includes('不应进入导出文件'));
+        for (const text of ['1.2.3 合同通知', '（一）保留手写编号', '不可用外链', '    indented', '&lt;think&gt;']) assert.ok(xml.includes(text), text);
+        assert.doesNotMatch(xml, /思考过程|独立思考区块的内容|正文内残留的思考内容|同一思考区块的第二段|不应进入导出文件/);
         for (const tag of ['w:b', 'w:i', 'w:tbl', 'w:hyperlink', 'w:drawing']) assert.ok(xml.includes('<' + tag), tag);
         assert.ok(Object.keys(entries).some(name => /^word\/media\/.+\.png$/.test(name)));
         assert.match(entries['word/_rels/document.xml.rels'].toString(), /example\.invalid\/missing\.png/);
         await page.waitForFunction(() => StatusCenter.snapshot().some(item => item.message.includes('有 1 张图片无法嵌入')));
+        assert.equal(await message.locator('.message-content').count(), 1);
         if (process.env.GCM_DOCX_SAMPLE_PATH) await download.saveAs(process.env.GCM_DOCX_SAMPLE_PATH);
 
         await page.evaluate(() => { assistantReadOnly = true; renderChatMessages(); });
         assert.deepEqual(await message.locator('.msg-actions button').evaluateAll(buttons => buttons.map(button => button.title)),
             ['复制', '收藏', '导出 Word']);
+        const plainButton = messages.last().getByRole('button', { name: '导出回复为 Word' });
+        const [plainDownload] = await Promise.all([page.waitForEvent('download'), plainButton.click()]);
+        assert.equal(plainDownload.suggestedFilename(), '管理助手回复-3.docx');
+        const plainEntries = unpackDocx(fs.readFileSync(await plainDownload.path()));
+        assert.match(plainEntries['word/document.xml'].toString(), /其他回复不应进入导出文件/);
         assert.deepEqual(errors, []);
-        console.log('Assistant DOCX browser test passed: offline click, ZIP structure, native list counters and indentation, rich content and image fallback.');
+        console.log('Assistant DOCX browser test passed: offline download, reply-only content, native lists, rich formatting and image fallback.');
     } finally {
         await browser.close();
         server.close();

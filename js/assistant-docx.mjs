@@ -48,7 +48,7 @@ async function readImage(source, displayedWidth, displayedHeight) {
     }
 }
 
-async function convertReply(content, reasoning, word) {
+async function convertReply(content, word) {
     const {
         Paragraph, TextRun, Tab, HeadingLevel, ExternalHyperlink, ImageRun, BorderStyle,
         AlignmentType, LevelSuffix, TabStopType, Table, TableRow, TableCell, WidthType
@@ -297,14 +297,7 @@ async function convertReply(content, reasoning, word) {
         return output;
     }
 
-    const children = [];
-    if (reasoning.trim()) {
-        children.push(new Paragraph({ text: '思考过程', heading: HeadingLevel.HEADING_2 }));
-        for (const text of reasoning.split(/\r?\n\r?\n/)) {
-            children.push(new Paragraph({ children: literalRuns(text), spacing: { after: 100 } }));
-        }
-    }
-    children.push(...blocks(root));
+    const children = blocks(root);
     return {
         missingImages,
         document: new word.Document({
@@ -314,10 +307,11 @@ async function convertReply(content, reasoning, word) {
     };
 }
 
-export async function exportReplyToDocx(content, reasoning, filename) {
+// Keep the argument order for pages that loaded the export button before a cache update.
+export async function exportReplyToDocx(content, _reasoning, filename) {
     const word = window.docx;
     if (!word?.Packer) throw new Error('Word 导出引擎未加载');
-    const result = await convertReply(content, reasoning, word);
+    const result = await convertReply(content, word);
     const blob = await word.Packer.toBlob(result.document);
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');

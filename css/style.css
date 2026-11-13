@@ -3697,6 +3697,33 @@ body:not(.dark-mode):not(.eye-mode) .chat-message.assistant .message-content h4 
 
 
 
+.assistant-diagram {
+    min-width: 0;
+    margin: 12px 0;
+    padding: 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+}
+
+.assistant-diagram-toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 13px;
+}
+
+.assistant-diagram img {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    box-sizing: border-box;
+    padding: 8px;
+    border-radius: 4px;
+    background: #fff;
+}
+
 .msg-actions {
 
     position: absolute;
@@ -4043,6 +4070,144 @@ body:not(.dark-mode):not(.eye-mode) .chat-message.assistant .message-content h4 
 .chat-input-area .attachment-tray {
     max-height: min(30vh, 240px);
     overflow-y: auto;
+}
+
+.assistant-skill-picker {
+    position: absolute;
+    z-index: 4;
+    inset: auto 15px calc(100% + 4px);
+    width: min(320px, calc(100% - 30px));
+    box-sizing: border-box;
+    padding: 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-panel);
+    color: var(--text-main);
+    box-shadow: 0 8px 22px rgba(0, 0, 0, .18);
+}
+
+.assistant-skill-picker label {
+    display: block;
+    margin: 0 4px 4px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.assistant-skill-picker input {
+    box-sizing: border-box;
+    width: 100%;
+    margin-bottom: 6px;
+    padding: 6px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    background: var(--bg-panel);
+    color: var(--text-main);
+}
+
+.assistant-skill-picker [role="listbox"] {
+    max-height: min(28vh, 220px);
+    overflow-y: auto;
+}
+
+.assistant-skill-picker [role="option"] {
+    padding: 7px 9px;
+    border-radius: 4px;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+}
+
+.assistant-skill-picker [role="option"]:hover,
+.assistant-skill-picker [aria-selected="true"] {
+    background: var(--bg-nav-header);
+    box-shadow: inset 3px 0 var(--highlight-color);
+}
+
+.assistant-skill-picker p {
+    margin: 4px;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.input-tools .assistant-skill-button {
+    max-width: min(185px, 40%);
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.assistant-message-skill {
+    margin-bottom: 3px;
+    font-size: 12px;
+    opacity: .85;
+    overflow-wrap: anywhere;
+}
+
+.assistant-skill-manager {
+    width: min(560px, calc(100% - 24px));
+    height: auto;
+    max-height: 85vh;
+    padding: 0;
+    border: 1px solid var(--border-color);
+}
+
+.assistant-skill-manager:not([open]),
+.assistant-skill-picker [hidden] {
+    display: none;
+}
+
+.assistant-skill-manager::backdrop {
+    background: rgba(0, 0, 0, .5);
+}
+
+.assistant-skill-manager .modal-header button {
+    padding: 0 8px;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font-size: 24px;
+    cursor: pointer;
+}
+
+.assistant-skill-manager .assistant-skill-library {
+    padding: 0;
+    margin: 0;
+    list-style: none;
+}
+
+.assistant-skill-library li,
+.assistant-skill-review {
+    padding: 12px;
+    margin: 8px 0;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    overflow-wrap: anywhere;
+}
+
+.assistant-skill-library p,
+.assistant-skill-review p {
+    margin: 5px 0;
+}
+
+.assistant-skill-library summary {
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.assistant-skill-manager pre {
+    max-height: 26vh;
+    overflow: auto;
+    padding: 8px;
+    border-radius: 5px;
+    background: var(--bg-nav-header);
+    white-space: pre-wrap;
+}
+
+.assistant-skill-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
 }
 
 .chat-input-shell {
